@@ -33,6 +33,7 @@ fragment Row on PullRequest {
   url
   headRefName
   headRefOid
+  isCrossRepository
   baseRefName
   isDraft
   state
@@ -66,6 +67,7 @@ type githubNode struct {
 	URL              string     `json:"url"`
 	HeadRefName      string     `json:"headRefName"`
 	HeadRefOid       string     `json:"headRefOid"`
+	CrossRepository  bool       `json:"isCrossRepository"`
 	BaseRefName      string     `json:"baseRefName"`
 	IsDraft          bool       `json:"isDraft"`
 	State            string     `json:"state"`
@@ -263,7 +265,7 @@ func githubPullRequest(node githubNode) PullRequest {
 	pr := PullRequest{
 		Provider: registry.GitHub, Repo: node.Repository.Name, Slug: node.Repository.NameWithOwner,
 		Number: *node.Number, Title: node.Title, Body: node.Body, URL: node.URL,
-		Branch: node.HeadRefName, Base: node.BaseRefName, Draft: node.IsDraft, CreatedAt: node.CreatedAt,
+		Branch: node.HeadRefName, Base: node.BaseRefName, Draft: node.IsDraft, HeadInFork: node.CrossRepository, CreatedAt: node.CreatedAt,
 		Additions: &node.Additions, Deletions: &node.Deletions, ChangedFiles: &node.ChangedFiles,
 		Review: node.ReviewDecision, Reviews: node.Reviews.TotalCount,
 		State: node.State, MergedAt: node.MergedAt, ClosedAt: node.ClosedAt, UpdatedAt: &node.UpdatedAt,

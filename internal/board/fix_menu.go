@@ -20,7 +20,8 @@ import (
 )
 
 // blocker is what keeps GitHub from merging a pull request as it stands, as the fix menu names
-// it. The first four are the kinds a merge fix names in its blockers and receives in {blocker}.
+// it. Those defined from config are the kinds a merge fix names in its blockers and receives in
+// {blocker}.
 type blocker string
 
 const (
@@ -35,30 +36,18 @@ const (
 	heldBlocker blocker = "held"
 )
 
-// blockerOf is what keeps GitHub from merging the pull request as it stands, and empty where m
-// merges it: its merge state is ready, GitHub merges it with checks still running, or its host
-// reports no merge state. A draft is one whatever else holds it, then a conflict, because
-// fixing either runs every check again.
+// blockerOf is what keeps GitHub from merging the pull request as it stands, as mergeMeanings
+// says of its merge state, and empty where m merges it: its merge state is ready, GitHub merges
+// it with checks still running, or its host reports no merge state.
 func blockerOf(pr pullrequests.PullRequest) blocker {
 	if pr.MergeStateStatus == nil {
 		return ""
 	}
-	state := *pr.MergeStateStatus
-	switch {
-	case pr.Draft || state == "DRAFT":
-		return draftBlocker
-	case pr.Mergeable != nil && *pr.Mergeable == "CONFLICTING", state == "DIRTY":
-		return conflictsBlocker
-	case state == "BEHIND":
-		return behindBlocker
-	case mergeMeanings[state].computing:
-		return computingBlocker
-	case checkMeaning(pr.Checks).failed && (state == "UNSTABLE" || state == "BLOCKED"):
+	state := mergeMeanings[mergeStateOf(pr)]
+	if state.checksBlock && checkMeaning(pr.Checks).failed {
 		return failingChecksBlocker
-	case state == "BLOCKED":
-		return heldBlocker
 	}
-	return ""
+	return state.blocker
 }
 
 // The fix menu's own keys. A choice's key is the one the menu offers it on, whatever kind of
@@ -93,24 +82,25 @@ type fixFrom struct {
 	refusal string
 }
 
-// fixMenu is what the menu is drawn from: the pull request as it was just read, its detail, and
-// for a conflict, what the checkout here says of it.
+// fixMenu is what the menu is drawn from: the pull request as it was just read, its detail, for
+// a conflict what the checkout here says of it, and the worktree the menu merges the base into,
+// nil where there is no checkout.
 type fixMenu struct {
 	from      fixFrom
 	pr        pullrequests.PullRequest
 	detail    *pullrequests.Detail
 	conflicts conflicts
+	worktree  *pullrequests.MergeWorktree
+	// left says the worktree is there, from an earlier n, and waiting that a merge is still
+	// under way in it.
+	left, waiting bool
 }
 
 // conflicts is what the checkout here says of a conflict: the files it is in, or why git could
-// not name them, and the worktree the menu merges the base into, nil where there is no
-// checkout.
+// not name them.
 type conflicts struct {
-	files    []string
-	fault    string
-	worktree *pullrequests.MergeWorktree
-	// waiting says a merge an earlier n began is still under way in the worktree.
-	waiting bool
+	files []string
+	fault string
 }
 
 // fixChoice is one choice of the fix menu: its key, what it does, and what it runs.
@@ -119,15 +109,14 @@ type fixChoice struct {
 	run        func(m *gotermboard.Model) tea.Cmd
 }
 
-// fix is f: the fix menu for what keeps the pull request from merging, once it is read again.
+// fix is f: the fix menu for what keeps the pull request from merging, once it is read again,
+// so a row the list shows ready still offers to remove a worktree an earlier n left.
 func (b *Board) fix(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 	switch why := b.refusal(pr); {
 	case why != "":
 		m.Say(refused(pr, "fix", why).Error())
 	case pr.MergeStateStatus == nil:
 		m.Say(fmt.Sprintf("%s reports no merge state for %s #%d, so prs has no fix to offer for it", pr.Provider, pr.Slug, pr.Number))
-	case blockerOf(pr) == "":
-		m.Say(fmt.Sprintf("GitHub reads %s #%d as %s, which needs no fix; m merges it", pr.Slug, pr.Number, stateMeaning(pr, "").word))
 	default:
 		return b.readThenFix(m, pr, fixFrom{})
 	}
@@ -137,6 +126,7 @@ func (b *Board) fix(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 // readThenFix reads the pull request again, waiting out a merge state GitHub is still working
 // out, then opens the fix menu on what that read says. Where the read says it conflicts and its
 // repo is checked out here, the conflicting files are named before anything is checked out.
+// Whatever it says, a worktree an earlier n left is found.
 func (b *Board) readThenFix(m *gotermboard.Model, pr pullrequests.PullRequest, from fixFrom) tea.Cmd {
 	provider, err := pullrequests.ProviderOf(pr.Provider)
 	if err != nil {
@@ -154,8 +144,13 @@ func (b *Board) readThenFix(m *gotermboard.Model, pr pullrequests.PullRequest, f
 				return err
 			}
 			menu.pr, menu.detail = pullrequests.Finish([]pullrequests.PullRequest{fresh}, b.repos, time.Now())[0], detail
+			target, err := pullrequests.LocalDiffOf(ctx, menu.pr)
+			if err == nil {
+				w := pullrequests.MergeWorktreeAt(b.worktreeRoot, target, menu.pr.Branch)
+				menu.worktree, menu.left, menu.waiting = &w, w.Exists(), w.Merging(ctx)
+			}
 			if blockerOf(menu.pr) == conflictsBlocker {
-				menu.conflicts = b.conflictsOf(ctx, menu.pr)
+				menu.conflicts = conflictsOf(ctx, target, err)
 			}
 			return nil
 		},
@@ -172,39 +167,41 @@ func (b *Board) readThenFix(m *gotermboard.Model, pr pullrequests.PullRequest, f
 }
 
 // conflictsOf is what the checkout here says of the pull request's conflict with its base,
-// after fetching both, as d does.
-func (b *Board) conflictsOf(ctx context.Context, pr pullrequests.PullRequest) conflicts {
-	target, err := pullrequests.LocalDiffOf(ctx, pr)
+// after fetching both, as d does, or why there is no checkout to ask.
+func conflictsOf(ctx context.Context, target pullrequests.LocalDiff, local error) conflicts {
+	if local != nil {
+		return conflicts{fault: local.Error()}
+	}
+	if _, err := pullrequests.Fetch(ctx, target); err != nil {
+		return conflicts{fault: err.Error()}
+	}
+	files, err := pullrequests.ConflictingFiles(ctx, target)
 	if err != nil {
 		return conflicts{fault: err.Error()}
 	}
-	w := pullrequests.MergeWorktreeAt(b.worktreeRoot, target, pr.Branch)
-	c := conflicts{worktree: &w, waiting: w.Merging(ctx)}
-	if _, err := pullrequests.Fetch(ctx, target); err != nil {
-		c.fault = err.Error()
-		return c
-	}
-	if c.files, err = pullrequests.ConflictingFiles(ctx, target); err != nil {
-		c.fault = err.Error()
-	}
-	return c
+	return conflicts{files: files}
 }
 
 // openFixMenu asks which fix to run for what keeps the menu's pull request from merging, after
 // what the host said where a merge was refused. A pull request that reads ready asks to merge
-// where m opened the menu, and otherwise says so. A blocker with nothing to offer says why.
+// where m opened the menu, offers to remove a worktree an earlier n left where f did, and
+// otherwise says so. A blocker with nothing to offer says why.
 func (b *Board) openFixMenu(m *gotermboard.Model, menu fixMenu) tea.Cmd {
 	pr := menu.pr
 	kind := blockerOf(pr)
 	if kind == "" {
+		ready := fmt.Sprintf("GitHub reads %s #%d as %s now, which needs no fix; m merges it", pr.Slug, pr.Number, stateMeaning(pr, "").word)
 		switch {
 		case menu.from.refusal != "":
 			m.Say(menu.from.refusal)
-			return nil
 		case menu.from.merge:
 			return b.askMerge(m, pr)
+		case menu.left:
+			b.askFix(m, pr, []gotermboard.Line{{gotermboard.C(ready+".", gotermboard.Bold)}, {gotermboard.C(leftLine(menu), "")}},
+				[]fixChoice{b.removeLeft(pr, menu)}, fmt.Sprintf("left %s as it is", homeAsTilde(menu.worktree.Path)))
+		default:
+			m.Say(ready)
 		}
-		m.Say(fmt.Sprintf("GitHub reads %s #%d as %s now, which needs no fix; m merges it", pr.Slug, pr.Number, stateMeaning(pr, "").word))
 		return nil
 	}
 	about, choices := b.fixesFor(kind, menu)
@@ -228,9 +225,14 @@ func (b *Board) openFixMenu(m *gotermboard.Model, menu fixMenu) tea.Cmd {
 }
 
 // askFix asks which of choices to run on the pull request, under listing, and says left on esc.
+// Two choices on one key would leave the second unreachable, so it names them rather than ask.
 func (b *Board) askFix(m *gotermboard.Model, pr pullrequests.PullRequest, listing []gotermboard.Line, choices []fixChoice, left string) {
 	asked := make([]gotermboard.Choice, len(choices))
 	for i, choice := range choices {
+		if at := slices.IndexFunc(choices[:i], func(c fixChoice) bool { return c.key == choice.key }); at >= 0 {
+			m.Say(fmt.Sprintf("the fix menu of %s #%d offers %s for both %q and %q, so it opens on neither", pr.Slug, pr.Number, choice.key, choices[at].label, choice.label))
+			return
+		}
 		asked[i] = gotermboard.Choice{Key: choice.key, Label: choice.label}
 	}
 	m.Ask(gotermboard.Question{
@@ -249,19 +251,20 @@ func (b *Board) askFix(m *gotermboard.Model, pr pullrequests.PullRequest, listin
 }
 
 // fixesFor is what the menu says of the blocker, a line each, the first leading, and the choices
-// it offers for it: its own, then the config's fixes for that kind.
+// it offers for it: its own, then the config's fixes for that kind, then removing a worktree an
+// earlier n left.
 func (b *Board) fixesFor(kind blocker, menu fixMenu) ([]string, []fixChoice) {
 	pr := menu.pr
 	provider, _ := pullrequests.ProviderOf(pr.Provider)
 	var about []string
 	var choices []fixChoice
 	worktree := ""
+	if menu.waiting {
+		worktree = menu.worktree.Path
+	}
 	switch kind {
 	case conflictsBlocker:
-		about, choices = b.conflictFixes(pr, menu.conflicts)
-		if c := menu.conflicts; c.waiting {
-			worktree = c.worktree.Path
-		}
+		about, choices = b.conflictFixes(menu)
 	case behindBlocker:
 		about = []string{fmt.Sprintf("Its branch is behind %s, and GitHub refuses the merge until it holds %s's newest commits.", pr.Base, pr.Base)}
 		if provider.UpdateBranch != nil {
@@ -289,35 +292,58 @@ func (b *Board) fixesFor(kind blocker, menu fixMenu) ([]string, []fixChoice) {
 			})
 		}
 	case computingBlocker:
-		return []string{fmt.Sprintf("GitHub is still working out whether %s #%d merges; f reads it again.", pr.Slug, pr.Number)}, nil
+		about = []string{fmt.Sprintf("GitHub is still working out whether %s #%d merges; f reads it again.", pr.Slug, pr.Number)}
 	case heldBlocker:
-		return []string{fmt.Sprintf("GitHub blocks merging %s #%d for something no fix here reaches. Its review reads %s and its checks %s, so a required review, or a required check still running, holds it.",
-			pr.Slug, pr.Number, reviewMeaning(pr.Review).word, checkMeaning(pr.Checks).word)}, nil
+		about = []string{fmt.Sprintf("GitHub blocks merging %s #%d for something no fix here reaches. Its review reads %s and its checks %s, so a required review, or a required check still running, holds it.",
+			pr.Slug, pr.Number, reviewMeaning(pr.Review).word, checkMeaning(pr.Checks).word)}
 	}
 	choices = append(choices, b.configuredFixes(pr, kind, menu, worktree)...)
+	if menu.left {
+		about = append(about, leftLine(menu))
+		choices = append(choices, b.removeLeft(pr, menu))
+	}
 	if kind == conflictsBlocker {
 		choices = append(choices, fixChoice{key: closeKey, label: "close without merging, after asking", run: func(m *gotermboard.Model) tea.Cmd { return b.closePR(m, pr) }})
 	}
-	if kind == failingChecksBlocker && *pr.MergeStateStatus == "UNSTABLE" {
+	if kind == failingChecksBlocker && mergeMeanings[mergeStateOf(pr)].mergesFailing {
 		choices = append(choices, fixChoice{
 			key: mergeAnywayKey, label: "merge anyway: GitHub merges it with these checks failing",
 			run: func(m *gotermboard.Model) tea.Cmd {
-				provider, why := b.mergeable(pr)
+				merge, why := b.mergeOf(pr)
 				if why != "" {
 					m.Say(refused(pr, "merge", why).Error())
 					return nil
 				}
-				head, _ := b.pinFor(pr)
-				return b.start(b.mergeWork(pr, provider, head))
+				return b.start(merge.work)
 			},
 		})
 	}
 	return about, choices
 }
 
+// leftLine is what the menu says of a worktree an earlier n left.
+func leftLine(menu fixMenu) string {
+	if menu.waiting {
+		return fmt.Sprintf("A merge of origin/%s into it waits in %s.", menu.pr.Base, homeAsTilde(menu.worktree.Path))
+	}
+	return fmt.Sprintf("A worktree an earlier merge here left, with no merge under way, is in %s.", homeAsTilde(menu.worktree.Path))
+}
+
+// removeLeft is the choice that aborts a merge an earlier n left and removes its worktree.
+func (b *Board) removeLeft(pr pullrequests.PullRequest, menu fixMenu) fixChoice {
+	w := *menu.worktree
+	label := fmt.Sprintf("remove %s: git worktree remove, which refuses it while it holds changes", homeAsTilde(w.Path))
+	if menu.waiting {
+		label = fmt.Sprintf("abort the merge waiting in %s: git merge --abort, then remove the worktree", homeAsTilde(w.Path))
+	}
+	return fixChoice{key: abortKey, label: label, run: func(*gotermboard.Model) tea.Cmd { return b.abortMerge(pr, w) }}
+}
+
 // conflictFixes is what the menu says of a conflict, and resolving it in nvim, where its repo is
-// checked out here and git and nvim are installed.
-func (b *Board) conflictFixes(pr pullrequests.PullRequest, c conflicts) ([]string, []fixChoice) {
+// checked out here, git and nvim are installed, and the head branch is on origin rather than in
+// a fork, which prs pushes nothing to.
+func (b *Board) conflictFixes(menu fixMenu) ([]string, []fixChoice) {
+	pr, c := menu.pr, menu.conflicts
 	var about []string
 	switch {
 	case len(c.files) > 0:
@@ -330,15 +356,15 @@ func (b *Board) conflictFixes(pr pullrequests.PullRequest, c conflicts) ([]strin
 	default:
 		about = append(about, fmt.Sprintf("GitHub reads it as conflicting with %s, and git merges the two cleanly here, so GitHub may not have read the newest of either yet.", pr.Base))
 	}
-	if c.waiting {
-		about = append(about, fmt.Sprintf("A merge of origin/%s into it waits in %s.", pr.Base, homeAsTilde(c.worktree.Path)))
+	if pr.HeadInFork {
+		about = append(about, fmt.Sprintf("Its branch %s is in a fork rather than on origin, so prs pushes no merge to it.", pr.Branch))
 	}
-	if c.worktree == nil || len(config.MissingPrograms([]string{"git", "nvim"})) > 0 {
+	if menu.worktree == nil || pr.HeadInFork || len(config.MissingPrograms([]string{"git", "nvim"})) > 0 {
 		return about, nil
 	}
-	w := *c.worktree
+	w := *menu.worktree
 	label := fmt.Sprintf("resolve in nvim: merge origin/%s into it in %s, then resolve it in diffview", pr.Base, homeAsTilde(w.Path))
-	if c.waiting {
+	if menu.waiting {
 		label = fmt.Sprintf("resolve in nvim: open the merge waiting in %s", homeAsTilde(w.Path))
 	}
 	return about, []fixChoice{{key: resolveKey, label: label, run: func(m *gotermboard.Model) tea.Cmd { return b.resolve(m, pr, w) }}}
@@ -468,8 +494,13 @@ func (b *Board) hostVerb(pr pullrequests.PullRequest, argv []string, inCheckout 
 	})
 }
 
-// rerunFailed runs each run's failed jobs again, one run at a time.
+// rerunFailed runs each run's failed jobs again, one run at a time, and goes on past one that
+// fails, so a failure costs only its own run and the footer names each that reran.
 func (b *Board) rerunFailed(pr pullrequests.PullRequest, provider pullrequests.Provider, runs []string) tea.Cmd {
+	var reran, failed []string
+	reranAll := func() string {
+		return fmt.Sprintf("reran the failed jobs of %s #%d, in run %s, so its checks run again", pr.Slug, pr.Number, strings.Join(reran, ", "))
+	}
 	return b.start(work{
 		pr:    pr,
 		doing: fmt.Sprintf("rerunning the failed jobs of %s #%d", pr.Slug, pr.Number),
@@ -477,14 +508,28 @@ func (b *Board) rerunFailed(pr pullrequests.PullRequest, provider pullrequests.P
 			for _, run := range runs {
 				argv, inCheckout := provider.Rerun(pr, run)
 				if err := runClient(pr, "rerun run "+run+" of", argv, inCheckout)(ctx); err != nil {
-					return err
+					failed = append(failed, err.Error())
+					continue
 				}
+				reran = append(reran, run)
+			}
+			if len(failed) > 0 {
+				return errors.New(strings.Join(failed, "; "))
 			}
 			return nil
 		},
 		done: func(m *gotermboard.Model) tea.Cmd {
 			b.readAgain()
-			m.Say(fmt.Sprintf("reran the failed jobs of %s #%d, in run %s, so its checks run again", pr.Slug, pr.Number, strings.Join(runs, ", ")))
+			m.Say(reranAll())
+			return nil
+		},
+		failed: func(m *gotermboard.Model, err error) tea.Cmd {
+			if len(reran) == 0 {
+				m.Say(err.Error())
+				return nil
+			}
+			b.readAgain()
+			m.Say(fmt.Sprintf("%s, and %v", reranAll(), err))
 			return nil
 		},
 	})
@@ -682,20 +727,29 @@ func (b *Board) commitAndPush(pr pullrequests.PullRequest, w pullrequests.MergeW
 			return nil
 		},
 		failed: func(m *gotermboard.Model, err error) tea.Cmd {
-			m.Say(fmt.Sprintf("%v; the merge waits in %s, and f, then n, opens it again", err, homeAsTilde(w.Path)))
+			m.Say(fmt.Sprintf("%v; the merge waits in %s, resolved: f, then n, opens it again, and f, then a, aborts it", err, homeAsTilde(w.Path)))
 			return nil
 		},
 	})
 }
 
-// abortMerge abandons the merge under way and removes its worktree.
+// abortMerge abandons any merge under way in the worktree and removes it.
 func (b *Board) abortMerge(pr pullrequests.PullRequest, w pullrequests.MergeWorktree) tea.Cmd {
+	aborted := false
 	return b.start(work{
 		pr:    pr,
-		doing: fmt.Sprintf("aborting the merge in %s", homeAsTilde(w.Path)),
-		run:   w.Abort,
+		doing: fmt.Sprintf("removing %s", homeAsTilde(w.Path)),
+		run: func(ctx context.Context) error {
+			var err error
+			aborted, err = w.Abort(ctx)
+			return err
+		},
 		done: func(m *gotermboard.Model) tea.Cmd {
-			m.Say(fmt.Sprintf("aborted the merge of origin/%s into %s #%d and removed %s", pr.Base, pr.Slug, pr.Number, homeAsTilde(w.Path)))
+			if aborted {
+				m.Say(fmt.Sprintf("aborted the merge of origin/%s into %s #%d and removed %s", pr.Base, pr.Slug, pr.Number, homeAsTilde(w.Path)))
+			} else {
+				m.Say(fmt.Sprintf("removed %s, which held no merge under way", homeAsTilde(w.Path)))
+			}
 			return nil
 		},
 	})

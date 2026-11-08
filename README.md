@@ -264,19 +264,23 @@ footer names what merged and what was left and why, and the open listings are re
 it, opens a menu of fixes rather than asking to merge. A merge GitHub refuses anyway opens
 the same menu, with gh's words at its top, and `f` opens it on any row. Each choice is one
 key, `esc` leaves the menu, and no choice exits prs. prs reads no merge state from
-Bitbucket, so a Bitbucket row has no menu, and `m` there asks to merge as before.
+Bitbucket, so a Bitbucket row has no menu, and `m` there asks to merge.
 
 - **Conflicts** name the files that conflict, which `git merge-tree` reads before anything
   is checked out. `n` resolves them in nvim. prs adds a worktree of the checkout under
-  `worktree_root`, as `<checkout's directory>/pr-<number>`, detached at the pull request's
-  head, so no branch checked out elsewhere moves. It merges `origin/<base>` into it, then
-  hands the terminal to nvim's `:DiffviewOpen`. Once nvim exits with nothing left
+  `worktree_root`, as `<checkout's directory>/pr-<number>-merge`, detached at the pull
+  request's head, so no branch checked out elsewhere moves. It merges `origin/<base>` into
+  it, then hands the terminal to nvim's `:DiffviewOpen`. Once nvim exits with nothing left
   unmerged, prs shows the merge's changes and asks to commit it and push it to the head
   branch, enter meaning yes, then removes the worktree. The push is a plain one, so it fails
-  rather than overwrites where the branch moved. With paths left unmerged it offers nvim
-  again, `git merge --abort`, or a fix of your own, and the merge waits in the worktree
-  until one of them, so `f` then `n` opens it again. `x` closes the pull request, after
-  asking.
+  rather than overwrites where the branch moved, and the footer names git's refusal. With
+  paths left unmerged it offers nvim again, `git merge --abort`, or a fix of your own. A
+  merge not pushed, by choice or because the push failed, waits in the worktree resolved
+  as far as it got, so `f` then `n` opens it again. A head branch in a fork gets no `n`,
+  because prs pushes only to origin. `x` closes the pull request, after asking.
+- **A worktree a merge left** is named in the menu of any row it belongs to, and `a` aborts
+  its merge and removes it. So `f` on a row that reads ready offers that too, as when the
+  conflict was fixed somewhere else.
 - **A branch behind its base** updates with `u`, which is `gh pr update-branch`. GitHub
   merges the base into it, and its checks run again.
 - **Failing checks** are named. `l` reads the failed jobs' log full screen, from `gh run
@@ -323,7 +327,7 @@ afterwards, so a window prs did not open reads running only where no round has f
 A merge fix in the config adds a choice to the fix menu, for the kinds of blocker it names:
 
 ```yaml
-worktree_root: ~/worktrees
+worktree_root: ~/.worktrees
 merge_fixes:
   - key: c
     label: hand to claude
@@ -334,8 +338,8 @@ merge_fixes:
     row_reads: claude fixing
 ```
 
-`blockers` names some of `conflicts`, `behind`, `failing-checks` and `draft`. The command
-runs in a tmux window opened behind the board, in the checkout, so the board stays in
+`blockers` names the kinds of blocker it is offered for, which `prs config path --help`
+lists. The command runs in a tmux window opened behind the board, in the checkout, so the board stays in
 front. The row reads `row_reads`, or `fixing`, while the window is open. `window` takes the
 window action's placeholders, so the board finds the window from the row. `command` also
 takes `{path}`, the checkout, `{worktree}`, where a merge waits in one, `{head}` and
@@ -343,8 +347,8 @@ takes `{path}`, the checkout, `{worktree}`, where a merge waits in one, `{head}`
 checks' log. Each is empty where it does not apply. A branch name can hold `;` or `$`, so
 prs quotes the paths and branches for the shell itself. A command that puts one of them
 inside quotes of its own is refused, because prs's quotes would end its quotes rather than
-nest in them. A fix may not take a key the menu offers itself: `n`, `x`, `u`, `l`, `r`, `m`
-or `a`.
+nest in them. A fix may not take a key the menu offers itself, and `prs config show` names
+a fix that does with the keys the menu keeps.
 
 `worktree_root` is `$XDG_DATA_HOME/prs/worktrees` where the config does not say.
 

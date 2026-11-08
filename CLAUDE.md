@@ -125,15 +125,26 @@ own `Sources`, as the Summary tab does, so a read is not made twice.
   again first, because the listing's merge state can be minutes old, and asks to merge
   where the new read is ready. A refused merge reads it again too, and puts gh's words over
   the menu. Each menu choice is one key, and a menu built of nothing says why instead. No
-  choice exits prs. A host with no merge state has no menu.
+  choice exits prs. A host with no merge state has no menu. `RefusedFix` keeps a merge
+  fix off `menuKeys`, and `askFix` opens no menu offering one key twice, so a built-in key
+  `menuKeys` misses shows on the footer rather than hiding a choice.
+- **What a merge state means is `mergeMeanings`' alone**: its word, whether it is ready, and
+  the blocker the fix menu offers fixes for. `mergeStateOf` reads a draft as DRAFT and a
+  conflict as DIRTY whatever else GitHub reports, for the row's word and `blockerOf` alike.
 - **A conflict is resolved in a worktree detached at the pull request's head**, at
-  `<worktree_root>/<checkout's directory>/pr-<n>`, never on its branch, because the branch
-  is often checked out in another worktree and a local branch can hold commits nobody
-  pushed. Its merge is `origin/<base>` into the head, never a rebase, and its push a plain
-  `HEAD:refs/heads/<branch>`, which fails rather than overwrites where the branch moved. A
-  merge left unmerged waits in the worktree, and `f` then `n` opens it again rather than
-  merging twice. The commit runs the repo's hooks, so it waits up to `hooksTimeout`.
-- **A merge fix's command quotes `ShellQuotedPlaceholders` for the shell**, because a
+  `<worktree_root>/<checkout's directory>/pr-<n>-merge`, never on its branch, because the
+  branch is often checked out in another worktree and a local branch can hold commits
+  nobody pushed. `-merge` keeps it apart from a `pr-<n>` worktree another tool keeps, and
+  `Start` leaves alone a worktree it finds on a branch. Its merge is `origin/<base>` into
+  the head, never a rebase, and its push a plain `HEAD:refs/heads/<branch>`, which fails
+  rather than overwrites where the branch moved. A merge not pushed waits in the worktree,
+  and `f` then `n` opens it again rather than merging twice. A refused push takes the
+  commit back, through `uncommit`, so the merge is under way again, resolved. The commit
+  runs the repo's hooks, so it waits up to `hooksTimeout`. A head branch in a fork,
+  `HeadInFork`, gets no `n`, because the push goes to origin.
+- **A worktree a merge left is found on every menu**, whatever blocks the pull request or
+  where nothing does, so `a` can remove it once the conflict is fixed somewhere else.
+- **A merge fix's command quotes the placeholders declared in `quotedPlaceholders`**, because a
   branch name can hold `;` or `$`, and the config refuses a command that puts one inside
   quotes, where prs's quotes would end the command's. The rest are a number, a repo or a
   blocker kind, filled bare, so `'/review-pr {number}'` keeps working. A fix's window opens

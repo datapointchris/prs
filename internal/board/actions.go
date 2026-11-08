@@ -401,14 +401,32 @@ func (b *Board) merge(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd
 
 // askMerge is merge's question.
 func (b *Board) askMerge(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
-	provider, why := b.mergeable(pr)
+	merge, why := b.mergeOf(pr)
 	if why != "" {
 		m.Say(refused(pr, "merge", why).Error())
 		return nil
 	}
-	head, _ := b.pinFor(pr)
-	b.ask(m, pr, "merge", true, b.mergeWork(pr, provider, head))
+	b.ask(m, pr, "merge", true, merge.work)
 	return nil
+}
+
+// pinnedMerge is a merge of a pull request ready to start: its work, through provider, pinned
+// to head, which came from where from says.
+type pinnedMerge struct {
+	work       work
+	provider   pullrequests.Provider
+	head, from string
+}
+
+// mergeOf is the merge every key starts, pinned through pinFor, or why no key may merge the
+// pull request now.
+func (b *Board) mergeOf(pr pullrequests.PullRequest) (pinnedMerge, string) {
+	provider, why := b.mergeable(pr)
+	if why != "" {
+		return pinnedMerge{}, why
+	}
+	head, from := b.pinFor(pr)
+	return pinnedMerge{work: b.mergeWork(pr, provider, head), provider: provider, head: head, from: from}, ""
 }
 
 // mergeable is the provider that merges the pull request, or why no key may merge it now.
@@ -599,14 +617,14 @@ func (b *Board) mergeInTurn(m *gotermboard.Model, queue []pullrequests.PullReque
 		tally.left = append(tally.left, name+": "+why)
 		return b.mergeInTurn(m, rest, tally)
 	}
-	provider, why := b.mergeable(pr)
+	pinned, why := b.mergeOf(pr)
 	if why != "" {
 		return next(m, why)
 	}
-	head, from := b.pinFor(pr)
+	provider, head, from := pinned.provider, pinned.head, pinned.from
 	ref := pullrequests.Reference{Provider: pr.Provider, Slug: pr.Slug, Number: pr.Number}
 	mergedHeads := maps.Clone(tally.heads)
-	w := b.mergeWork(pr, provider, head)
+	w := pinned.work
 	merge, merged := w.run, w.done
 	w.doing = fmt.Sprintf("merging %s, %d of %d", name, tally.of-len(rest), tally.of)
 	w.run = func(ctx context.Context) error {

@@ -43,7 +43,7 @@ exists. The file is YAML:
     list: [recap, list]
     show: [recap, show, "--{kind}", "{label}"]
     write: [recap, write, "--{kind}", "{label}"]
-  worktree_root: ~/worktrees
+  worktree_root: ~/.worktrees
   merge_fixes:
     - key: c
       label: hand to claude
@@ -85,10 +85,9 @@ recaps names the three commands prs tui's recaps tab runs, each an argv run with
 so one that pipes runs through sh -c. list prints the windows a recap is written for, in
 the order the tab draws them, one a line as its kind and its label, such as day 2026-11-06,
 and prs reads nothing else it prints. show prints one window's recap as markdown. write
-writes one, a
-model call, and may be left out. %[5]s in show and write are filled in from the window.
-needs are the programs the commands run beyond each one's first, and a machine missing one
-draws no recaps tab, as a config naming no list does.
+writes one, a model call, and may be left out. %[5]s in show and
+write are filled in from the window. needs are the programs the commands run beyond each
+one's first, and a machine missing one draws no recaps tab, as a config naming no list does.
 
 f, or m on a pull request GitHub will not merge, opens a menu of fixes for what blocks it.
 Resolving a conflict merges the base into a worktree of the checkout, detached at the pull
@@ -113,7 +112,7 @@ for the shell itself, and a command that puts one inside quotes of its own is re
   %[8]s`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds()),
 			pullrequests.ReposPerSearch, config.DefaultDiffSectionMaxLines, strings.Join(config.RecapPlaceholders(), " and "),
 			strings.Join(config.BlockerKinds, ", "), strings.Join(config.FixPlaceholders(), ", "),
-			strings.Join(config.ShellQuotedPlaceholders, ", ")),
+			strings.Join(config.ShellQuotedPlaceholders(), ", ")),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := config.Path()

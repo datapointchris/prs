@@ -47,10 +47,16 @@ type MergeWorktree struct {
 	Branch string
 }
 
-// MergeWorktreeAt is where the fix menu merges the target's base in: pr-<number> in the
-// directory under root named for the checkout's own directory.
+// MergeWorktreeAt is where the fix menu merges the target's base in: pr-<number>-merge in the
+// directory under root named for the checkout's own directory. A tool keeping its own
+// worktree of the pull request beside it more likely names it pr-<number>.
 func MergeWorktreeAt(root string, t LocalDiff, branch string) MergeWorktree {
-	return MergeWorktree{Target: t, Path: filepath.Join(root, filepath.Base(t.Checkout), "pr-"+strconv.Itoa(t.Number)), Branch: branch}
+	return MergeWorktree{Target: t, Path: filepath.Join(root, filepath.Base(t.Checkout), "pr-"+strconv.Itoa(t.Number)+"-merge"), Branch: branch}
+}
+
+// message is the merge commit's message, as git merge words its own.
+func (w MergeWorktree) message() string {
+	return fmt.Sprintf("Merge branch '%s' into %s", w.Target.Base, w.Branch)
 }
 
 // Exists says something is at the worktree's path.
@@ -63,8 +69,9 @@ func (w MergeWorktree) Exists() bool {
 // there, and says whether a merge is then under way. None is where head already holds the base,
 // and the worktree goes again. A merge already under way there, left by an earlier Start, is
 // kept as it is. A worktree with no merge under way is moved to head, unless it holds changes,
-// which are refused rather than lost. The merge stops before committing, conflicts or not, so
-// the person sees it in nvim before it is pushed.
+// which are refused rather than lost, or sits on a branch, which is no worktree prs added. The
+// merge stops before committing, conflicts or not, so the person sees it in nvim before it is
+// pushed.
 func (w MergeWorktree) Start(ctx context.Context, head string) (bool, error) {
 	lock := checkoutLock(w.Target.Checkout)
 	lock.Lock()
@@ -77,6 +84,9 @@ func (w MergeWorktree) Start(ctx context.Context, head string) (bool, error) {
 	case registered && w.merging(ctx):
 		return true, nil
 	case registered:
+		if branch, _, err := run(ctx, w.Path, "git", "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+			return false, fmt.Errorf("%s is a worktree on %s, which prs did not add, so prs leaves it as it is", w.Path, strings.TrimSpace(string(branch)))
+		}
 		if changed, err := w.git(ctx, "status", "--porcelain"); err != nil || len(changed) > 0 {
 			return false, fmt.Errorf("%s holds changes and no merge is under way there, so prs leaves it as it is: %v", w.Path, orNothing(err, "commit or remove them"))
 		}
@@ -93,8 +103,7 @@ func (w MergeWorktree) Start(ctx context.Context, head string) (bool, error) {
 			return false, fmt.Errorf("could not add a worktree for #%d at %s: %w", w.Target.Number, w.Path, err)
 		}
 	}
-	message := fmt.Sprintf("Merge branch '%s' into %s", w.Target.Base, w.Branch)
-	_, said, err := run(ctx, w.Path, "git", "merge", "--quiet", "--no-ff", "--no-commit", "-m", message, "origin/"+w.Target.Base)
+	_, said, err := run(ctx, w.Path, "git", "merge", "--quiet", "--no-ff", "--no-commit", "-m", w.message(), "origin/"+w.Target.Base)
 	merging := w.merging(ctx)
 	switch {
 	case err != nil && !merging:
@@ -156,14 +165,16 @@ type Pushed struct {
 
 // CommitAndPush commits the merge under way, through the repo's own hooks, and pushes it to the
 // head branch on origin, then removes the worktree. The commit sits on top of the head, so the
-// push is a plain one, which origin refuses where someone pushed to the branch since. The
-// message is the merge's own, its commented conflict list stripped. A commit or push that
-// fails leaves the worktree as it was, for nvim to open again.
+// push is a plain one, which origin refuses where someone pushed to the branch since. A commit
+// or push that fails leaves the merge under way as it was, resolved, for nvim to open again.
 func (w MergeWorktree) CommitAndPush(ctx context.Context) (Pushed, error) {
-	if _, err := RunWithin(ctx, hooksTimeout, w.Path, "git", "commit", "--quiet", "--no-edit", "--cleanup=strip"); err != nil {
+	if _, err := RunWithin(ctx, hooksTimeout, w.Path, "git", "commit", "--quiet", "-m", w.message()); err != nil {
 		return Pushed{}, fmt.Errorf("git could not commit the merge in %s: %w", w.Path, err)
 	}
 	if _, err := RunWithin(ctx, hooksTimeout, w.Path, "git", "push", "--quiet", "origin", "HEAD:refs/heads/"+w.Branch); err != nil {
+		if undo := w.uncommit(ctx); undo != nil {
+			return Pushed{}, fmt.Errorf("git could not push the merge in %s to %s: %w, and the merge stays committed there, unpushed, because git could not take the commit back: %w", w.Path, w.Branch, err, undo)
+		}
 		return Pushed{}, fmt.Errorf("git could not push the merge in %s to %s: %w", w.Path, w.Branch, err)
 	}
 	out, err := w.git(ctx, "rev-parse", "HEAD")
@@ -177,12 +188,38 @@ func (w MergeWorktree) CommitAndPush(ctx context.Context) (Pushed, error) {
 	return pushed, nil
 }
 
-// Abort abandons the merge under way and removes the worktree.
-func (w MergeWorktree) Abort(ctx context.Context) error {
-	if _, err := w.git(ctx, "merge", "--abort"); err != nil {
-		return fmt.Errorf("git could not abort the merge in %s: %w", w.Path, err)
+// uncommit takes the merge commit back off the worktree's HEAD and leaves the merge under way
+// again, its resolution staged, so a push origin refused loses none of it. git refuses a soft
+// reset during a merge, and refuses update-ref on MERGE_HEAD, so MERGE_HEAD is written after
+// the reset, where git merge writes it.
+func (w MergeWorktree) uncommit(ctx context.Context) error {
+	revs, err := w.git(ctx, "rev-parse", "HEAD", "HEAD^2")
+	if err != nil {
+		return err
 	}
-	return w.Remove(ctx)
+	where, err := w.git(ctx, "rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD")
+	if err != nil {
+		return err
+	}
+	commit, merged, _ := strings.Cut(strings.TrimSpace(string(revs)), "\n")
+	if _, err := w.git(ctx, "reset", "--quiet", "--soft", "HEAD^"); err != nil {
+		return err
+	}
+	if err := os.WriteFile(strings.TrimSpace(string(where)), []byte(merged+"\n"), 0o644); err != nil {
+		return fmt.Errorf("its resolution is staged, and the merge commit is %s, because %w", commit, err)
+	}
+	return nil
+}
+
+// Abort abandons any merge under way and removes the worktree, and says whether a merge was.
+func (w MergeWorktree) Abort(ctx context.Context) (bool, error) {
+	merging := w.merging(ctx)
+	if merging {
+		if _, err := w.git(ctx, "merge", "--abort"); err != nil {
+			return true, fmt.Errorf("git could not abort the merge in %s: %w", w.Path, err)
+		}
+	}
+	return merging, w.Remove(ctx)
 }
 
 // Remove removes the worktree from the checkout, which git refuses while it holds changes.

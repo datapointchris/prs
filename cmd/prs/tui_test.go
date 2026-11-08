@@ -461,8 +461,9 @@ esac
 'merge-tree --write-tree') printf '%%s\n' 4b825dc642cb6eb9a060e54bf8d69288fbee4904 cache/cache.go cache/stats.go '' 'CONFLICT (content): Merge conflict in cache/cache.go'; exit 1 ;;
 'worktree add') mkdir -p "$5"; printf 'worktree %%s\n' "$5" >> %[1]q; exit 0 ;;
 'worktree list') cat %[1]q 2>/dev/null; exit 0 ;;
-'worktree remove') rm -rf "$3"; exit 0 ;;
+'worktree remove') rm -rf "$3"; sed -i "\#^worktree $3\$#d" %[1]q; exit 0 ;;
 'merge --quiet') exit 1 ;;
+'symbolic-ref --quiet') exit 1 ;;
 esac
 case "$*" in
 *--diff-filter=U*) cat %[2]q 2>/dev/null; exit 0 ;;
@@ -997,7 +998,10 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtO
 	term.WaitFor("fix acme/gadget #5 — Tidy the gadget?")
 	term.Press("esc")
 
-	term.Press("g", "j", "j", "j", "j", "m", "enter")
+	// The listing reads #13 conflicting, so m reads it again before it asks.
+	term.Press("g", "j", "j", "j", "j", "m")
+	term.WaitFor("merge acme/widget #13 — Count cache hits? [Y/n]")
+	term.Press("enter")
 	term.WaitFor("gh could not merge #13: X Pull request acme/widget#13 is not mergeable")
 	term.Press("x")
 	term.WaitFor("close acme/widget #13 — Count cache hits? [y/N]")
@@ -1074,12 +1078,12 @@ func TestARefusedMergeOpensTheFixMenuOnItsConflictsWhichResolveInAWorktreeAndPus
 		t.Error("the menu should name the conflicting files from git merge-tree, against the base")
 	}
 
-	worktree := filepath.Join(s.worktrees, "widget", "pr-13")
+	worktree := filepath.Join(s.worktrees, "widget", "pr-13-merge")
 	if err := os.WriteFile(s.unmerged, []byte("cache/cache.go\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	term.Press("n")
-	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13:")
+	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-merge:")
 	if !s.ran(t, "git", "cwd="+s.checkout, "worktree", "add", "--quiet", "--detach", worktree) ||
 		!s.ran(t, "git", "cwd="+worktree, "merge", "--quiet", "--no-ff", "--no-commit", "-m", "Merge branch 'add-cache' into cache-metrics", "origin/add-cache") ||
 		!s.ran(t, "nvim", "cwd="+worktree, "-c") {
@@ -1097,13 +1101,32 @@ func TestARefusedMergeOpensTheFixMenuOnItsConflictsWhichResolveInAWorktreeAndPus
 		t.Fatal(err)
 	}
 	term.Press("f")
-	term.WaitFor("A merge of origin/add-cache into it waits in ~/worktrees/widget/pr-13.")
+	term.WaitFor("A merge of origin/add-cache into it waits in ~/worktrees/widget/pr-13-merge.")
 	term.Press("n")
 	term.WaitFor("commit it and push it to cache-metrics? [Y/n]")
 	term.Press("enter")
 	term.WaitFor("pushed 1a2b3c4 to cache-metrics")
 	if !s.ran(t, "git", "cwd="+worktree, "push", "--quiet", "origin", "HEAD:refs/heads/cache-metrics") || fileExists(worktree) {
 		t.Error("enter should push the merge to the head branch, then remove the worktree")
+	}
+
+	// A merge left waiting, once the pull request reads ready, is still offered for removal.
+	if err := os.WriteFile(s.unmerged, []byte("cache/cache.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	term.Press("f")
+	term.WaitFor("n c x chooses  esc cancels")
+	term.Press("n")
+	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-merge:")
+	term.Press("esc")
+	s.github.readsAs(13, "CLEAN")
+	term.Press("f")
+	term.WaitFor("A merge of origin/add-cache into it waits in ~/worktrees/widget/pr-13-merge.")
+	term.WaitFor("a chooses  esc cancels")
+	term.Press("a")
+	term.WaitFor("aborted the merge of origin/add-cache into acme/widget #13 and removed ~/worktrees/widget/pr-13-merge")
+	if !s.ran(t, "git", "cwd="+worktree, "merge", "--abort") || fileExists(worktree) {
+		t.Error("a should abort the merge left waiting, then remove the worktree")
 	}
 	term.Press("q")
 	if code := term.WaitExit(); code != 0 {

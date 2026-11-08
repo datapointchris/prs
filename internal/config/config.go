@@ -270,15 +270,23 @@ var rowPlaceholders = placeholderSet[Fields]{
 	"{slug}":   func(f Fields) string { return f.Slug },
 }
 
-// fixPlaceholders fills each name a merge fix's Command may hold: the row's, and these.
-var fixPlaceholders = rowPlaceholders.with(placeholderSet[Fields]{
+// fixPlaceholders fills each name a merge fix's Command may hold: the row's, the blocker's
+// kind, and quotedPlaceholders.
+var fixPlaceholders = rowPlaceholders.with(quotedPlaceholders).with(placeholderSet[Fields]{
+	"{blocker}": func(f Fields) string { return f.Blocker },
+})
+
+// quotedPlaceholders fill the values that come from outside prs, a path or a branch, which
+// FillCommand quotes for the shell and a Command may not put inside quotes of its own. A name
+// declared here is quoted, and the rest, a number, a repo or a blocker kind, are filled as
+// they are.
+var quotedPlaceholders = placeholderSet[Fields]{
 	"{path}":     func(f Fields) string { return f.Path },
 	"{worktree}": func(f Fields) string { return f.Worktree },
 	"{head}":     func(f Fields) string { return f.Head },
 	"{base}":     func(f Fields) string { return f.Base },
-	"{blocker}":  func(f Fields) string { return f.Blocker },
 	"{log}":      func(f Fields) string { return f.Log },
-})
+}
 
 // Placeholders are the names a window action's Window and Command, and a merge fix's Window,
 // take, sorted.
@@ -286,6 +294,9 @@ func Placeholders() []string { return rowPlaceholders.names() }
 
 // FixPlaceholders are the names a merge fix's Command takes, sorted.
 func FixPlaceholders() []string { return fixPlaceholders.names() }
+
+// ShellQuotedPlaceholders are the names among FixPlaceholders that FillCommand quotes, sorted.
+func ShellQuotedPlaceholders() []string { return quotedPlaceholders.names() }
 
 // Fill puts a pull request's fields into a Window, which tmux takes as a name.
 func Fill(template string, fields Fields) string { return fixPlaceholders.fill(template, fields) }
@@ -295,17 +306,12 @@ func Fill(template string, fields Fields) string { return fixPlaceholders.fill(t
 // can open a pull request names one.
 func FillCommand(template string, fields Fields) string {
 	return fixPlaceholders.fillAs(template, fields, func(name, value string) string {
-		if slices.Contains(ShellQuotedPlaceholders, name) {
+		if _, quoted := quotedPlaceholders[name]; quoted {
 			return shellQuoted(value)
 		}
 		return value
 	})
 }
-
-// ShellQuotedPlaceholders are the names whose values come from outside prs, a path or a
-// branch, so FillCommand quotes each and a Command may not put one inside quotes of its own.
-// The rest are a number, a repo or a blocker kind, filled as they are.
-var ShellQuotedPlaceholders = []string{"{base}", "{head}", "{log}", "{path}", "{worktree}"}
 
 // placeholderSet is the names a templated value may hold, each filled from fields of F. Every
 // templated key in the file matches, fills and refuses its names through one, so the keys
@@ -637,7 +643,7 @@ func (f MergeFix) check() error {
 	if err := rowPlaceholders.check(f.Window, f.Window); err != nil {
 		return err
 	}
-	if name := insideQuotes(f.Command, ShellQuotedPlaceholders); name != "" {
+	if name := insideQuotes(f.Command, ShellQuotedPlaceholders()); name != "" {
 		return fmt.Errorf("command puts %s inside quotes, and prs quotes it already, so it goes outside them", name)
 	}
 	return fixPlaceholders.check(f.Command, f.Command)

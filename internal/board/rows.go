@@ -60,6 +60,11 @@ type meaning struct {
 	// ready is a merge state that merges on its own, which space marks, and computing one
 	// GitHub has not worked out yet, which a batch reads again.
 	ready, computing bool
+	// blocker is what the fix menu offers fixes for in a merge state, and checksBlock says a
+	// failing check is the blocker there instead. mergesFailing is one GitHub merges with
+	// its checks failing, because none of them is required.
+	blocker                    blocker
+	checksBlock, mergesFailing bool
 }
 
 // checkMeanings covers a rollup on a row and one check run or commit status in the
@@ -106,12 +111,27 @@ func reviewMeaning(state string) meaning {
 var mergeMeanings = map[string]meaning{
 	"CLEAN":     {word: "ready", code: gotermboard.Green, ready: true},
 	"HAS_HOOKS": {word: "ready", code: gotermboard.Green, ready: true},
-	"UNSTABLE":  {word: "mergeable", code: gotermboard.Yellow},
-	"BEHIND":    {word: "behind", code: gotermboard.Cyan},
-	"BLOCKED":   {word: "blocked"},
-	"DIRTY":     {word: "conflicts", code: gotermboard.Yellow},
-	"DRAFT":     {word: "draft", code: dim},
-	"UNKNOWN":   {word: "unknown", code: dim, computing: true},
+	"UNSTABLE":  {word: "mergeable", code: gotermboard.Yellow, checksBlock: true, mergesFailing: true},
+	"BEHIND":    {word: "behind", code: gotermboard.Cyan, blocker: behindBlocker},
+	"BLOCKED":   {word: "blocked", blocker: heldBlocker, checksBlock: true},
+	"DIRTY":     {word: "conflicts", code: gotermboard.Yellow, blocker: conflictsBlocker},
+	"DRAFT":     {word: "draft", code: dim, blocker: draftBlocker},
+	"UNKNOWN":   {word: "unknown", code: dim, computing: true, blocker: computingBlocker},
+}
+
+// mergeStateOf is the merge state the row reads as: DRAFT for a draft and DIRTY for a
+// conflict, whatever else GitHub reports, because fixing either runs every check again, and
+// empty for a host that reports none.
+func mergeStateOf(pr pullrequests.PullRequest) string {
+	switch {
+	case pr.Draft:
+		return "DRAFT"
+	case pr.Mergeable != nil && *pr.Mergeable == "CONFLICTING":
+		return "DIRTY"
+	case pr.MergeStateStatus == nil:
+		return ""
+	}
+	return *pr.MergeStateStatus
 }
 
 // standingMeanings cover a row that waits on nobody. Merged and closed are GitHub's colors,
@@ -127,20 +147,17 @@ var standingMeanings = map[rowState]meaning{
 // not there reads as its own words, because GitHub adds states. A host that carries no merge
 // state reads open, dim, because it says no more than the group does.
 func stateMeaning(pr pullrequests.PullRequest, state rowState) meaning {
+	merge := mergeStateOf(pr)
 	switch {
 	case state != "":
 		return standingMeanings[state]
-	case pr.Draft:
-		return mergeMeanings["DRAFT"]
-	case pr.Mergeable != nil && *pr.Mergeable == "CONFLICTING":
-		return mergeMeanings["DIRTY"]
-	case pr.MergeStateStatus == nil:
+	case merge == "":
 		return meaning{word: "open", code: dim}
 	}
-	if m, known := mergeMeanings[*pr.MergeStateStatus]; known {
+	if m, known := mergeMeanings[merge]; known {
 		return m
 	}
-	return meaning{word: words(*pr.MergeStateStatus)}
+	return meaning{word: words(merge)}
 }
 
 // words is an enum as words, CHANGES_REQUESTED as "changes requested".

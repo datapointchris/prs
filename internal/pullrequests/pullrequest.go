@@ -35,13 +35,17 @@ type PullRequest struct {
 	Author string `json:"author"`
 	// Bot is true where the provider says an app opened it, and null where its listing
 	// does not say.
-	Bot       *bool     `json:"bot"`
-	Body      string    `json:"body"`
-	URL       string    `json:"url"`
-	Branch    string    `json:"branch"`
-	Base      string    `json:"base"`
-	Draft     bool      `json:"draft"`
-	CreatedAt time.Time `json:"created_at"`
+	Bot    *bool  `json:"bot"`
+	Body   string `json:"body"`
+	URL    string `json:"url"`
+	Branch string `json:"branch"`
+	Base   string `json:"base"`
+	Draft  bool   `json:"draft"`
+	// HeadInFork says the head branch is in another repo than the pull request's, which
+	// origin is not, so the fix menu pushes no merge to it. Bitbucket's listing does not say,
+	// so it stays out of --json rather than reading false there.
+	HeadInFork bool      `json:"-"`
+	CreatedAt  time.Time `json:"created_at"`
 	// The diff counts are null, never 0, from a provider whose listing does not count
 	// them. A pull request nobody counted is not one that changed nothing.
 	Additions    *int `json:"additions"`
@@ -222,7 +226,7 @@ func lastLineOf(path string) string {
 	return strings.TrimSpace(lines[len(lines)-1])
 }
 
-// run runs a client with stdin closed and returns its stdout, and stderr's first line on
+// run runs a client with stdin closed and returns its stdout, and failureLine of its stderr on
 // a failure. git and ssh ask on the terminal itself rather than on stdin, so the client runs
 // in a session of its own, with no terminal to open, and git's prompt is turned off as well.
 // At the timeout its whole process group is killed, ssh included.
@@ -252,10 +256,22 @@ func runFor(ctx context.Context, within time.Duration, dir string, name string, 
 		if said == "" {
 			said = strings.TrimSpace(string(out))
 		}
-		first, _, _ := strings.Cut(said, "\n")
-		return out, first, err
+		return out, failureLine(said), err
 	}
 	return out, "", nil
+}
+
+// failureLine is the line of what a client said that names its failure: the first naming a
+// ref git refused, as ` ! [rejected] HEAD -> main (fetch first)` under a push's `To <remote>`,
+// and otherwise the first.
+func failureLine(said string) string {
+	for line := range strings.Lines(said) {
+		if refused, ok := strings.CutPrefix(strings.TrimSpace(line), "! "); ok {
+			return "! " + strings.Join(strings.Fields(refused), " ")
+		}
+	}
+	first, _, _ := strings.Cut(said, "\n")
+	return first
 }
 
 // Finish sets each pull request's age and its repo's checkout, and sorts them oldest
