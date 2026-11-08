@@ -10,7 +10,7 @@ require (
 	github.com/cli/go-gh/v2 v2.17.0
 	github.com/datapointchris/goclikit v0.5.3
 	github.com/datapointchris/goselfupdate v0.11.2
-	github.com/datapointchris/gotermboard v0.39.1-0.20261108164747-056debbeab1a
+	github.com/datapointchris/gotermboard v0.42.0
 	github.com/datapointchris/gotermstyle v0.5.0
 	github.com/datapointchris/tuidrive v0.1.3
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
