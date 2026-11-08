@@ -1,0 +1,153 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/datapointchris/tuidrive"
+
+	"github.com/datapointchris/prs/internal/board"
+)
+
+// standIn is prs run against a stand-in gh answering testdata/search.json, a stand-in bbkt
+// answering testdata/bbkt-list.json, and a stand-in tmux and claude that each record their
+// arguments, so no test reads a real account or starts a real Claude.
+type standIn struct {
+	env      map[string]string
+	checkout string
+	recorded string
+}
+
+func newStandIn(t *testing.T) standIn {
+	t.Helper()
+	dir := t.TempDir()
+	answer, err := filepath.Abs(filepath.Join("testdata", "search.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := filepath.Abs(filepath.Join("testdata", "bbkt-list.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := standIn{checkout: filepath.Join(dir, "widget"), recorded: filepath.Join(dir, "recorded")}
+	bin := filepath.Join(dir, "bin")
+	for _, d := range []string{bin, s.checkout, filepath.Join(dir, "ledger"), filepath.Join(dir, "config", "prs")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scripts := map[string]string{
+		"gh":     fmt.Sprintf("#!/bin/sh\ncat %q\n", answer),
+		"bbkt":   fmt.Sprintf("#!/bin/sh\ncat %q\n", listed),
+		"tmux":   fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' tmux \"$@\" >> %q\n", s.recorded),
+		"claude": fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' claude \"$@\" >> %q\n", s.recorded),
+	}
+	for name, script := range scripts {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry := fmt.Sprintf(`{"repos": [
+		{"name": "widget", "owner": "acme", "path": %q, "status": "active"},
+		{"name": "gadget", "owner": "acme", "path": %q, "status": "active"},
+		{"name": "ledger", "owner": "FIN", "path": %q, "status": "active", "provider": "bitbucket"}
+	]}`, s.checkout, filepath.Join(dir, "gadget"), filepath.Join(dir, "ledger"))
+	config := fmt.Sprintf(`repos_registry: %s
+window_actions:
+  - key: r
+    label: claude review
+    needs: [claude]
+    providers: [github]
+    window: "review {repo} #{number}"
+    command: claude '/review-pr {number}'
+`, filepath.Join(dir, "repos.json"))
+	files := map[string]string{filepath.Join(dir, "repos.json"): registry, filepath.Join(dir, "config", "prs", "config.yml"): config}
+	for path, body := range files {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.env = map[string]string{
+		"PATH":            bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"XDG_CONFIG_HOME": filepath.Join(dir, "config"),
+		"TMUX":            filepath.Join(dir, "tmux") + ",1,0",
+	}
+	return s
+}
+
+func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.T) {
+	s := newStandIn(t)
+	cmd := exec.Command(tuidrive.Build(t, "."), "tui", "--json")
+	for name, value := range s.env {
+		cmd.Env = append(cmd.Env, name+"="+value)
+	}
+	cmd.Env = append(cmd.Env, "HOME="+t.TempDir())
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("prs tui --json: %v", err)
+	}
+	var snap board.Snapshot
+	if err := json.Unmarshal(out, &snap); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, row := range snap.PullRequests {
+		stacked := 0
+		if row.StackedOn != nil {
+			stacked = *row.StackedOn
+		}
+		bot := "unknown"
+		if row.Bot != nil {
+			bot = fmt.Sprint(*row.Bot)
+		}
+		got = append(got, fmt.Sprintf("%s#%d %s into %s bot=%s stacked_on=%d", row.Slug, row.Number, row.Branch, row.Base, bot, stacked))
+	}
+	// gadget#5 targets a branch only widget has. bbkt's listing types no bot.
+	want := []string{
+		"FIN/ledger#4 feature/ledger-export into develop bot=unknown stacked_on=0",
+		"acme/widget#12 add-cache into main bot=false stacked_on=0",
+		"acme/widget#13 cache-metrics into add-cache bot=true stacked_on=12",
+		"acme/gadget#5 tidy into add-cache bot=false stacked_on=0",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestTheBoardSaysEachStateInWordsOpensADescriptionAndRunsAKeyTheConfigAdds(t *testing.T) {
+	s := newStandIn(t)
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 30})
+	term.WaitFor("open · 4")
+	for _, words := range []string{"checks passing", "checks failing", "checks not run", "review required", "review 2 posted", "bot acme-automation", "Tidy the gadget (draft)", " #12"} {
+		term.WaitFor(words)
+	}
+
+	// The cursor starts on the first row of whichever provider answered first.
+	term.Press("g")
+	term.Press("j")
+	term.Press("enter")
+	term.WaitFor("Caches the widget lookups for a minute.")
+
+	term.Press("r")
+	term.WaitFor("opened review widget #12 in a tmux window")
+	recorded, err := os.ReadFile(s.recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{"tmux", "new-window", "-n", "review widget #12", "-c", s.checkout, "claude '/review-pr 12'"}, "\n")
+	// Bubble Tea runs tmux info itself to learn the terminal's colors, so the window is one
+	// call among those recorded.
+	if !strings.Contains(string(recorded), want) {
+		t.Errorf("the stand-ins recorded:\n%s\nwant:\n%s", recorded, want)
+	}
+
+	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+}

@@ -1,0 +1,30 @@
+[
+  {
+    "id": 4,
+    "version": 2,
+    "title": "Export the ledger as CSV",
+    "description": "Adds a CSV export beside the PDF one.",
+    "state": "OPEN",
+    "open": true,
+    "createdDate": 1793350800000,
+    "updatedDate": 1793437200000,
+    "fromRef": {
+      "id": "refs/heads/feature/ledger-export",
+      "displayId": "feature/ledger-export",
+      "repository": { "slug": "ledger", "project": { "key": "FIN" } }
+    },
+    "toRef": {
+      "id": "refs/heads/develop",
+      "displayId": "develop",
+      "repository": { "slug": "ledger", "project": { "key": "FIN" } }
+    },
+    "author": {
+      "user": { "name": "jdoe", "displayName": "Jane Doe", "emailAddress": "jdoe@example.com" },
+      "role": "AUTHOR",
+      "approved": false,
+      "status": "UNAPPROVED"
+    },
+    "reviewers": [],
+    "links": { "self": [ { "href": "https://bitbucket.example.com/projects/FIN/repos/ledger/pull-requests/4" } ] }
+  }
+]
