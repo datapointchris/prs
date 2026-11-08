@@ -95,15 +95,10 @@ func (b *Board) onCursor(act func(pullrequests.PullRequest) (string, error)) fun
 	})
 }
 
-// diff fetches the pull request's head into its own ref in the background, then hands prs's
-// terminal to nvim's diff against the base it targets, run in the checkout. Quitting nvim
-// gives the terminal back to the board, with the cursor where it was, and Receive reads the
-// providers again. It never checks the branch out, which would abort on uncommitted work and
-// disturb the tree where there is none. The head it fetched is the one m then pins.
-//
-// The base is the one the listing reports, because a pull request stacked on another
-// targets its parent, and a diff against main would show both as one change. The diff is
-// three-dot, from where the branch left the base, which is what the provider shows.
+// diff fetches the pull request's head and base in the background, then hands prs's terminal
+// to nvim's diff of its LocalDiff, run in the checkout. Quitting nvim gives the terminal back
+// to the board, with the cursor where it was, and Receive reads the providers again. The head
+// it fetched is the one m then pins.
 //
 // nvim listens on a socket named for the pull request, so another program can ask it what
 // is under the cursor. Inside tmux the window is named diff <repo> #<n> while nvim has it,
@@ -116,27 +111,12 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 		m.Say(err.Error())
 		return nil
 	}
-	provider, err := pullrequests.ProviderOf(pr.Provider)
-	if err != nil {
-		return refuse(err)
-	}
-	checkout, err := checkoutOf(pr)
-	if err != nil {
-		return refuse(err)
-	}
 	if missing := config.MissingPrograms([]string{"git", "nvim"}); len(missing) > 0 {
 		return refuse(fmt.Errorf("the diff needs %s, which is not installed here", strings.Join(missing, " and ")))
 	}
-	base := pr.Base
-	if base == "" {
-		base = defaultBranch(checkout)
-	}
-	if base == "" {
-		return refuse(fmt.Errorf("could not work out what #%d is based on", pr.Number))
-	}
-	head := provider.Head(pr)
-	if head == "" {
-		return refuse(fmt.Errorf("#%d in %s names no source branch to fetch", pr.Number, pr.Repo))
+	target, err := pullrequests.LocalDiffOf(context.Background(), pr)
+	if err != nil {
+		return refuse(err)
 	}
 	// run writes this and done reads it, after the message that ends the work. A base that
 	// failed to fetch still diffs against the origin/<base> fetched earlier, and the footer
@@ -147,7 +127,7 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 		doing: fmt.Sprintf("fetching %s #%d", pr.Repo, pr.Number),
 		run: func(ctx context.Context) error {
 			var err error
-			got, err = pullrequests.Fetch(ctx, pr, checkout, head, base)
+			got, err = pullrequests.Fetch(ctx, target)
 			return err
 		},
 		done: func(*gotermboard.Model) tea.Cmd {
@@ -155,10 +135,10 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 			stem := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d", pr.Repo, pr.Number))
 			socket := stem + ".sock"
 			_ = os.Remove(socket)
-			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview("origin/"+base+"..."+got.Ref))
-			nvim.Dir = checkout
+			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview(target.Range()))
+			nvim.Dir = target.Checkout
 			files := diffFilesAt(stem)
-			unwritten := files.write(pr, b.detailOf(pr), "origin/"+base, got.Head, time.Now())
+			unwritten := files.write(pr, b.detailOf(pr), "origin/"+target.Base, got.Head, time.Now())
 			if unwritten == nil {
 				nvim.Env = append(os.Environ(), files.env()...)
 			}
@@ -175,7 +155,7 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 					said = fmt.Sprintf("nvim ended the diff of #%d with %v", pr.Number, err)
 				case got.BaseFault != "":
 					said = fmt.Sprintf("closed the diff of %s #%d, which ran against the origin/%s fetched earlier, because fetching it again failed: %s",
-						pr.Repo, pr.Number, base, got.BaseFault)
+						pr.Repo, pr.Number, target.Base, got.BaseFault)
 				default:
 					said = fmt.Sprintf("closed the diff of %s #%d", pr.Repo, pr.Number)
 				}
@@ -355,7 +335,7 @@ func (b *Board) windowAction(window config.WindowAction) func(pullrequests.PullR
 			return "", fmt.Errorf("%s runs on %s pull requests, and #%d is on %s",
 				window.Label, strings.Join(window.Providers, " and "), pr.Number, pr.Provider)
 		}
-		checkout, err := checkoutOf(pr)
+		checkout, err := pullrequests.CheckoutOf(pr)
 		if err != nil {
 			return "", err
 		}
@@ -436,28 +416,6 @@ func openWindow(name, command, dir string, needs ...string) error {
 		return fmt.Errorf("tmux could not open %s: %s", name, lastLine(out, err))
 	}
 	return nil
-}
-
-// checkoutOf is the pull request's checkout on this disk, which the diff, a window action
-// and bbkt each run in.
-func checkoutOf(pr pullrequests.PullRequest) (string, error) {
-	if pr.Path == "" {
-		return "", fmt.Errorf("%s is not checked out on this machine", pr.Repo)
-	}
-	if info, err := os.Stat(pr.Path); err != nil || !info.IsDir() {
-		return "", fmt.Errorf("%s is registered at %s, which does not exist", pr.Repo, pr.Path)
-	}
-	return pr.Path, nil
-}
-
-// defaultBranch is the branch origin's HEAD names, for a provider whose listing reports no
-// base.
-func defaultBranch(checkout string) string {
-	out, err := exec.Command("git", "-C", checkout, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
 }
 
 // lastLine is the last thing a failed command said, or its exit status where it said nothing.

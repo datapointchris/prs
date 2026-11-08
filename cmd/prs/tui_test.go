@@ -514,9 +514,8 @@ func TestTheBoardSortsPeopleAboveBotsAndClosedBelowInWordsShowsTheDocumentBeside
 }
 
 // A small pull request's diff reads whole in its document, a file to a heading the Reader's
-// ] lands on, diffed in the checkout where its repo is cloned and sent by GitHub where it is
-// not. A large one's section names its size and d, and its head is never fetched. Nothing
-// here starts nvim.
+// ] lands on, sent by GitHub, or diffed in its checkout for Bitbucket, whose client has no
+// diff. A large one's section names its size and d. Nothing here starts nvim.
 func TestTheDiffSectionShowsASmallDiffWholeAndNamesALargeOnesSize(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
@@ -526,12 +525,14 @@ func TestTheDiffSectionShowsASmallDiffWholeAndNamesALargeOnesSize(t *testing.T) 
 
 	// The people's rows run ledger #4, widget #12 and gadget #5, oldest first, under their
 	// header, and widget #13 sits under the bots'.
-	term.Press("g", "j", "j")
+	term.Press("g", "j")
+	term.WaitFor("5 lines changed in 1 file at 1a2b3c4, read in the checkout here.")
+	term.Press("j")
 	term.WaitFor("1017 lines changed, more than the 300 this section shows whole. d opens the whole diff in nvim.")
 	term.Press("j")
 	term.WaitFor("8 lines changed in 1 file at 0f1e2d3, read from github.")
 	term.Press("j", "j")
-	term.WaitFor("27 lines changed in 3 files at 1a2b3c4, read in the checkout here.")
+	term.WaitFor("27 lines changed in 3 files at a1b2c3d, read from github.")
 
 	// Full screen, ] lands on each heading: Description, Checks, Files and Diff, then a file each.
 	term.Press("enter")
@@ -549,8 +550,14 @@ func TestTheDiffSectionShowsASmallDiffWholeAndNamesALargeOnesSize(t *testing.T) 
 	if s.ran(t, "nvim") {
 		t.Error("reading a diff in its document should start no nvim")
 	}
-	if s.ran(t, "pull/12/head:refs/remotes/origin/pr/12") {
-		t.Error("a diff past the limit should not be fetched")
+	// Opened on checked-out repos with no key pressed, the board fetches nothing into a GitHub
+	// checkout and only the pull request's own ref into a Bitbucket one, so origin/<base> stays put.
+	if s.ran(t, "git", "cwd="+s.checkout, "fetch") {
+		t.Error("a GitHub pull request's diff should come from GitHub, with nothing fetched into its checkout")
+	}
+	if !s.ran(t, "git", "cwd="+s.ledger, "fetch", "--quiet", "--force", "--no-write-fetch-head", "--no-auto-maintenance",
+		"origin", "feature/ledger-export:refs/remotes/origin/pr/4") || s.ran(t, "origin", "develop") {
+		t.Error("a Bitbucket pull request's diff should fetch its head into its own ref and leave origin/develop alone")
 	}
 }
 

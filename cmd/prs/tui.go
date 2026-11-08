@@ -65,9 +65,11 @@ searches it. Narrower, enter opens it in place where it fits on the screen.
 
 The Diff section shows the diff whole, each file under a heading of its own, up to
 diff_section_max_lines changed lines in the config, and names the size of a larger one. Each
-open pull request's diff is read once the list lands: in its checkout, where its head is
-fetched into refs/remotes/origin/pr/<number> as d fetches it, and from GitHub where its
-repo is not cloned here.
+listed pull request's diff, recently closed ones included, is read once its list lands.
+GitHub sends it. Bitbucket's client
+has no diff, so prs fetches a Bitbucket pull request's head into
+refs/remotes/origin/pr/<number> in its checkout and diffs it there, touching no other ref.
+One whose repo is not cloned here gets a section saying so.
 
 A letter acts on the pull request under the cursor, and ? lists every key. d hands the
 terminal to its diff in nvim, and :qa comes back to the list. m merges and x closes,

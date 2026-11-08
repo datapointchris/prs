@@ -12,9 +12,9 @@ review threads `d` writes for nvim, and `opened_on.go` the pull request `prs tui
 names. `internal/pullrequests` reads each provider: GitHub in-process
 through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
 differently by host, `detail.go` the per-PR detail cache, `diff.go` the per-PR diff cache
-the Diff section reads, `fetch.go` the fetch of a pull request's head that `d` and the diff
-share, `reference.go` what `--pr` takes and how it is read, and `since.go` what `--since`
-takes.
+the Diff section reads, `fetch.go` a pull request's checkout and the fetch of its head that
+`d` and the diff share, `reference.go` what `--pr` takes and how it is read, and `since.go`
+what `--since` takes.
 `internal/registry` reads the registry file, and `internal/config` reads
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
@@ -29,8 +29,10 @@ is the shape of the threads file `d` hands nvim, held the same way.
   something. A key whose program is one person's choice, such as claude, comes from the
   config, and only general tools a key needs are compiled in.
 - **A read never asks the user anything.** bbkt, and gh where it is asked for its token,
-  run with stdin closed and a timeout, and so does every GitHub request. A prompt inside a
-  read would hang the board with nothing on screen to answer it.
+  run with stdin closed and a timeout, and so does every GitHub request. Every client runs
+  in a session of its own, so ssh, which asks on `/dev/tty` rather than stdin, finds no
+  terminal and fails. A prompt inside a read would hang the board with nothing on screen to
+  answer it, and would read the keys meant for the board.
 - **A read asks the provider for the registry's repos by name.** An owner-wide search
   fills its page with repos the registry does not name, and fails outright for a large
   organization. Only `owners` in the config, or no registry at all, reads an owner whole.
@@ -105,11 +107,15 @@ is the shape of the threads file `d` hands nvim, held the same way.
 - **A pull request's detail never holds up its row.** The board reads each GitHub row's
   detail in the background after the listing lands, a few at a time. It reads one again
   when its head commit, update time or checks state moves, or when its last read failed.
-- **A pull request's diff is read in its checkout where its repo is cloned, and from the
-  host otherwise.** `Fetch` takes the same head and base `d` does, one fetch at a time per
-  checkout, because two at once contend for its ref locks. A merged one is read from the
-  host, because in the checkout a merged branch diffs as nothing against its base. A diff
-  the listing's counts put past `diff_section_max_lines` is never fetched.
+- **A pull request's diff is read from its host, and from its checkout only where the
+  host's client has no diff.** The board writes nothing into a checkout nobody asked it to,
+  so `FetchHead` fetches a Bitbucket head into `refs/remotes/origin/pr/<n>` alone, with no
+  `FETCH_HEAD` and no base, while `d`'s `Fetch` also moves `origin/<base>`. Both resolve
+  the checkout, head and base through `LocalDiffOf`, and fetch one at a time per checkout,
+  because two at once contend for its ref locks. A merged Bitbucket one is refused, because
+  in the checkout a merged branch diffs as nothing against its base. A diff the listing's
+  counts put past `diff_section_max_lines` is never read, and a failed read waits a minute,
+  doubling to half an hour, before it is read again for the same head.
 - **No test reads a real account or starts a real program a key runs.** `cmd/prs/tui_test.go`
   puts a stand-in on `PATH` for every program a read or a key in the test runs, and its
   testdata answers in each provider's published shape. GitHub's stand-in is an HTTP server

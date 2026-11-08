@@ -143,19 +143,23 @@ A pull request's document is markdown, under a line naming its repo, author and 
   the read left out.
 - **Diff** is the diff itself, each file under a heading of its own, so `[` and `]` move
   between files. A pull request changing more lines than `diff_section_max_lines` in the
-  config, 300 by default, gets its size and the key that opens it instead.
+  config gets its size and the key that opens it instead. `prs config path` prints its
+  default.
 - **Comments** names who is still asked to review, then the conversation oldest first with
   each submitted review in it, then each review thread, unresolved first.
 
 Checks, Files and Comments fill in once the pull request's own read lands, and say they
 are reading until then. Bitbucket's client reads no more than its listing, so a Bitbucket
-pull request's document holds its description and its diff.
+pull request's document has no Checks, Files or Comments.
 
-Each open pull request's diff is read once the list lands, a few at a time, and again when
-its head commit moves. Where its repo is checked out, prs fetches its head into
-`refs/remotes/origin/pr/<number>` there, as `d` does, and diffs it against the base it
-targets. Where it is not, GitHub sends the diff. Bitbucket's client has no diff, so a
-Bitbucket pull request's Diff says it needs a checkout.
+Each listed pull request's diff, recently closed ones included, is read once its list
+lands, a few at a time. It is read
+again when its head commit or base moves. A read that failed is tried again after a
+minute, then after a wait that doubles up to half an hour. GitHub sends the diff, so prs
+fetches nothing into a GitHub checkout. Bitbucket's client has no diff, so prs fetches a
+Bitbucket pull request's head into `refs/remotes/origin/pr/<number>` in its checkout and
+diffs it against the `origin/<base>` already there. It moves no other ref, and writes no
+`FETCH_HEAD`. A Bitbucket pull request whose repo is not checked out says so in its Diff.
 
 On a wide terminal a side panel beside the list shows the document of the row under the
 cursor, under its title, and `p` hides or shows it. `enter` opens the document full screen,

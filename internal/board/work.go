@@ -145,7 +145,7 @@ func runClient(pr pullrequests.PullRequest, verb string, argv []string, inChecko
 	return func(ctx context.Context) error {
 		dir := ""
 		if inCheckout {
-			checkout, err := checkoutOf(pr)
+			checkout, err := pullrequests.CheckoutOf(pr)
 			if err != nil {
 				return err
 			}

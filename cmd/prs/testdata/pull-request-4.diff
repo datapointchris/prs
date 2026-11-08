@@ -1,0 +1,11 @@
+diff --git a/export/csv.go b/export/csv.go
+new file mode 100644
+index 0000000..3b18e51
+--- /dev/null
++++ b/export/csv.go
+@@ -0,0 +1,5 @@
++package export
++
++import "encoding/csv"
++
++func Rows(w *csv.Writer, entries [][]string) error { return w.WriteAll(entries) }

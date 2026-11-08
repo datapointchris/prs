@@ -230,9 +230,6 @@ func diffSection(in documentInput) string {
 		at = fmt.Sprintf(" at %#q", short(diff.Head))
 	}
 	parts = append(parts, fmt.Sprintf("%s changed in %s%s, %s.", counted(diff.Lines, "line"), counted(len(diff.Files), "file"), at, source))
-	if diff.BaseFault != "" {
-		parts = append(parts, fmt.Sprintf("_It runs against the `origin/%s` fetched earlier, because fetching it again failed: %s_", in.pr.Base, diff.BaseFault))
-	}
 	for _, file := range diff.Files {
 		parts = append(parts, "## "+fileHeading(file))
 		switch {
@@ -249,7 +246,7 @@ func diffSection(in documentInput) string {
 
 // opener is the key that opens the whole diff: d needs the checkout, and o does not.
 func opener(state pullrequests.DiffState) string {
-	if state.InCheckout {
+	if state.CheckedOut {
 		return "d opens the whole diff in nvim"
 	}
 	return "o opens it in the browser"
