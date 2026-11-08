@@ -660,12 +660,9 @@ func (b *Board) windowAction(window config.WindowAction) func(pullrequests.PullR
 		if err != nil {
 			return "", err
 		}
-		// The command is a shell command, which tmux runs whole through its shell, so the
-		// programs it needs are looked for here rather than by OpenWindow.
-		if missing := window.Missing(); len(missing) > 0 {
-			return "", fmt.Errorf("not installed here: %s, and the window would open and die without it", strings.Join(missing, ", "))
-		}
-		if err := gotermboard.OpenWindow(name, checkout, config.Fill(window.Command, fields)); err != nil {
+		// The command is a shell command, which tmux runs whole through its shell, so needs
+		// names the programs it runs.
+		if err := gotermboard.OpenWindow(name, checkout, []string{config.Fill(window.Command, fields)}, window.Needs...); err != nil {
 			return "", err
 		}
 		if window.RunsReviewRound {

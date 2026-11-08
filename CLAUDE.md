@@ -196,8 +196,9 @@ is the shape of the threads file `d` hands nvim, held the same way.
   once a program it handed the terminal to exits, and when the terminal gains focus, except
   a provider whose last good read is under `freshFor` old.
 - **`m.HandOver` is how a key hands the terminal over, and `gotermboard.OpenWindow` how it
-  opens a tmux window.** HandOver keeps the program's stderr, so a failure says its last
-  line through `gotermboard.LastLine`. Its `gotermboard.HandedBack` reaches `Board.Receive`
+  opens a tmux window.** A window action's command is one shell command, so OpenWindow
+  looks for the config's `needs` rather than the command. HandOver keeps the program's
+  stderr through a pipe, so a failure says its last line through `gotermboard.LastLine`. Its `gotermboard.HandedBack` reaches `Board.Receive`
   for the read again, and the model runs the key's own `then` after.
 - **A read's spinner turns on the strip, through `MovingBoard`**, so the footer's height
   never changes with a read. It draws `gotermboard.SpinnerAt`, the footer's own spinner.
