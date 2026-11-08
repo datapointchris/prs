@@ -61,6 +61,7 @@
             {
               "path": "cache/cache.go",
               "line": 14,
+              "diffSide": "RIGHT",
               "isResolved": false,
               "isOutdated": false,
               "comments": {

@@ -53,10 +53,12 @@ type Comment struct {
 }
 
 // Thread is one review thread on a line of a file. Line is null where the thread's line is
-// gone from the diff.
+// gone from the diff. Side is LEFT where Line counts in the base's copy of the file and RIGHT
+// where it counts in the head's.
 type Thread struct {
 	Path         string    `json:"path"`
 	Line         *int      `json:"line"`
+	Side         string    `json:"side"`
 	Resolved     bool      `json:"resolved"`
 	Outdated     bool      `json:"outdated"`
 	Comments     []Comment `json:"comments"`

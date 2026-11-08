@@ -163,6 +163,12 @@ branch out.
 nvim listens on `$TMPDIR/prs-diff-<repo>-<number>.sock`, so another program can ask it
 what is under the cursor. Inside tmux, prs's window is named `diff <repo> #<number>` while
 nvim has it.
+Beside the socket, prs writes the pull request as `prs-diff-<repo>-<number>.md`, its title
+over the document the side panel shows, and its review threads as
+`prs-diff-<repo>-<number>.threads.json`, in the shape `cmd/prs/diff-threads.schema.json`
+gives. nvim starts with `PRS_DIFF_DOCUMENT` and `PRS_DIFF_THREADS` naming them, so an nvim
+config can show the description beside the diff and each thread on its line. prs removes
+both once nvim exits.
 
 `m` merges and `x` closes without merging. Each names the pull request and asks first:
 enter alone merges, and enter alone leaves it open rather than closing it. A second press

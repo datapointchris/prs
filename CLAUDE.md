@@ -7,15 +7,17 @@ sources, the frame and the `--json` snapshot, `sections.go` the people, bots and
 closed groups, one record per pull request and the row held under the cursor,
 `listing_cache.go` the last listing kept on
 disk for the next start, `table.go` what `prs list` prints, `document.go` each pull
-request's markdown document, a section per heading, and `opened_on.go` the pull request
-`prs tui --pr` names. `internal/pullrequests` reads each provider: GitHub in-process
+request's markdown document, a section per heading, `diff_files.go` the document and
+review threads `d` writes for nvim, and `opened_on.go` the pull request `prs tui --pr`
+names. `internal/pullrequests` reads each provider: GitHub in-process
 through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
 differently by host, `detail.go` the per-PR detail cache, `reference.go` what `--pr`
 takes and how it is read, and `since.go` what `--since` takes.
 `internal/registry` reads the registry file, and `internal/config` reads
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
-`prs tui --json`, and a test holds both outputs to it.
+`prs tui --json`, and a test holds both outputs to it. `cmd/prs/diff-threads.schema.json`
+is the shape of the threads file `d` hands nvim, held the same way.
 
 ## Constraints that must not regress
 
@@ -80,6 +82,11 @@ takes and how it is read, and `since.go` what `--since` takes.
   window, such as a Claude session explaining the diff, reads `diff <repo> #<n>` off the
   window's name and asks nvim on `prs-diff-<repo>-<n>.sock` what is under the cursor. So
   `d` names prs's window that way while nvim has it.
+- **The variables nvim's diff starts with are a contract.** `PRS_DIFF_DOCUMENT` names
+  `prs-diff-<repo>-<n>.md` and `PRS_DIFF_THREADS` names `prs-diff-<repo>-<n>.threads.json`,
+  both beside the socket. An nvim config reads them to show the pull request beside the
+  diff and each review thread on its line, so the threads file keeps each thread's `path`,
+  `line` and `side`.
 - **`prs tui --pr` is a contract too.** Other terminal programs jump to a pull request by
   running it with `owner/name#number` or a URL, and get their screen back when `q` exits
   0. A pull request it cannot read is refused before anything draws, with one line on
