@@ -18,11 +18,11 @@ import (
 // so a read of a few runs over pages as a read of a month does.
 const historyPage = 2
 
-// stretch reads the closed: or updated: qualifier of a history search: >=from, or from..to.
-var stretch = regexp.MustCompile(`(closed|updated):(?:>=(\S+)|(\S+)\.\.(\S+))`)
+// stretch reads the updated: qualifier of a history search: >=from, or from..to.
+var stretch = regexp.MustCompile(`updated:(?:>=(\S+)|(\S+)\.\.(\S+))`)
 
-// serveHistory answers a history search from g.history, each alias's matches by the time its
-// qualifier names, a page at a time from the cursor it was handed.
+// serveHistory answers a history search from g.history, each alias's matches by when each
+// was last updated, a page at a time from the cursor it was handed.
 func (g *gitHub) serveHistory(w http.ResponseWriter, variables map[string]any) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -44,11 +44,11 @@ func (g *gitHub) serveHistory(w http.ResponseWriter, variables map[string]any) {
 			http.Error(w, "a history search names no stretch: "+query, http.StatusBadRequest)
 			return
 		}
-		from, _ := time.Parse(time.RFC3339, m[2]+m[3])
-		to, _ := time.Parse(time.RFC3339, m[4])
+		from, _ := time.Parse(time.RFC3339, m[1]+m[2])
+		to, _ := time.Parse(time.RFC3339, m[3])
 		var matched []map[string]any
 		for _, node := range g.history {
-			at, _ := time.Parse(time.RFC3339, fmt.Sprint(node[m[1]+"At"]))
+			at, _ := time.Parse(time.RFC3339, fmt.Sprint(node["updatedAt"]))
 			if !at.Before(from) && (to.IsZero() || !at.After(to)) {
 				matched = append(matched, node)
 			}
@@ -65,6 +65,17 @@ func (g *gitHub) serveHistory(w http.ResponseWriter, variables map[string]any) {
 		}
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+}
+
+// reopen has the history read the pull request numbered number as open, updated now.
+func (g *gitHub) reopen(number int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, node := range g.history {
+		if node["number"] == number {
+			node["state"], node["closedAt"], node["updatedAt"] = "OPEN", nil, time.Now().UTC().Format(time.RFC3339)
+		}
+	}
 }
 
 // queries is each history search the stand-in was asked, in order.
@@ -148,8 +159,8 @@ func TestTheSummaryTabCountsEachWindowChartsItAndPaintsFromItsCacheOnTheNextStar
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
 	}
-	if queries := s.github.queries(); len(queries) == 0 || !strings.Contains(queries[0], " closed:>=") {
-		t.Errorf("the first read should read every pull request closed within the window, asked %q", queries)
+	if queries := s.github.queries(); len(queries) == 0 || !strings.Contains(queries[0], " updated:>=") {
+		t.Errorf("the first read should read every pull request updated within the window, asked %q", queries)
 	}
 
 	s.github.fail()
@@ -162,7 +173,8 @@ func TestTheSummaryTabCountsEachWindowChartsItAndPaintsFromItsCacheOnTheNextStar
 
 // prs summary --json prints the tab's numbers in the shape its schema gives. A second run
 // reads only what changed since the first, and a window past what the cache reaches reads
-// back to its start.
+// back to its start. A pull request reopened after a run leaves the closed counts on the
+// next.
 func TestSummaryJSONHoldsItsSchemaAndReadsOnlyWhatChangedOrWhatTheCacheLacks(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
@@ -208,16 +220,18 @@ func TestSummaryJSONHoldsItsSchemaAndReadsOnlyWhatChangedOrWhatTheCacheLacks(t *
 		t.Errorf("1d counted %+v", n)
 	}
 	for _, query := range s.github.queries()[first:] {
-		if !strings.Contains(query, "updated:>=") {
-			t.Errorf("a window the cache reaches should read only what changed, asked %q", query)
+		m := stretch.FindStringSubmatch(query)
+		if from, _ := time.Parse(time.RFC3339, m[1]); m[1] == "" || time.Since(from) > time.Hour {
+			t.Errorf("a window the cache reaches should read only what changed since the last run, asked %q", query)
 		}
 	}
 	second := len(s.github.queries())
 
-	if n := read("--since", "90d"); n.Merged.All != 5 || n.Merged.Bots != 2 {
-		t.Errorf("90d counted %+v", n)
+	s.github.reopen(36)
+	if n := read("--since", "90d"); n.Merged.All != 5 || n.Merged.Bots != 2 || n.ClosedUnmerged.All != 1 {
+		t.Errorf("90d, with #36 reopened, counted %+v", n)
 	}
-	if !slices.ContainsFunc(s.github.queries()[second:], func(query string) bool { return regexp.MustCompile(`closed:\S+\.\.\S+`).MatchString(query) }) {
+	if !slices.ContainsFunc(s.github.queries()[second:], func(query string) bool { return regexp.MustCompile(`updated:\S+\.\.\S+`).MatchString(query) }) {
 		t.Errorf("a window past the cache should read back to its start, asked %q", s.github.queries()[second:])
 	}
 }

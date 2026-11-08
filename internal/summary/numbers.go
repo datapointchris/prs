@@ -96,8 +96,8 @@ type Numbers struct {
 	// the period holding Since to the one holding Until, a day starting at local midnight.
 	MergedPer  string         `json:"merged_per"`
 	MergedOver []PeriodMerges `json:"merged_over"`
-	// OpenOver is the open pull requests at about 120 instants from Since to Until, a whole
-	// number of hours apart, and at Until.
+	// OpenOver is the open pull requests at about openSamples instants from Since to Until, a
+	// whole number of hours apart, and at Until.
 	OpenOver []OpenAt `json:"open_over"`
 }
 
@@ -123,27 +123,44 @@ const (
 	openSamples = 120
 )
 
-// Count is the numbers for the window, from the merged and closed pull requests in closed and
-// the open ones in open. A pull request in both counts as closed, because GitHub's open search
-// still finds one for a while after it merges. Days start at midnight in loc.
-func Count(window Window, closed []Closed, open []pullrequests.PullRequest, loc *time.Location) Numbers {
+// Count is the numbers for the window, from the merged and closed pull requests in kept and
+// the open ones in open. Where both hold a pull request, the record updated last stands, as
+// on the board. GitHub's open search still finds one for a while after it merges, with the
+// record it read before the merge, and one reopened since the store read it is newer in
+// open. A record in open counts only while it stands open. Days start at midnight in loc.
+func Count(window Window, kept []pullrequests.HistoryRecord, open []pullrequests.PullRequest, loc *time.Location) Numbers {
 	n := Numbers{
 		Window: window.Name, Since: window.Since, Until: window.Until,
 		Repos: []RepoMerges{}, MergedOver: []PeriodMerges{}, OpenOver: []OpenAt{},
 	}
 	within := func(at time.Time) bool { return !at.Before(window.Since) && at.Before(window.Until) }
-	closedKeys := map[string]bool{}
-	for _, c := range closed {
-		closedKeys[key(c.Slug, c.Number)] = true
+	keptAt := map[string]time.Time{}
+	for _, c := range kept {
+		keptAt[key(c.Slug, c.Number)] = c.UpdatedAt
 	}
+	reopened := map[string]bool{}
 	var stillOpen []pullrequests.PullRequest
 	for _, pr := range open {
-		if !closedKeys[key(pr.Slug, pr.Number)] {
-			stillOpen = append(stillOpen, pr)
+		if standing, err := pr.Standing(); err == nil && standing != pullrequests.Open {
+			continue
+		}
+		k := key(pr.Slug, pr.Number)
+		if at, held := keptAt[k]; held {
+			if pr.UpdatedAt == nil || !pr.UpdatedAt.After(at) {
+				continue
+			}
+			reopened[k] = true
+		}
+		stillOpen = append(stillOpen, pr)
+	}
+	var closed []pullrequests.HistoryRecord
+	for _, c := range kept {
+		if c.ClosedAt != nil && !reopened[key(c.Slug, c.Number)] {
+			closed = append(closed, c)
 		}
 	}
 	for _, pr := range stillOpen {
-		bot := pr.Bot != nil && *pr.Bot
+		bot := pr.IsBot()
 		if pr.CreatedAt.Before(window.Until) {
 			n.Open.add(bot)
 		}
@@ -173,7 +190,7 @@ func Count(window Window, closed []Closed, open []pullrequests.PullRequest, loc 
 		from = bucket.upTo
 	}
 	for _, c := range closed {
-		bot := c.Bot != nil && *c.Bot
+		bot := c.IsBot()
 		if within(c.CreatedAt) {
 			n.Opened.add(bot)
 		}
@@ -181,7 +198,7 @@ func Count(window Window, closed []Closed, open []pullrequests.PullRequest, loc 
 			n.Open.add(bot)
 		}
 		if !c.Merged() {
-			if within(c.ClosedAt) {
+			if within(*c.ClosedAt) {
 				n.ClosedUnmerged.add(bot)
 			}
 			continue
@@ -231,12 +248,12 @@ func Count(window Window, closed []Closed, open []pullrequests.PullRequest, loc 
 		sample := OpenAt{At: at}
 		for _, pr := range stillOpen {
 			if !pr.CreatedAt.After(at) {
-				sample.Open.add(pr.Bot != nil && *pr.Bot)
+				sample.Open.add(pr.IsBot())
 			}
 		}
 		for _, c := range closed {
 			if !c.CreatedAt.After(at) && c.ClosedAt.After(at) {
-				sample.Open.add(c.Bot != nil && *c.Bot)
+				sample.Open.add(c.IsBot())
 			}
 		}
 		n.OpenOver = append(n.OpenOver, sample)

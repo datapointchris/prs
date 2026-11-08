@@ -404,7 +404,7 @@ func botCell(pr pullrequests.PullRequest) gotermboard.Cell {
 	return gotermboard.C(botGlyph+"  bot "+pr.Author, gotermboard.Magenta)
 }
 
-func isBot(pr pullrequests.PullRequest) bool { return pr.Bot != nil && *pr.Bot }
+func isBot(pr pullrequests.PullRequest) bool { return pr.IsBot() }
 
 // fieldGap is the space between two fields of a second line, wider than a field's own glyph
 // and words are apart, so each reads as a field.

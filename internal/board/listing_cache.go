@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -145,17 +144,8 @@ func openListingCache(dir string, scopes map[string]pullrequests.Scope) *listing
 }
 
 func keptScopeOf(scope pullrequests.Scope) keptScope {
-	kept := keptScope{Repos: []string{}, Owners: []string{}}
-	for _, repo := range scope.Repos {
-		kept.Repos = append(kept.Repos, strings.ToLower(repo.Slug))
-	}
-	for _, owner := range scope.Owners {
-		kept.Owners = append(kept.Owners, strings.ToLower(owner))
-	}
-	slices.Sort(kept.Repos)
-	slices.Sort(kept.Owners)
-	kept.Repos, kept.Owners = slices.Compact(kept.Repos), slices.Compact(kept.Owners)
-	return kept
+	repos, owners := scope.Names()
+	return keptScope{Repos: repos, Owners: owners}
 }
 
 // listing is the provider's newest kept listing.

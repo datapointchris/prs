@@ -1,18 +1,19 @@
 // Package summary counts the pull requests opened, merged and closed over a window, from the
-// open listings and from the merged and closed pull requests it keeps in SQLite, which it
-// brings up to date with one search of what changed since the last read.
+// open listings and from the pull requests it keeps in SQLite, which it brings up to date by
+// reading what changed since its last read, and back to a window's start where the store
+// does not reach it.
 package summary
 
 import (
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -21,10 +22,8 @@ import (
 	"github.com/datapointchris/prs/internal/pullrequests"
 )
 
-// schemaVersion is the shape of the tables below. The store is a cache, so a file holding
-// another shape is emptied and read again rather than migrated.
-const schemaVersion = 1
-
+// schema is the store's tables. A record is kept whatever its state, so a reopened pull
+// request's newer open record stands over its closed one, and closed_at is null while open.
 const schema = `
 CREATE TABLE pull_requests (
   slug_key     TEXT    NOT NULL,
@@ -38,7 +37,7 @@ CREATE TABLE pull_requests (
   created_at   TEXT    NOT NULL,
   updated_at   TEXT    NOT NULL,
   merged_at    TEXT,
-  closed_at    TEXT    NOT NULL,
+  closed_at    TEXT,
   review_round INTEGER NOT NULL,
   PRIMARY KEY (slug_key, number)
 );
@@ -49,6 +48,14 @@ CREATE TABLE coverage (
   synced_at    TEXT NOT NULL
 );`
 
+// schemaVersion is a digest of schema, kept in the file's user_version, so any change to the
+// tables changes it. The store is a cache, so a file holding another shape is emptied and
+// read again rather than migrated.
+var schemaVersion = func() int {
+	digest := sha256.Sum256([]byte(schema))
+	return int(binary.BigEndian.Uint32(digest[:4]) >> 1)
+}()
+
 // connectionOptions ride in the DSN, because a pragma set through Exec reaches only the one
 // pooled connection that ran it. A board and a prs summary can write one file at once, so a
 // writer waits out the other, and a transaction takes the write lock when it begins.
@@ -57,40 +64,20 @@ const connectionOptions = "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)
 // stamp is how a time is kept: RFC 3339 in UTC to the second, so text order is time order.
 const stamp = time.RFC3339
 
-// Store is the merged and closed pull requests one scope's repos hold, and how far back and
-// how lately they were read.
+// Store is the pull requests one scope's repos hold, and how far back and how lately they
+// were read.
 type Store struct {
 	db   *sql.DB
 	path string
 }
 
-// Coverage is how far the store reaches. It holds every pull request in the scope merged or
-// closed at or after From, each as it stood at Synced or later.
+// Coverage is how far the store reaches. It holds every pull request in the scope last
+// updated at or after From, each as it stood at Synced or later, and so every one merged or
+// closed since From.
 type Coverage struct {
 	From   time.Time `json:"from"`
 	Synced time.Time `json:"synced"`
 }
-
-// Closed is one merged or closed pull request as the summary counts it.
-type Closed struct {
-	Slug   string
-	Number int
-	Title  string
-	URL    string
-	Author string
-	// Bot is nil where the account that opened it is gone.
-	Bot       *bool
-	State     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	MergedAt  *time.Time
-	ClosedAt  time.Time
-	// ReviewRound says its first review was a review round's.
-	ReviewRound bool
-}
-
-// Merged says it merged rather than closed unmerged.
-func (c Closed) Merged() bool { return c.MergedAt != nil }
 
 // key names a pull request across reads, in lower case, because GitHub matches an owner and
 // a name in any case.
@@ -99,17 +86,8 @@ func key(slug string, number int) string { return fmt.Sprintf("%s#%d", strings.T
 // FileFor is the store's file in dir for a scope: a name digested from its repos and owners,
 // so two scopes never share rows, and an edit to the registry starts a file of its own.
 func FileFor(dir string, scope pullrequests.Scope) string {
-	repos := make([]string, 0, len(scope.Repos))
-	for _, repo := range scope.Repos {
-		repos = append(repos, strings.ToLower(repo.Slug))
-	}
-	owners := make([]string, 0, len(scope.Owners))
-	for _, owner := range scope.Owners {
-		owners = append(owners, strings.ToLower(owner))
-	}
-	slices.Sort(repos)
-	slices.Sort(owners)
-	raw, _ := json.Marshal(map[string][]string{"repos": slices.Compact(repos), "owners": slices.Compact(owners)})
+	repos, owners := scope.Names()
+	raw, _ := json.Marshal(map[string][]string{"repos": repos, "owners": owners})
 	digest := sha256.Sum256(raw)
 	return filepath.Join(dir, hex.EncodeToString(digest[:])[:16]+".db")
 }
@@ -188,50 +166,66 @@ func (s *Store) Coverage() (Coverage, bool, error) {
 	return c, true, nil
 }
 
-// Closed is every pull request the store holds closed at or after since, the newest first.
-func (s *Store) Closed(since time.Time) ([]Closed, error) {
+// Closed is every pull request the store holds merged or closed at or after since, the
+// newest first.
+func (s *Store) Closed(since time.Time) ([]pullrequests.HistoryRecord, error) {
 	rows, err := s.db.Query(`SELECT slug, number, title, url, author, bot, state, created_at, updated_at, merged_at, closed_at, review_round
 		FROM pull_requests WHERE closed_at >= ? ORDER BY closed_at DESC`, since.UTC().Format(stamp))
 	if err != nil {
 		return nil, fmt.Errorf("reading the closed pull requests' cache: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var out []Closed
+	var out []pullrequests.HistoryRecord
 	for rows.Next() {
-		var c Closed
+		var r pullrequests.HistoryRecord
 		var bot sql.NullBool
-		var created, updated, closed string
-		var merged sql.NullString
-		if err := rows.Scan(&c.Slug, &c.Number, &c.Title, &c.URL, &c.Author, &bot, &c.State, &created, &updated, &merged, &closed, &c.ReviewRound); err != nil {
+		var created, updated string
+		var merged, closed sql.NullString
+		if err := rows.Scan(&r.Slug, &r.Number, &r.Title, &r.URL, &r.Author, &bot, &r.State, &created, &updated, &merged, &closed, &r.ReviewRound); err != nil {
 			return nil, err
 		}
 		if bot.Valid {
-			c.Bot = &bot.Bool
+			r.Bot = &bot.Bool
 		}
-		times := []struct {
-			text string
-			into *time.Time
-		}{{created, &c.CreatedAt}, {updated, &c.UpdatedAt}, {closed, &c.ClosedAt}}
-		if merged.Valid {
-			c.MergedAt = new(time.Time)
-			times = append(times, struct {
-				text string
-				into *time.Time
-			}{merged.String, c.MergedAt})
+		if r.CreatedAt, err = parseStamp(r, created); err == nil {
+			r.UpdatedAt, err = parseStamp(r, updated)
 		}
-		for _, t := range times {
-			if *t.into, err = time.Parse(stamp, t.text); err != nil {
-				return nil, fmt.Errorf("the closed pull requests' cache holds %s#%d with a time %q: %w", c.Slug, c.Number, t.text, err)
-			}
+		if err == nil {
+			r.MergedAt, err = parseNullStamp(r, merged)
 		}
-		out = append(out, c)
+		if err == nil {
+			r.ClosedAt, err = parseNullStamp(r, closed)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
-// Keep writes each pull request over any row it had, and the coverage, as one transaction,
-// so the coverage never claims a read whose rows did not land.
-func (s *Store) Keep(closed []Closed, coverage Coverage) error {
+func parseStamp(r pullrequests.HistoryRecord, text string) (time.Time, error) {
+	at, err := time.Parse(stamp, text)
+	if err != nil {
+		return at, fmt.Errorf("the closed pull requests' cache holds %s#%d with a time %q: %w", r.Slug, r.Number, text, err)
+	}
+	return at, nil
+}
+
+func parseNullStamp(r pullrequests.HistoryRecord, text sql.NullString) (*time.Time, error) {
+	if !text.Valid {
+		return nil, nil
+	}
+	at, err := parseStamp(r, text.String)
+	return &at, err
+}
+
+// Keep writes each record over any row it had that was updated no later, and the coverage,
+// as one transaction, so the coverage never claims a read whose rows did not land. A board
+// and a prs summary can sync one file at once, so the coverage only widens: the earliest
+// From and the latest Synced stand. Each read asks for every update since a From older than
+// any sync's start, so the later sync read every change since the earlier one began.
+func (s *Store) Keep(records []pullrequests.HistoryRecord, coverage Coverage) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("writing the closed pull requests' cache: %w", err)
@@ -250,23 +244,28 @@ func (s *Store) Keep(closed []Closed, coverage Coverage) error {
 		return fmt.Errorf("writing the closed pull requests' cache: %w", err)
 	}
 	defer func() { _ = upsert.Close() }()
-	for _, c := range closed {
-		var bot, merged any
-		if c.Bot != nil {
-			bot = *c.Bot
+	for _, r := range records {
+		var bot any
+		if r.Bot != nil {
+			bot = *r.Bot
 		}
-		if c.MergedAt != nil {
-			merged = c.MergedAt.UTC().Format(stamp)
-		}
-		if _, err := upsert.Exec(strings.ToLower(c.Slug), c.Number, c.Slug, c.Title, c.URL, c.Author, bot, c.State,
-			c.CreatedAt.UTC().Format(stamp), c.UpdatedAt.UTC().Format(stamp), merged, c.ClosedAt.UTC().Format(stamp), c.ReviewRound); err != nil {
-			return fmt.Errorf("writing %s#%d to the closed pull requests' cache: %w", c.Slug, c.Number, err)
+		if _, err := upsert.Exec(strings.ToLower(r.Slug), r.Number, r.Slug, r.Title, r.URL, r.Author, bot, r.State,
+			r.CreatedAt.UTC().Format(stamp), r.UpdatedAt.UTC().Format(stamp), nullStamp(r.MergedAt), nullStamp(r.ClosedAt), r.ReviewRound); err != nil {
+			return fmt.Errorf("writing %s#%d to the closed pull requests' cache: %w", r.Slug, r.Number, err)
 		}
 	}
 	if _, err := tx.Exec(`INSERT INTO coverage (only, covered_from, synced_at) VALUES (1, ?, ?)
-		ON CONFLICT (only) DO UPDATE SET covered_from = excluded.covered_from, synced_at = excluded.synced_at`,
+		ON CONFLICT (only) DO UPDATE SET
+		  covered_from = MIN(covered_from, excluded.covered_from), synced_at = MAX(synced_at, excluded.synced_at)`,
 		coverage.From.UTC().Format(stamp), coverage.Synced.UTC().Format(stamp)); err != nil {
 		return fmt.Errorf("writing what the closed pull requests' cache covers: %w", err)
 	}
 	return tx.Commit()
+}
+
+func nullStamp(at *time.Time) any {
+	if at == nil {
+		return nil
+	}
+	return at.UTC().Format(stamp)
 }

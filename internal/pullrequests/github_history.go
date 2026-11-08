@@ -12,14 +12,14 @@ import (
 // are read past the first.
 const searchCap = 1000
 
-// historyAliasesPerRequest bounds one history request's searches. Each page of 100 carries a
-// review body apiece, a few kilobytes each, so five searches keep a request near 2.5 MB.
+// historyAliasesPerRequest bounds one history request's searches, because each page carries
+// a review body a pull request, and the answer grows with every alias.
 const historyAliasesPerRequest = 5
 
-// githubHistoryRow is what the closed history keeps of a pull request: who opened it, when it
+// githubHistoryRow is what the history keeps of a pull request: who opened it, when it
 // opened, merged and closed, and its first review, whose marker says whether a review round
-// reviewed it. One review per pull request keeps the request a point or so a page, where its
-// reviews whole would carry every reviewer's body.
+// reviewed it. One review is enough to say that, where every review would carry every
+// reviewer's body.
 const githubHistoryRow = `
 fragment HistoryRow on PullRequest {
   number
@@ -72,8 +72,8 @@ type githubHistoryConnection struct {
 	Nodes []githubHistoryNode `json:"nodes"`
 }
 
-// ClosedPullRequest is a merged or closed pull request as the closed history keeps it.
-type ClosedPullRequest struct {
+// HistoryRecord is a pull request as the history read it, open, merged or closed.
+type HistoryRecord struct {
 	Slug   string
 	Number int
 	Title  string
@@ -82,25 +82,22 @@ type ClosedPullRequest struct {
 	// did, nil where the account is gone.
 	Author string
 	Bot    *bool
-	// State is MERGED or CLOSED, and MergedAt is nil for one closed unmerged.
+	// State is OPEN, MERGED or CLOSED. MergedAt is nil until it merges, and ClosedAt until it
+	// merges or closes.
 	State     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	MergedAt  *time.Time
-	ClosedAt  time.Time
-	// FirstReview is the first review submitted on it, and nil where none was.
-	FirstReview *Review
+	ClosedAt  *time.Time
+	// ReviewRound says its first review was a review round's.
+	ReviewRound bool
 }
 
-// HistoryBy is the time a history read narrows by.
-type HistoryBy string
+// IsBot says an app opened it, and false where the account is gone.
+func (r HistoryRecord) IsBot() bool { return r.Bot != nil && *r.Bot }
 
-const (
-	// ClosedBetween reads the pull requests merged or closed within the range.
-	ClosedBetween HistoryBy = "closed"
-	// UpdatedBetween reads the merged or closed pull requests that changed within the range.
-	UpdatedBetween HistoryBy = "updated"
-)
+// Merged says it merged.
+func (r HistoryRecord) Merged() bool { return r.MergedAt != nil }
 
 // historySearch is one search of the history, over one stretch of time. A zero to runs to
 // whenever the search is answered. after is the page's cursor, empty for the first page.
@@ -110,12 +107,12 @@ type historySearch struct {
 	after    string
 }
 
-func (s historySearch) query(by HistoryBy) string {
+func (s historySearch) query() string {
 	stretch := ">=" + searchInstant(s.from)
 	if !s.to.IsZero() {
 		stretch = searchInstant(s.from) + ".." + searchInstant(s.to)
 	}
-	return s.base + " " + string(by) + ":" + stretch
+	return s.base + " updated:" + stretch
 }
 
 func searchInstant(at time.Time) string { return at.UTC().Format(time.RFC3339) }
@@ -135,14 +132,18 @@ func (s historySearch) halves(now time.Time) ([]historySearch, bool) {
 	return []historySearch{{base: s.base, from: s.from, to: middle}, {base: s.base, from: middle, to: to}}, true
 }
 
-// ReadGitHubHistory is every merged or closed pull request in the scope whose by time falls
-// from from through to, or from from on where to is zero. It reads every page of each search,
-// and splits a search whose matches pass the most GitHub's search returns into halves of its
-// stretch, as often as it takes. It fails where any search fails, so a caller keeping what it
-// read never takes a stretch with a hole in it for one read whole.
-func ReadGitHubHistory(ctx context.Context, scope Scope, by HistoryBy, from, to time.Time) ([]ClosedPullRequest, error) {
+// ReadGitHubHistory is every pull request in the scope, in any state, last updated from from
+// through to, or from from on where to is zero. Updated rather than closed, because GitHub's
+// closed: qualifier leaves out some pull requests that closed within its range, and a pull
+// request is never last updated before it closed. So it holds every one closed within the
+// range, and a reopened one comes back open. roundPost says whether a review is a review
+// round's. It reads every page of each search, and splits a search whose matches pass the
+// most GitHub's search returns into halves of its stretch, as often as it takes. It fails
+// where any search fails, so a caller keeping what it read never takes a stretch with a hole
+// in it for one read whole.
+func ReadGitHubHistory(ctx context.Context, scope Scope, from, to time.Time, roundPost func(Review) bool) ([]HistoryRecord, error) {
 	var pending []historySearch
-	for _, search := range githubSearches(scope, "is:closed") {
+	for _, search := range githubSearches(scope, "") {
 		pending = append(pending, historySearch{base: search.query, from: from, to: to})
 	}
 	if len(pending) == 0 {
@@ -152,13 +153,13 @@ func ReadGitHubHistory(ctx context.Context, scope Scope, by HistoryBy, from, to 
 	if err != nil {
 		return nil, err
 	}
-	var read []ClosedPullRequest
+	var read []HistoryRecord
 	for len(pending) > 0 {
 		batch := pending[:min(len(pending), historyAliasesPerRequest)]
 		pending = pending[len(batch):]
 		variables := map[string]any{}
 		for i, search := range batch {
-			variables[fmt.Sprintf("q%d", i)] = search.query(by)
+			variables[fmt.Sprintf("q%d", i)] = search.query()
 			variables[fmt.Sprintf("a%d", i)] = nil
 			if search.after != "" {
 				variables[fmt.Sprintf("a%d", i)] = search.after
@@ -174,25 +175,25 @@ func ReadGitHubHistory(ctx context.Context, scope Scope, by HistoryBy, from, to 
 		for i, search := range batch {
 			connection := data[fmt.Sprintf("s%d", i)]
 			if connection == nil {
-				return nil, fmt.Errorf("GitHub at %s answered no search for %q", host, search.query(by))
+				return nil, fmt.Errorf("GitHub at %s answered no search for %q", host, search.query())
 			}
 			if connection.IssueCount > searchCap && search.after == "" {
 				halves, ok := search.halves(time.Now())
 				if !ok {
 					return nil, fmt.Errorf("%d pull requests match %q, past the %d GitHub's search returns, within two seconds",
-						connection.IssueCount, search.query(by), searchCap)
+						connection.IssueCount, search.query(), searchCap)
 				}
 				pending = append(pending, halves...)
 				continue
 			}
 			for _, node := range connection.Nodes {
-				if node.Number != nil && node.ClosedAt != nil {
-					read = append(read, closedPullRequest(node))
+				if node.Number != nil {
+					read = append(read, historyRecord(node, roundPost))
 				}
 			}
 			if connection.PageInfo.HasNextPage {
 				if connection.PageInfo.EndCursor == "" {
-					return nil, errors.New("GitHub said another page follows " + search.query(by) + " and named no cursor for it")
+					return nil, errors.New("GitHub said another page follows " + search.query() + " and named no cursor for it")
 				}
 				search.after = connection.PageInfo.EndCursor
 				pending = append(pending, search)
@@ -213,15 +214,15 @@ func githubHistoryQuery(searches int) string {
 	return fmt.Sprintf("query(%s) {\n%s}\n%s", strings.TrimSuffix(variables.String(), ", "), aliases.String(), githubHistoryRow)
 }
 
-func closedPullRequest(node githubHistoryNode) ClosedPullRequest {
-	pr := ClosedPullRequest{
+func historyRecord(node githubHistoryNode, roundPost func(Review) bool) HistoryRecord {
+	record := HistoryRecord{
 		Slug: node.Repository.NameWithOwner, Number: *node.Number, Title: node.Title, URL: node.URL,
 		State: node.State, CreatedAt: node.CreatedAt, UpdatedAt: node.UpdatedAt,
-		MergedAt: node.MergedAt, ClosedAt: *node.ClosedAt,
+		MergedAt: node.MergedAt, ClosedAt: node.ClosedAt,
 	}
 	if node.Author != nil {
-		bot := node.Author.Typename == "Bot"
-		pr.Author, pr.Bot = node.Author.Login, &bot
+		bot := authorIsBot(node.Author.Typename)
+		record.Author, record.Bot = node.Author.Login, &bot
 	}
 	if len(node.Reviews.Nodes) > 0 {
 		first := node.Reviews.Nodes[0]
@@ -229,7 +230,7 @@ func closedPullRequest(node githubHistoryNode) ClosedPullRequest {
 		if first.Author != nil {
 			review.Author, review.AuthorType = first.Author.Login, first.Author.Typename
 		}
-		pr.FirstReview = &review
+		record.ReviewRound = roundPost(review)
 	}
-	return pr
+	return record
 }

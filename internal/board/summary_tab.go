@@ -51,7 +51,7 @@ type Summary struct {
 
 // keptHistory is the merged and closed pull requests the store holds, and how far it reaches.
 type keptHistory struct {
-	closed   []summary.Closed
+	closed   []pullrequests.HistoryRecord
 	coverage summary.Coverage
 	covered  bool
 }
