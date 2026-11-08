@@ -7,20 +7,22 @@ sources, the frame and the `--json` snapshot, `sections.go` the people, bots and
 closed groups, one record per pull request and the row held under the cursor,
 `listing_cache.go` the last listing kept on
 disk for the next start, `table.go` what `prs list` prints, `document.go` each pull
-request's markdown document, a section per heading, `review_rounds.go` the round's cell,
-the Review section and the tmux windows that run a round, `diff_files.go` the document and
-review threads a diff in nvim is handed, `opened_on.go` the pull request `prs tui --pr`
-names, `summary_tab.go` and `summary_charts.go` the Summary tab and its charts, and
-`recaps_tab.go` the recaps tab, which runs the three commands `recaps` in the config names.
-`internal/summary` counts a window's pull requests, and keeps the merged and closed ones in
-SQLite, brought up to date through `pullrequests`' `github_history.go`.
-`internal/reviewrounds` reads a pull request's Claude review rounds out of its
+request's markdown document, a section per heading, `review_rounds.go` the round's cell
+and the Review section, `tmux_window_watch.go` the tmux windows that run a round or a fix,
+`fix_menu.go` the menu of fixes `m` and `f` open on a pull request GitHub will not merge,
+`diff_files.go` the document and review threads a diff in nvim is handed, `opened_on.go`
+the pull request `prs tui --pr` names, `summary_tab.go` and `summary_charts.go` the
+Summary tab and its charts, and `recaps_tab.go` the recaps tab, which runs the three
+commands `recaps` in the config names. `internal/summary` counts a window's pull requests,
+and keeps the merged and closed ones in SQLite, brought up to date through `pullrequests`'
+`github_history.go`. `internal/reviewrounds` reads a pull request's Claude review rounds out of its
 detail read. `internal/pullrequests` reads each provider: GitHub in-process
 through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
 differently by host, `detail.go` the per-PR detail cache, `diff.go` the per-PR diff cache
 the Diff section reads, `fetch.go` a pull request's checkout and the fetch of its head that
-the diff keys and the Diff section share, `reference.go` what `--pr` takes and how it is
-read, and `since.go` what `--since` takes.
+the diff keys and the Diff section share, `rebase_worktree.go` the files a conflict names
+and the worktree it is rebased in, `reference.go` what `--pr` takes and how it is read,
+and `since.go` what `--since` takes.
 `internal/registry` reads the registry file, and `internal/config` reads
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
@@ -118,6 +120,42 @@ own `Sources`, as the Summary tab does, so a read is not made twice.
   threads file reads `since_review`, leaves out each LEFT thread and counts them, because
   its left side is the reviewed commit rather than the base. `D` is left unbound, so a key
   that deletes elsewhere does nothing here.
+- **What keeps GitHub from merging a pull request is `blockerOf`'s alone**, so `m`, `f` and
+  a refused merge open one menu. `m` on a row `blockerOf` names reads the pull request
+  again first, because the listing's merge state can be minutes old, and asks to merge
+  where the new read is ready. A refused merge reads it again too, and puts gh's words over
+  the menu. Each menu choice is one key, and a menu built of nothing says why instead. No
+  choice exits prs. A host with no merge state has no menu. `RefusedFix` keeps a merge
+  fix off `menuKeys`, and `askFix` opens no menu offering one key twice, so a built-in key
+  `menuKeys` misses shows on the footer rather than hiding a choice.
+- **What a merge state means is `mergeMeanings`' alone**: its word, whether it is ready, and
+  the blocker the fix menu offers fixes for. `mergeStateOf` reads a draft as DRAFT and a
+  conflict as DIRTY whatever else GitHub reports, for the row's word and `blockerOf` alike.
+- **A conflict is resolved by rebasing the head in a worktree detached at it**, at
+  `<worktree_root>/<checkout's directory>/pr-<n>-rebase`, never on its branch, because the
+  branch is often checked out in another worktree and a local branch can hold commits
+  nobody pushed. `-rebase` keeps it apart from a `pr-<n>` worktree another tool keeps, and
+  `Start` leaves alone a worktree it finds on a branch. `Start` fetches the head branch into
+  `origin/<branch>` and rebases from there onto `origin/<base>`, never merging the base in,
+  so the branch's history stays linear. Each stop opens nvim, and nvim exiting with nothing
+  unmerged runs `git rebase --continue`. Every client runs with `GIT_EDITOR=true`, so a
+  commit keeps its message rather than wait on an editor nobody can see.
+- **A rebase's push leases the head it started from**, `ORIG_HEAD`, as
+  `--force-with-lease=refs/heads/<branch>:<commit>`, so origin refuses it where anyone pushed
+  since. `--force-if-includes` reads the reflog of a local branch named for the head, which
+  a detached worktree pushes from none of, so git refuses that push even where nobody
+  pushed. A refused push leaves the rebase in the worktree, and `p` pushes it again. A head
+  branch in a fork, `HeadInFork`, gets no `n`, because the push goes to origin. `u` is
+  `gh pr update-branch --rebase` for the same reason the worktree rebases.
+- **A worktree a rebase left is found on every menu**, whatever blocks the pull request or
+  where nothing does, so `a` can remove it once the conflict is fixed somewhere else, and
+  `p` push one that finished.
+- **A merge fix's command quotes the placeholders declared in `quotedPlaceholders`**, because a
+  branch name can hold `;` or `$`, and the config refuses a command that puts one inside
+  quotes, where prs's quotes would end the command's. The rest are a number, a repo or a
+  blocker kind, filled bare, so `'/review-pr {number}'` keeps working. A fix's window opens
+  behind the board, through `gotermboard.OpenWindowBehind`, and its row reads `row_reads`
+  while `tmuxWindows` lists it.
 - **Whether a key may change a pull request is `refusal`'s alone**, which `writable` and
   `mergeable` both ask, so a single key and a batch never disagree.
 - **A key that waits on the network runs in the background**, through `work` in
@@ -167,7 +205,7 @@ own `Sources`, as the Summary tab does, so a read is not made twice.
 - **A window marked `runs_review_round` reads running only until a round finishes after
   prs opened it.** A session that ran a round keeps its window afterwards, so one prs did
   not open reads running only where no round has finished. tmux is asked every
-  `roundWindowsEvery`, through `pullrequests.Run`, and only inside tmux.
+  `tmuxWindowsEvery`, through `pullrequests.Run`, and only inside tmux.
 - **A Provider verb a host's client lacks is nil**, and its key refuses with `lacking`.
 - **A per-host fact lives in the Provider table**: the state words a client prints, mapped
   to `Standing`, and the path of a pull request's page, read by `PagePath`. The board
@@ -252,8 +290,8 @@ own `Sources`, as the Summary tab does, so a read is not made twice.
   from `PanelFrom` columns and the panel shows wherever it would with no margin.
 - **A column with no title continues the one before it under `Look.Spread`**, so the
   diff's three counts take two untitled columns after DIFF and stay together.
-- **`f` applies only where a row or group sets `Under`**, and no prs row does, so `f`
-  stays out of the footer and `?`.
+- **The table's `f` applies only where a row or group sets `Under`**, and no prs row does,
+  so prs binds `f` to the fix menu and the table loses nothing by it.
 - **A group header that is not `Still` takes the cursor**, so `g` lands on the people
   header and enter there folds the group. The cursor starts on the first row holding cells,
   of whichever group draws first, so recently closed waits for the first open listing.
@@ -265,6 +303,8 @@ own `Sources`, as the Summary tab does, so a read is not made twice.
   lands while nvim or the editor has the terminal. The board reads the providers again
   once a program it handed the terminal to exits, and when the terminal gains focus, except
   a provider whose last good read is under `freshFor` old.
+- **A `Question` with `Choices` answers on the key naming one**, handing `Answer` that key,
+  and enter and every other key do nothing, so a reflex enter chooses no fix. esc cancels.
 - **`m.HandOver` is how a key hands the terminal over, and `gotermboard.OpenWindow` how it
   opens a tmux window.** A window action's command is one shell command, so OpenWindow
   looks for the config's `needs` rather than the command. HandOver keeps the program's

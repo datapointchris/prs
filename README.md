@@ -258,6 +258,44 @@ footer names what merged and what was left and why, and the open listings are re
 
 `y` copies the branch.
 
+### Fixes for what blocks a merge
+
+`m` on a pull request GitHub will not merge reads it again, and where GitHub still refuses
+it, opens a menu of fixes rather than asking to merge. A merge GitHub refuses anyway opens
+the same menu, with gh's words at its top, and `f` opens it on any row. Each choice is one
+key, `esc` leaves the menu, and no choice exits prs. prs reads no merge state from
+Bitbucket, so a Bitbucket row has no menu, and `m` there asks to merge.
+
+- **Conflicts** name the files that conflict, which `git merge-tree` reads before anything
+  is checked out. `n` resolves them in nvim by rebasing the head onto its base. prs fetches
+  the head branch into `origin/<branch>` and adds a worktree of the checkout there, under
+  `worktree_root`, as `<checkout's directory>/pr-<number>-rebase`, detached, so no branch
+  checked out elsewhere moves. It runs `git rebase origin/<base>` and hands each stop to
+  nvim's `:DiffviewOpen`. Each time nvim exits with nothing left unmerged, prs runs `git
+  rebase --continue`, keeping each commit's message, and opens nvim again at the next stop.
+  Once the rebase finishes, it lists the rebased commits and asks to force-push them to the
+  head branch, enter meaning yes, then removes the worktree. The push's lease is on the head
+  the rebase started from, so it fails rather than overwrites where anyone pushed to the
+  branch since, and the footer names git's refusal. With paths left unmerged, or at a stop
+  git cannot go on from, it offers nvim again, `git rebase --abort`, or a fix of your own. A
+  rebase stopped or not pushed waits in the worktree, so `f` then `n` opens it again, and
+  `f` then `p` pushes a finished one. A head branch in a fork gets no `n`, because prs
+  pushes only to origin. `x` closes the pull request, after asking.
+- **A worktree a rebase left** is named in the menu of any row it belongs to, and `a` aborts
+  its rebase and removes it. So `f` on a row that reads ready offers that too, as when the
+  conflict was fixed somewhere else.
+- **A branch behind its base** updates with `u`, which is `gh pr update-branch --rebase`.
+  GitHub rebases it onto the base, and its checks run again.
+- **Failing checks** are named. `l` reads the failed jobs' log full screen, from `gh run
+  view --log-failed`, and keeps it in `$TMPDIR`. `r` reruns the failed jobs with `gh run
+  rerun --failed`. Only a check GitHub Actions runs has a log or a rerun here. Where GitHub
+  would merge it with the checks failing, because none of them is required, `m` merges it
+  anyway.
+- **A draft** is marked ready for review with `r`, which is `gh pr ready`.
+- **A merge state GitHub is still working out** offers nothing, and `f` reads it again. A
+  pull request GitHub blocks for anything else, such as a required review, says what its
+  review and checks read.
+
 ### Keys of your own
 
 A window action in the config is a key that runs a command in a new tmux window, started
@@ -288,6 +326,34 @@ upgrade by the same rule.
 `claude running` while the window is open, which prs asks tmux every few seconds, until a
 round finishes after the key opened it. A session that ran a round keeps its window
 afterwards, so a window prs did not open reads running only where no round has finished.
+
+A merge fix in the config adds a choice to the fix menu, for the kinds of blocker it names:
+
+```yaml
+worktree_root: ~/.worktrees
+merge_fixes:
+  - key: c
+    label: hand to claude
+    needs: [claude]
+    blockers: [conflicts, behind, failing-checks]
+    window: "fix {repo} #{number}"
+    command: "claude '/make-mergeable {number} {blocker}'"
+    row_reads: claude fixing
+```
+
+`blockers` names the kinds of blocker it is offered for, which `prs config path --help`
+lists. The command runs in a tmux window opened behind the board, in the checkout, so the board stays in
+front. The row reads `row_reads`, or `fixing`, while the window is open. `window` takes the
+window action's placeholders, so the board finds the window from the row. `command` also
+takes `{path}`, the checkout, `{worktree}`, where a rebase waits in one, `{head}` and
+`{base}`, the branches, `{blocker}`, the kind, and `{log}`, a file holding the failing
+checks' log. Each is empty where it does not apply. A branch name can hold `;` or `$`, so
+prs quotes the paths and branches for the shell itself. A command that puts one of them
+inside quotes of its own is refused, because prs's quotes would end its quotes rather than
+nest in them. A fix may not take a key the menu offers itself, and `prs config show` names
+a fix that does with the keys the menu keeps.
+
+`worktree_root` is `$XDG_DATA_HOME/prs/worktrees` where the config does not say.
 
 ## Opening on one pull request
 

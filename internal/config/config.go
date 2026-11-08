@@ -1,6 +1,7 @@
 // Package config reads prs's config file, which names the registry of repos or the owners
 // read in its place, how often the board reads them, how large a diff a pull request's
-// document shows whole, and the keys a person adds to it.
+// document shows whole, the keys a person adds to it, and the fixes and worktree root the menu
+// of a pull request that cannot merge uses.
 package config
 
 import (
@@ -64,6 +65,13 @@ type Config struct {
 	WindowActions []WindowAction
 	// Recaps are the commands the Recaps tab runs, and empty where the file names none.
 	Recaps Recaps
+	// WorktreeRoot is where the fix menu adds a worktree to resolve a conflict in, a directory
+	// for each repo's checkout under it, and WorktreeRootFrom names the layer that set it.
+	WorktreeRoot     string
+	WorktreeRootFrom string
+	// MergeFixes are the fixes the file adds to the menu a pull request that cannot merge
+	// opens, each running its command in a tmux window behind the board.
+	MergeFixes []MergeFix
 }
 
 // Recaps are the commands the Recaps tab runs, each an argv run with no shell. List prints the
@@ -183,6 +191,49 @@ type WindowAction struct {
 	RunsReviewRound bool `yaml:"runs_review_round"`
 }
 
+// MergeFix is a fix the menu of a pull request that cannot merge offers, on its key, for the
+// blockers it names. Its command runs in a new tmux window behind the board, started in the
+// pull request's checkout, and it is offered only where every program it needs is on PATH.
+type MergeFix struct {
+	Key    string `yaml:"key"`
+	Label  string `yaml:"label"`
+	Detail string `yaml:"detail"`
+	// Needs are the programs the command runs, as a window action's are.
+	Needs []string `yaml:"needs"`
+	// Blockers are the kinds of blocker the fix is offered for, from BlockerKinds.
+	Blockers []string `yaml:"blockers"`
+	// Window is the tmux window's name, which takes the row's placeholders alone, so the board
+	// can find it open from the row. Command takes FixPlaceholders.
+	Window  string `yaml:"window"`
+	Command string `yaml:"command"`
+	// RowReads is what the pull request's row reads while the fix's window is open, and
+	// "fixing" where the file does not say.
+	RowReads string `yaml:"row_reads"`
+}
+
+// The kinds of blocker a merge fix names, as the fix's command receives them in {blocker}.
+const (
+	Conflicts     = "conflicts"
+	Behind        = "behind"
+	FailingChecks = "failing-checks"
+	Draft         = "draft"
+)
+
+// BlockerKinds is every kind of blocker a merge fix can name.
+var BlockerKinds = []string{Conflicts, Behind, FailingChecks, Draft}
+
+// Reads is what the row reads while the fix's window is open.
+func (f MergeFix) Reads() string {
+	if f.RowReads == "" {
+		return "fixing"
+	}
+	return f.RowReads
+}
+
+// Missing is the programs the fix needs that are not on PATH. The menu offers it only where
+// none is.
+func (f MergeFix) Missing() []string { return MissingPrograms(f.Needs) }
+
 // file is the document as written.
 type file struct {
 	Registry                  string         `yaml:"repos_registry"`
@@ -192,27 +243,75 @@ type file struct {
 	DiffSectionMaxLines       yaml.Node      `yaml:"diff_section_max_lines"`
 	WindowActions             []WindowAction `yaml:"window_actions"`
 	Recaps                    Recaps         `yaml:"recaps"`
+	WorktreeRoot              string         `yaml:"worktree_root"`
+	MergeFixes                []MergeFix     `yaml:"merge_fixes"`
 }
 
-// Fields are what a window action's Window and Command can name of a pull request.
+// Fields are what a Window or Command can name of a pull request. A window action's take the
+// row's alone, and a merge fix's Command the rest as well, each empty where it does not apply.
 type Fields struct {
 	Number int
 	Repo   string
 	Slug   string
+	// Path is the repo's checkout, and Worktree the one the menu rebases the head in, where a
+	// rebase there stopped or waits to be pushed.
+	Path, Worktree string
+	// Head and Base are the branch the pull request merges from and the one it merges into.
+	Head, Base string
+	// Blocker is the kind from BlockerKinds, and Log the file holding its failing checks' log.
+	Blocker, Log string
 }
 
-// placeholders fills each name a Window or Command may hold.
-var placeholders = placeholderSet[Fields]{
+// rowPlaceholders fills each name a window action's Window or Command, or a merge fix's
+// Window, may hold.
+var rowPlaceholders = placeholderSet[Fields]{
 	"{number}": func(f Fields) string { return strconv.Itoa(f.Number) },
 	"{repo}":   func(f Fields) string { return f.Repo },
 	"{slug}":   func(f Fields) string { return f.Slug },
 }
 
-// Placeholders are the names Fill fills, sorted.
-func Placeholders() []string { return placeholders.names() }
+// fixPlaceholders fills each name a merge fix's Command may hold: the row's, the blocker's
+// kind, and quotedPlaceholders.
+var fixPlaceholders = rowPlaceholders.with(quotedPlaceholders).with(placeholderSet[Fields]{
+	"{blocker}": func(f Fields) string { return f.Blocker },
+})
 
-// Fill puts a pull request's fields into a Window or Command.
-func Fill(template string, fields Fields) string { return placeholders.fill(template, fields) }
+// quotedPlaceholders fill the values that come from outside prs, a path or a branch, which
+// FillCommand quotes for the shell and a Command may not put inside quotes of its own. A name
+// declared here is quoted, and the rest, a number, a repo or a blocker kind, are filled as
+// they are.
+var quotedPlaceholders = placeholderSet[Fields]{
+	"{path}":     func(f Fields) string { return f.Path },
+	"{worktree}": func(f Fields) string { return f.Worktree },
+	"{head}":     func(f Fields) string { return f.Head },
+	"{base}":     func(f Fields) string { return f.Base },
+	"{log}":      func(f Fields) string { return f.Log },
+}
+
+// Placeholders are the names a window action's Window and Command, and a merge fix's Window,
+// take, sorted.
+func Placeholders() []string { return rowPlaceholders.names() }
+
+// FixPlaceholders are the names a merge fix's Command takes, sorted.
+func FixPlaceholders() []string { return fixPlaceholders.names() }
+
+// ShellQuotedPlaceholders are the names among FixPlaceholders that FillCommand quotes, sorted.
+func ShellQuotedPlaceholders() []string { return quotedPlaceholders.names() }
+
+// Fill puts a pull request's fields into a Window, which tmux takes as a name.
+func Fill(template string, fields Fields) string { return fixPlaceholders.fill(template, fields) }
+
+// FillCommand puts a pull request's fields into a Command, with each of
+// ShellQuotedPlaceholders quoted for the shell. A branch name may hold ; or $, and anyone who
+// can open a pull request names one.
+func FillCommand(template string, fields Fields) string {
+	return fixPlaceholders.fillAs(template, fields, func(name, value string) string {
+		if _, quoted := quotedPlaceholders[name]; quoted {
+			return shellQuoted(value)
+		}
+		return value
+	})
+}
 
 // placeholderSet is the names a templated value may hold, each filled from fields of F. Every
 // templated key in the file matches, fills and refuses its names through one, so the keys
@@ -223,11 +322,24 @@ var placeholder = regexp.MustCompile(`\{[^}]*\}`)
 
 func (s placeholderSet[F]) names() []string { return slices.Sorted(maps.Keys(s)) }
 
+// with is the set with extra's names added.
+func (s placeholderSet[F]) with(extra placeholderSet[F]) placeholderSet[F] {
+	joined := maps.Clone(s)
+	maps.Copy(joined, extra)
+	return joined
+}
+
 // fill puts the fields into each name text holds.
 func (s placeholderSet[F]) fill(text string, fields F) string {
+	return s.fillAs(text, fields, func(_, value string) string { return value })
+}
+
+// fillAs is fill with each value passed through as, which sees the name it fills. One pass
+// fills every name, so a value holding a name is not filled again.
+func (s placeholderSet[F]) fillAs(text string, fields F, as func(name, value string) string) string {
 	var pairs []string
 	for name, value := range s {
-		pairs = append(pairs, name, value(fields))
+		pairs = append(pairs, name, as(name, value(fields)))
 	}
 	return strings.NewReplacer(pairs...).Replace(text)
 }
@@ -240,6 +352,40 @@ func (s placeholderSet[F]) check(where, text string) error {
 		}
 	}
 	return nil
+}
+
+// insideQuotes is the first of names the shell command puts inside single or double quotes,
+// where the quotes FillCommand adds would end the command's own rather than nest in them.
+func insideQuotes(command string, names []string) string {
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		switch c := command[i]; {
+		case c == '\\' && quote != '\'':
+			i++
+		case quote == 0 && (c == '\'' || c == '"'):
+			quote = c
+		case c == quote:
+			quote = 0
+		case quote != 0 && c == '{':
+			for _, name := range names {
+				if strings.HasPrefix(command[i:], name) {
+					return name
+				}
+			}
+		}
+	}
+	return ""
+}
+
+var shellSafe = regexp.MustCompile(`^[A-Za-z0-9@%+=:,./_-]+$`)
+
+// shellQuoted is value as one shell word, left bare where nothing in it is special, as
+// Python's shlex.quote does.
+func shellQuoted(value string) string {
+	if shellSafe.MatchString(value) {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 // Missing is the programs the action needs that are not on PATH. The board offers its key
@@ -346,7 +492,7 @@ func Load() (Config, error) {
 			return cfg, fmt.Errorf("%s: window_actions[%d]: %w", path, i, err)
 		}
 	}
-	if key := repeatedKey(doc.WindowActions); key != "" {
+	if key := repeatedKey(doc.WindowActions, func(a WindowAction) string { return a.Key }); key != "" {
 		return cfg, fmt.Errorf("%s: window_actions: two actions take the key %q", path, key)
 	}
 	cfg.WindowActions = doc.WindowActions
@@ -354,7 +500,33 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("%s: recaps: %w", path, err)
 	}
 	cfg.Recaps = doc.Recaps
+	for i, fix := range doc.MergeFixes {
+		if err := fix.check(); err != nil {
+			return cfg, fmt.Errorf("%s: merge_fixes[%d]: %w", path, i, err)
+		}
+	}
+	if key := repeatedKey(doc.MergeFixes, func(f MergeFix) string { return f.Key }); key != "" {
+		return cfg, fmt.Errorf("%s: merge_fixes: two fixes take the key %q", path, key)
+	}
+	cfg.MergeFixes = doc.MergeFixes
+	if cfg.WorktreeRoot, cfg.WorktreeRootFrom, err = worktreeRoot(doc.WorktreeRoot); err != nil {
+		return cfg, fmt.Errorf("%s: %w", path, err)
+	}
 	return cfg, nil
+}
+
+// worktreeRoot is the file's worktree_root, or worktrees under $XDG_DATA_HOME/prs where the
+// file does not say, and the layer that set it.
+func worktreeRoot(named string) (string, string, error) {
+	if named == "" {
+		root, err := xdgPath("XDG_DATA_HOME", filepath.Join(".local", "share"), "worktrees")
+		return root, FromDefault, err
+	}
+	root, err := expand(named)
+	if err != nil {
+		return "", "", fmt.Errorf("worktree_root: %w", err)
+	}
+	return root, "worktree_root in the config file", nil
 }
 
 // interval reads a key of whole seconds as written, and the layer that set it: the file, or
@@ -445,31 +617,60 @@ func expand(path string) (string, error) {
 }
 
 func (a WindowAction) check() error {
-	switch {
-	case a.Key == "":
-		return errors.New("key is empty")
-	case a.Label == "":
-		return errors.New("label is empty")
-	case a.Command == "":
-		return errors.New("command is empty")
-	case a.Window == "":
-		return errors.New("window is empty")
+	if err := keyed(a.Key, a.Label, a.Window, a.Command); err != nil {
+		return err
 	}
 	for _, field := range []string{a.Window, a.Command} {
-		if err := placeholders.check(field, field); err != nil {
+		if err := rowPlaceholders.check(field, field); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func repeatedKey(actions []WindowAction) string {
-	seen := map[string]bool{}
-	for _, action := range actions {
-		if seen[action.Key] {
-			return action.Key
+func (f MergeFix) check() error {
+	if err := keyed(f.Key, f.Label, f.Window, f.Command); err != nil {
+		return err
+	}
+	if len(f.Blockers) == 0 {
+		return fmt.Errorf("blockers is empty, and it names which of %s the fix is offered for", strings.Join(BlockerKinds, ", "))
+	}
+	for _, kind := range f.Blockers {
+		if !slices.Contains(BlockerKinds, kind) {
+			return fmt.Errorf("blockers names %q, and a fix is offered only for %s", kind, strings.Join(BlockerKinds, ", "))
 		}
-		seen[action.Key] = true
+	}
+	if err := rowPlaceholders.check(f.Window, f.Window); err != nil {
+		return err
+	}
+	if name := insideQuotes(f.Command, ShellQuotedPlaceholders()); name != "" {
+		return fmt.Errorf("command puts %s inside quotes, and prs quotes it already, so it goes outside them", name)
+	}
+	return fixPlaceholders.check(f.Command, f.Command)
+}
+
+// keyed refuses a key, label, window or command left empty.
+func keyed(key, label, window, command string) error {
+	switch {
+	case key == "":
+		return errors.New("key is empty")
+	case label == "":
+		return errors.New("label is empty")
+	case command == "":
+		return errors.New("command is empty")
+	case window == "":
+		return errors.New("window is empty")
+	}
+	return nil
+}
+
+func repeatedKey[T any](entries []T, key func(T) string) string {
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		if seen[key(entry)] {
+			return key(entry)
+		}
+		seen[key(entry)] = true
 	}
 	return ""
 }

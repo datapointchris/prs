@@ -45,6 +45,10 @@ const standInToken = "stand-in-token"
 // and lists each window it opened, which the windows file holds one to a line.
 // The stand-in nvim also records the variables naming the pull request's files, and copies
 // each to handed.md and handed.threads.json, since prs removes them once nvim exits.
+// The stand-in gh updates a branch, readies a draft and reruns a run, and logs one failed
+// test for any run. The stand-in git finds two files conflicting with any base, keeps the
+// worktrees it adds, and stops a rebase, unmerged where the unmerged file says. Its rebase
+// --continue stops once more where the stops file is there, and otherwise finishes.
 type standIn struct {
 	env      map[string]string
 	config   string
@@ -54,7 +58,12 @@ type standIn struct {
 	recorded string
 	handed   string
 	windows  string
-	github   *gitHub
+	// worktrees is the config's worktree_root, unmerged the file whose lines the stand-in git
+	// names as unmerged in a rebase under way, and stops the file that stops it once more.
+	worktrees string
+	unmerged  string
+	stops     string
+	github    *gitHub
 }
 
 // fetchedHead is the commit the stand-in git names for any ref.
@@ -76,6 +85,7 @@ type gitHub struct {
 	listing     []byte
 	down        bool
 	mergeStates map[int]string
+	failedRuns  map[int]string
 	recorded    string
 	rounds      bool
 	pushed      bool
@@ -85,12 +95,20 @@ type gitHub struct {
 	historyQueries []string
 }
 
-// readsAs has one pull request read on its own carry state as its merge state, whatever the
-// listing says.
+// readsAs has one pull request read on its own carry state as its merge state, and the
+// mergeable GitHub pairs with it, whatever the listing says.
 func (g *gitHub) readsAs(number int, state string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.mergeStates[number] = state
+}
+
+// failsIn has one pull request read on its own carry its test check failed, in the GitHub
+// Actions run named run.
+func (g *gitHub) failsIn(number int, run string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.failedRuns[number] = run
 }
 
 // withRounds has each pull request read on its own carry the review round in
@@ -105,7 +123,7 @@ func (g *gitHub) withRounds() {
 // testdata/pull-request.json, which carries the detail.
 func (g *gitHub) serveOne(w http.ResponseWriter, number int) {
 	g.mu.Lock()
-	listing, state, rounds, pushed := g.listing, g.mergeStates[number], g.rounds, g.pushed
+	listing, state, failedRun, rounds, pushed := g.listing, g.mergeStates[number], g.failedRuns[number], g.rounds, g.pushed
 	g.mu.Unlock()
 	if listing == nil {
 		listing, _ = os.ReadFile(filepath.Join("testdata", "search.json"))
@@ -121,7 +139,17 @@ func (g *gitHub) serveOne(w http.ResponseWriter, number int) {
 		}
 	}
 	if state != "" {
-		pr["mergeStateStatus"] = state
+		pr["mergeStateStatus"], pr["mergeable"] = state, map[string]string{"DIRTY": "CONFLICTING", "UNKNOWN": "UNKNOWN"}[state]
+		if pr["mergeable"] == "" {
+			pr["mergeable"] = "MERGEABLE"
+		}
+	}
+	if failedRun != "" {
+		rollup := pr["head"].(map[string]any)["nodes"].([]any)[0].(map[string]any)["commit"].(map[string]any)["statusCheckRollup"].(map[string]any)
+		rollup["contexts"].(map[string]any)["nodes"].([]any)[0] = map[string]any{
+			"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE",
+			"detailsUrl": "https://github.com/acme/widget/actions/runs/" + failedRun + "/job/7",
+		}
 	}
 	if rounds {
 		if err := withRoundOf(pr, number); err != nil {
@@ -380,6 +408,20 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newStandIn(t *testing.T) standIn {
 	t.Helper()
 	dir := t.TempDir()
@@ -390,7 +432,8 @@ func newStandIn(t *testing.T) standIn {
 	s := standIn{
 		config: filepath.Join(dir, "config", "prs", "config.yml"), checkout: filepath.Join(dir, "widget"), ledger: filepath.Join(dir, "ledger"),
 		tmp: filepath.Join(dir, "tmp"), recorded: filepath.Join(dir, "recorded"), handed: filepath.Join(dir, "handed"),
-		windows: filepath.Join(dir, "windows"), github: &gitHub{mergeStates: map[int]string{}, recorded: filepath.Join(dir, "recorded")},
+		windows: filepath.Join(dir, "windows"), worktrees: filepath.Join(dir, "worktrees"), unmerged: filepath.Join(dir, "unmerged"), stops: filepath.Join(dir, "stops"),
+		github: &gitHub{mergeStates: map[int]string{}, failedRuns: map[int]string{}, recorded: filepath.Join(dir, "recorded")},
 	}
 	bin := filepath.Join(dir, "bin")
 	for _, d := range []string{bin, s.checkout, s.ledger, s.tmp, filepath.Join(dir, "config", "prs")} {
@@ -409,8 +452,9 @@ func newStandIn(t *testing.T) standIn {
     exit 1
   fi
   sleep 1; exit 0 ;;
-'pr close') exit 0 ;;
+'pr close'|'pr update-branch'|'pr ready'|'run rerun') exit 0 ;;
 'pr comment') ` + posted + ` exit 0 ;;
+'run view') printf 'test\tRun go test\t2026-11-07T09:01:00Z --- FAIL: TestFetch (30.00s)\n'; exit 0 ;;
 esac
 echo 'no oauth token found for github.com' >&2
 exit 1
@@ -425,9 +469,28 @@ exit 1
 esac
 ` + fmt.Sprintf("cat %q\n", listed),
 		"tmux": "#!/bin/sh\n" + record + "case \"$*\" in *automatic-rename}*) printf 'prs\\t0\\n' ;; esac\n" +
-			fmt.Sprintf("case \"$1\" in new-window) printf '%%s\\n' \"$3\" >> %[1]q ;; list-windows) cat %[1]q 2>/dev/null ;; esac\n", s.windows),
+			fmt.Sprintf("case \"$1\" in new-window) while [ \"$1\" != -n ]; do shift; done; printf '%%s\\n' \"$2\" >> %[1]q ;; list-windows) cat %[1]q 2>/dev/null ;; esac\n", s.windows),
 		"claude": "#!/bin/sh\n" + record,
-		"git": "#!/bin/sh\n" + record +
+		// A merge conflicts in two files, a rebase stops with what the unmerged file holds
+		// unmerged, and git keeps a rebase under way in the worktree's rebase-merge.
+		"git": "#!/bin/sh\n" + record + fmt.Sprintf(`case "$1 $2" in
+'merge-tree --write-tree') printf '%%s\n' 4b825dc642cb6eb9a060e54bf8d69288fbee4904 cache/cache.go cache/stats.go '' 'CONFLICT (content): Merge conflict in cache/cache.go'; exit 1 ;;
+'worktree add') mkdir -p "$5"; printf 'worktree %%s\n' "$5" >> %[1]q; exit 0 ;;
+'worktree list') cat %[1]q 2>/dev/null; exit 0 ;;
+'worktree remove') rm -rf "$3"; sed -i "\#^worktree $3\$#d" %[1]q; exit 0 ;;
+'rebase --quiet') mkdir -p rebase-merge; exit 1 ;;
+'rebase --continue')
+  if [ -f %[3]q ]; then rm %[3]q; printf 'cache/stats.go\n' > %[2]q; exit 1; fi
+  rm -rf rebase-merge; exit 0 ;;
+'rebase --abort') rm -rf rebase-merge; exit 0 ;;
+'rev-parse --path-format=absolute') printf '%%s\n' "$PWD/rebase-merge" "$PWD/rebase-apply"; exit 0 ;;
+'log --oneline') printf '1a2b3c4 Count cache hits\n'; exit 0 ;;
+'symbolic-ref --quiet') exit 1 ;;
+esac
+case "$*" in
+*--diff-filter=U*) cat %[2]q 2>/dev/null; exit 0 ;;
+esac
+`, filepath.Join(dir, "worktree-list"), s.unmerged, s.stops) +
 			"case \"$*\" in 'rev-parse --verify --quiet " + rebasedAway + "^{commit}') exit 1 ;; esac\n" +
 			"[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\n" +
 			`case " $* " in *' diff '*) for a; do last=$a; done; cat "` + filepath.Dir(listed) + `/pull-request-${last##*/pr/}.diff" 2>/dev/null ;; esac` + "\nexit 0\n",
@@ -455,7 +518,16 @@ window_actions:
     window: "review {repo} #{number}"
     command: claude '/review-pr {number}'
     runs_review_round: true
-`, filepath.Join(dir, "repos.json"))
+worktree_root: %s
+merge_fixes:
+  - key: c
+    label: hand to claude
+    needs: [claude]
+    blockers: [conflicts, behind, failing-checks]
+    window: "fix {repo} #{number}"
+    command: FIX_WORKTREE={worktree} FIX_LOG={log} claude '/make-mergeable {number} {blocker}'
+    row_reads: claude fixing
+`, filepath.Join(dir, "repos.json"), s.worktrees)
 	files := map[string]string{filepath.Join(dir, "repos.json"): registry, s.config: config}
 	for path, body := range files {
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
@@ -858,6 +930,8 @@ func TestARowCountsTheCommitsSinceItsReviewAndIDiffsOnlyThoseOrTheWholeDiffWithW
 func TestTheDiffSectionShowsASmallDiffWholeAndNamesALargeOnesSize(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
+	// Its listing reads conflicts, and its own read ready, so m asks to merge it.
+	s.github.readsAs(13, "CLEAN")
 	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 360, Rows: 40})
 	term.WaitFor("people · 3")
 	term.WaitFor(" #5")
@@ -912,6 +986,10 @@ func TestTheDiffSectionShowsASmallDiffWholeAndNamesALargeOnesSize(t *testing.T) 
 func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtOnce(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
+	// The listing reads #12 behind and #13 conflicting, and each one's own read ready, so m asks
+	// to merge each.
+	s.github.readsAs(12, "CLEAN")
+	s.github.readsAs(13, "CLEAN")
 	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--since", "2026-11-01"}, Env: s.env, Cols: 140, Rows: 30})
 	term.WaitFor("people · 3")
 	term.WaitFor("recently closed · 2")
@@ -936,12 +1014,15 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtO
 	if recorded, _ := os.ReadFile(s.recorded); strings.Count(string(recorded), "pr\nmerge\n12\n") != 1 {
 		t.Error("m pressed while a merge is under way should not send a second merge")
 	}
-	// The cursor moved on to the next open row in the people's group.
+	// The cursor moved on to the next open row in the people's group, a draft, whose menu names it.
 	term.Press("m")
-	term.WaitFor("merge acme/gadget #5 — Tidy the gadget? [Y/n]")
+	term.WaitFor("fix acme/gadget #5 — Tidy the gadget?")
 	term.Press("esc")
 
-	term.Press("g", "j", "j", "j", "j", "m", "enter")
+	// The listing reads #13 conflicting, so m reads it again before it asks.
+	term.Press("g", "j", "j", "j", "j", "m")
+	term.WaitFor("merge acme/widget #13 — Count cache hits? [Y/n]")
+	term.Press("enter")
 	term.WaitFor("gh could not merge #13: X Pull request acme/widget#13 is not mergeable")
 	term.Press("x")
 	term.WaitFor("close acme/widget #13 — Count cache hits? [y/N]")
@@ -987,6 +1068,149 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtO
 	term.WaitFor("gh could not merge #13")
 	if !s.ran(t, "pr", "merge", "13", "--repo", "acme/widget", "--merge", "--match-head-commit", fetchedHead) {
 		t.Error("a merge after d should pin the head d fetched")
+	}
+	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+}
+
+// A merge GitHub refuses reads the pull request again, and where it now conflicts opens the
+// fix menu under gh's words, naming the files git finds conflicting before anything is checked
+// out. n rebases the head onto the base in a worktree of its own and hands each stop to nvim.
+// A path left unmerged offers the configured fix, which opens behind the board and marks the
+// row while its window is open. With nothing left unmerged, prs goes on with the rebase,
+// opening nvim at its next stop, and once it finishes enter force-pushes it with a lease.
+func TestARefusedMergeOpensTheFixMenuOnItsConflictsWhichRebaseInAWorktreeAndPush(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t)
+	s.github.readsAs(13, "CLEAN")
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 40})
+	term.WaitFor("people · 3")
+
+	term.Press("g", "j", "j", "j", "j", "j", "m")
+	term.WaitFor("merge acme/widget #13 — Count cache hits? [Y/n]")
+	s.github.readsAs(13, "DIRTY")
+	term.Press("enter")
+	term.WaitFor("gh could not merge #13: X Pull request acme/widget#13 is not mergeable")
+	term.WaitFor("It conflicts with add-cache in 2 files:")
+	term.WaitFor("cache/stats.go")
+	term.WaitFor("n c x chooses  esc cancels")
+	if !s.ran(t, "merge-tree", "--write-tree", "--name-only", "origin/add-cache") {
+		t.Error("the menu should name the conflicting files from git merge-tree, against the base")
+	}
+
+	worktree := filepath.Join(s.worktrees, "widget", "pr-13-rebase")
+	writeFile(t, s.unmerged, "cache/cache.go\n")
+	term.Press("n")
+	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-rebase:")
+	if !s.ran(t, "git", "cwd="+s.checkout, "fetch", "--quiet", "origin", "+refs/heads/cache-metrics:refs/remotes/origin/cache-metrics") ||
+		!s.ran(t, "git", "cwd="+s.checkout, "worktree", "add", "--quiet", "--detach", worktree, "refs/remotes/origin/cache-metrics") ||
+		!s.ran(t, "git", "cwd="+worktree, "rebase", "--quiet", "origin/add-cache") ||
+		!s.ran(t, "nvim", "cwd="+worktree, "-c") {
+		t.Error("n should rebase the head branch onto the base in a detached worktree, then open nvim there")
+	}
+
+	term.Press("c")
+	term.WaitForPattern(underRow("Count cache hits", "claude fixing"))
+	if !s.ran(t, "new-window", "-d", "-n", "fix widget #13", "-c", s.checkout,
+		"FIX_WORKTREE="+worktree+" FIX_LOG='' claude '/make-mergeable 13 conflicts'") {
+		t.Error("c should open the configured fix behind the board, handed the worktree")
+	}
+
+	// The stop is resolved, and the rebase stops once more, on a path nvim then leaves unmerged.
+	writeFile(t, s.stops, "")
+	removeFile(t, s.unmerged)
+	term.Press("f")
+	term.WaitFor("A rebase of it onto origin/add-cache stopped in ~/worktrees/widget/pr-13-rebase.")
+	term.Press("n")
+	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-rebase:")
+	term.WaitFor("cache/stats.go")
+	if recorded, _ := os.ReadFile(s.recorded); strings.Count(string(recorded), "nvim\ncwd="+worktree+"\n") != 3 || !s.ran(t, "git", "cwd="+worktree, "rebase", "--continue") {
+		t.Error("nvim exiting with nothing unmerged should go on with the rebase, then open nvim at its next stop")
+	}
+
+	removeFile(t, s.unmerged)
+	term.Press("n")
+	term.WaitFor("1 commit rebased onto origin/add-cache in ~/worktrees/widget/pr-13-rebase:")
+	term.WaitFor("force-push it to cache-metrics, with a lease on the head it started from? [Y/n]")
+	term.Press("enter")
+	term.WaitFor("pushed 1a2b3c4 to cache-metrics, rebasing acme/widget #13 onto origin/add-cache")
+	if !s.ran(t, "git", "cwd="+worktree, "push", "--quiet", "--force-with-lease=refs/heads/cache-metrics:"+fetchedHead, "origin", "HEAD:refs/heads/cache-metrics") || fileExists(worktree) {
+		t.Error("enter should force-push the rebase with a lease on the head it started from, then remove the worktree")
+	}
+
+	// A rebase left stopped, once the pull request reads ready, is still offered for removal.
+	writeFile(t, s.unmerged, "cache/cache.go\n")
+	term.Press("f")
+	term.WaitFor("n c x chooses  esc cancels")
+	term.Press("n")
+	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-rebase:")
+	term.Press("esc")
+	s.github.readsAs(13, "CLEAN")
+	term.Press("f")
+	term.WaitFor("A rebase of it onto origin/add-cache stopped in ~/worktrees/widget/pr-13-rebase.")
+	term.WaitFor("a chooses  esc cancels")
+	term.Press("a")
+	term.WaitFor("aborted the rebase of acme/widget #13 onto origin/add-cache and removed ~/worktrees/widget/pr-13-rebase")
+	if !s.ran(t, "git", "cwd="+worktree, "rebase", "--abort") || fileExists(worktree) {
+		t.Error("a should abort the rebase left stopped, then remove the worktree")
+	}
+	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+}
+
+// A branch behind its base updates on GitHub, a draft is marked ready, and failing checks show
+// their log on the Reader, rerun, or go to the configured fix with the log's path.
+func TestTheFixMenuUpdatesABranchReadiesADraftAndReadsOrRerunsFailingChecks(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t)
+	s.github.readsAs(13, "UNSTABLE")
+	s.github.failsIn(13, "2401")
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 40})
+	term.WaitFor("people · 3")
+
+	term.Press("g", "j", "j", "m")
+	term.WaitFor("Its branch is behind main")
+	term.WaitFor("u c chooses  esc cancels")
+	term.Press("u")
+	term.WaitFor("rebased the branch of acme/widget #12 onto main on GitHub")
+	if !s.ran(t, "pr", "update-branch", "12", "--repo", "acme/widget", "--rebase") {
+		t.Error("u should rebase the branch through gh")
+	}
+
+	term.Press("j", "f")
+	term.WaitFor("It is a draft, which GitHub does not merge.")
+	term.Press("r")
+	term.WaitFor("marked acme/gadget #5 ready for review")
+	if !s.ran(t, "pr", "ready", "5", "--repo", "acme/gadget") {
+		t.Error("r should mark the draft ready through gh")
+	}
+
+	term.Press("j", "j", "f")
+	term.WaitFor("Its checks fail: test.")
+	term.WaitFor("merge anyway: GitHub merges it with these checks failing")
+	term.WaitFor("l r c m chooses  esc cancels")
+	term.Press("l")
+	term.WaitFor("--- FAIL: TestFetch")
+	if !s.ran(t, "run", "view", "2401", "--log-failed", "--repo", "acme/widget") {
+		t.Error("l should read the failed run's log through gh")
+	}
+	term.Press("esc", "f")
+	term.WaitFor("Its checks fail: test.")
+	term.Press("r")
+	term.WaitFor("reran the failed jobs of acme/widget #13, in run 2401")
+	if !s.ran(t, "run", "rerun", "2401", "--failed", "--repo", "acme/widget") {
+		t.Error("r should rerun the failed jobs through gh")
+	}
+	term.Press("f")
+	term.WaitFor("Its checks fail: test.")
+	term.Press("c")
+	term.WaitForPattern(underRow("Count cache hits", "claude fixing"))
+	if !s.ran(t, "-c", s.checkout, "FIX_WORKTREE='' FIX_LOG="+filepath.Join(s.tmp, "prs-failing-log-widget-13.txt")+" claude '/make-mergeable 13 failing-checks'") {
+		t.Error("c should hand the configured fix the failing log's path")
 	}
 	term.Press("q")
 	if code := term.WaitExit(); code != 0 {
@@ -1092,6 +1316,7 @@ func TestOneQuestionMergesEveryMarkedGreenPullRequestInTurnEachAfterItsOwnRead(t
 func TestTuiOpensOnTheNamedPullRequestWithItsDocumentAndQExits0(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
+	s.github.readsAs(12, "CLEAN")
 	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "acme/widget#12"}, Env: s.env, Cols: 378, Rows: 91})
 	term.WaitFor("mona approved at 9e8d7c6")
 	if n := strings.Count(term.Frame().Text(), "acme/widget #12 · opened by octo"); n != 1 {

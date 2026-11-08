@@ -32,6 +32,7 @@ const (
 	pathGlyph    = "" // fa-folder
 	numberGlyph  = "" // oct-git-pull-request
 	sinceGlyph   = "" // oct-git-commit
+	fixGlyph     = "" // fa-wrench
 	botGlyph     = "" // fa-robot, in every Nerd Font, where U+F544 is in none
 )
 
@@ -53,11 +54,17 @@ type meaning struct {
 	word string
 	code string
 	// passed is a check that needs nothing from anyone, which the document lists after
-	// those that do.
-	passed bool
+	// those that do, and failed one whose run ended without passing, which the fix menu
+	// reads and reruns.
+	passed, failed bool
 	// ready is a merge state that merges on its own, which space marks, and computing one
 	// GitHub has not worked out yet, which a batch reads again.
 	ready, computing bool
+	// blocker is what the fix menu offers fixes for in a merge state, and checksBlock says a
+	// failing check is the blocker there instead. mergesFailing is one GitHub merges with
+	// its checks failing, because none of them is required.
+	blocker                    blocker
+	checksBlock, mergesFailing bool
 }
 
 // checkMeanings covers a rollup on a row and one check run or commit status in the
@@ -66,9 +73,9 @@ var checkMeanings = map[string]meaning{
 	"SUCCESS":   {word: "passing", code: gotermboard.Green, passed: true},
 	"NEUTRAL":   {word: "neutral", code: gotermboard.Green, passed: true},
 	"SKIPPED":   {word: "skipped", code: dim, passed: true},
-	"FAILURE":   {word: "failing", code: gotermboard.Red},
-	"ERROR":     {word: "failing", code: gotermboard.Red},
-	"TIMED_OUT": {word: "timed out", code: gotermboard.Red},
+	"FAILURE":   {word: "failing", code: gotermboard.Red, failed: true},
+	"ERROR":     {word: "failing", code: gotermboard.Red, failed: true},
+	"TIMED_OUT": {word: "timed out", code: gotermboard.Red, failed: true},
 	"":          {word: "not run", code: dim},
 }
 
@@ -104,12 +111,27 @@ func reviewMeaning(state string) meaning {
 var mergeMeanings = map[string]meaning{
 	"CLEAN":     {word: "ready", code: gotermboard.Green, ready: true},
 	"HAS_HOOKS": {word: "ready", code: gotermboard.Green, ready: true},
-	"UNSTABLE":  {word: "mergeable", code: gotermboard.Yellow},
-	"BEHIND":    {word: "behind", code: gotermboard.Cyan},
-	"BLOCKED":   {word: "blocked"},
-	"DIRTY":     {word: "conflicts", code: gotermboard.Yellow},
-	"DRAFT":     {word: "draft", code: dim},
-	"UNKNOWN":   {word: "unknown", code: dim, computing: true},
+	"UNSTABLE":  {word: "mergeable", code: gotermboard.Yellow, checksBlock: true, mergesFailing: true},
+	"BEHIND":    {word: "behind", code: gotermboard.Cyan, blocker: behindBlocker},
+	"BLOCKED":   {word: "blocked", blocker: heldBlocker, checksBlock: true},
+	"DIRTY":     {word: "conflicts", code: gotermboard.Yellow, blocker: conflictsBlocker},
+	"DRAFT":     {word: "draft", code: dim, blocker: draftBlocker},
+	"UNKNOWN":   {word: "unknown", code: dim, computing: true, blocker: computingBlocker},
+}
+
+// mergeStateOf is the merge state the row reads as: DRAFT for a draft and DIRTY for a
+// conflict, whatever else GitHub reports, because fixing either runs every check again, and
+// empty for a host that reports none.
+func mergeStateOf(pr pullrequests.PullRequest) string {
+	switch {
+	case pr.Draft:
+		return "DRAFT"
+	case pr.Mergeable != nil && *pr.Mergeable == "CONFLICTING":
+		return "DIRTY"
+	case pr.MergeStateStatus == nil:
+		return ""
+	}
+	return *pr.MergeStateStatus
 }
 
 // standingMeanings cover a row that waits on nobody. Merged and closed are GitHub's colors,
@@ -125,20 +147,17 @@ var standingMeanings = map[rowState]meaning{
 // not there reads as its own words, because GitHub adds states. A host that carries no merge
 // state reads open, dim, because it says no more than the group does.
 func stateMeaning(pr pullrequests.PullRequest, state rowState) meaning {
+	merge := mergeStateOf(pr)
 	switch {
 	case state != "":
 		return standingMeanings[state]
-	case pr.Draft:
-		return mergeMeanings["DRAFT"]
-	case pr.Mergeable != nil && *pr.Mergeable == "CONFLICTING":
-		return mergeMeanings["DIRTY"]
-	case pr.MergeStateStatus == nil:
+	case merge == "":
 		return meaning{word: "open", code: dim}
 	}
-	if m, known := mergeMeanings[*pr.MergeStateStatus]; known {
+	if m, known := mergeMeanings[merge]; known {
 		return m
 	}
-	return meaning{word: words(*pr.MergeStateStatus)}
+	return meaning{word: words(merge)}
 }
 
 // words is an enum as words, CHANGES_REQUESTED as "changes requested".
@@ -410,9 +429,9 @@ var fieldGap = gotermboard.C("   ", "")
 
 // secondLine is a pull request's second line on the board: its checks under where it stands,
 // then where it is checked out, its number and the open pull request it is stacked on, its
-// review, its newest Claude review round, what was pushed since its newest review, and the
-// app that opened it. A field a pull request does not have takes no room. The line is cut at
-// the table's edge, so a narrow screen loses its end first.
+// review, its newest Claude review round, what was pushed since its newest review, a merge fix
+// running on it, and the app that opened it. A field a pull request does not have takes no
+// room. The line is cut at the table's edge, so a narrow screen loses its end first.
 func (b *Board) secondLine(at rowAt, parent int) gotermboard.Line {
 	pr := at.pr
 	line := gotermboard.Line{checksCell(pr)}
@@ -427,6 +446,9 @@ func (b *Board) secondLine(at rowAt, parent int) gotermboard.Line {
 	}
 	if since := sinceReviewCell(b.detailOf(pr)); since.Text != "" {
 		line = append(line, fieldGap, since)
+	}
+	if fixing := b.fixingCell(pr); fixing.Text != "" {
+		line = append(line, fieldGap, fixing)
 	}
 	if pr.IsBot() {
 		line = append(line, fieldGap, botCell(pr))

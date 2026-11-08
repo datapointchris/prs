@@ -67,10 +67,14 @@ type Board struct {
 	// rounds its review rounds and the detail read they came from.
 	documents map[string]documentMemo
 	rounds    map[string]roundsMemo
-	// reviewActions are the window actions that run a review round, and roundWindows which of
-	// their windows are open, nil until ReadDetails is called inside tmux.
+	// reviewActions are the window actions that run a review round, and windows which of
+	// their windows and the fixes' are open, nil until ReadDetails is called inside tmux.
 	reviewActions []config.WindowAction
-	roundWindows  *roundWindows
+	windows       *tmuxWindows
+	// fixes are the merge fixes the config adds to the fix menu, and worktreeRoot where that
+	// menu adds a worktree to resolve a conflict in.
+	fixes        []config.MergeFix
+	worktreeRoot string
 	// working is every command a key started that has not ended, oldest first.
 	working   []underWay
 	workCount int
@@ -93,31 +97,48 @@ type Board struct {
 	held   *heldRow
 }
 
-// New is a board over repos, reading each provider every interval, with the window actions
-// the config adds. It refuses a window action on a key the board already binds.
-func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Board, error) {
+// Configured is what the config adds to the board: the keys that open tmux windows, the fixes
+// the fix menu offers, and where that menu adds a worktree to resolve a conflict in.
+type Configured struct {
+	Windows      []config.WindowAction
+	Fixes        []config.MergeFix
+	WorktreeRoot string
+}
+
+// New is a board over repos, reading each provider every interval, with what the config adds.
+// It refuses a window action on a key the board already binds, and a fix on a key the fix
+// menu already offers.
+func New(repos Repos, every time.Duration, configured Configured) (*Board, error) {
+	windows := configured.Windows
 	for _, window := range windows {
 		if err := Refused(window); err != nil {
 			return nil, fmt.Errorf("window action %q: %w", window.Label, err)
 		}
 	}
+	for _, fix := range configured.Fixes {
+		if err := RefusedFix(fix); err != nil {
+			return nil, fmt.Errorf("merge fix %q: %w", fix.Label, err)
+		}
+	}
 	b := &Board{
-		from:       repos.From,
-		registry:   repos.Registry,
-		owners:     repos.Owners,
-		repos:      repos.Repos,
-		renderer:   markdown.New(nil),
-		every:      every,
-		shown:      map[string]pullrequests.PullRequest{},
-		drawnIn:    map[string]section{},
-		marked:     map[string]bool{},
-		refused:    map[string]bool{},
-		closedHere: map[string]closeMadeHere{},
-		diffed:     map[string]string{},
-		documents:  map[string]documentMemo{},
-		rounds:     map[string]roundsMemo{},
-		details:    pullrequests.NewDetails(),
-		scopes:     map[string]pullrequests.Scope{},
+		fixes:        configured.Fixes,
+		worktreeRoot: configured.WorktreeRoot,
+		from:         repos.From,
+		registry:     repos.Registry,
+		owners:       repos.Owners,
+		repos:        repos.Repos,
+		renderer:     markdown.New(nil),
+		every:        every,
+		shown:        map[string]pullrequests.PullRequest{},
+		drawnIn:      map[string]section{},
+		marked:       map[string]bool{},
+		refused:      map[string]bool{},
+		closedHere:   map[string]closeMadeHere{},
+		diffed:       map[string]string{},
+		documents:    map[string]documentMemo{},
+		rounds:       map[string]roundsMemo{},
+		details:      pullrequests.NewDetails(),
+		scopes:       map[string]pullrequests.Scope{},
 	}
 	for _, provider := range pullrequests.Providers {
 		scope := pullrequests.Scope{Repos: registry.Hosted(repos.Repos, provider.Name)}
@@ -191,11 +212,11 @@ func (b *Board) ReadClosed(since pullrequests.Since, every time.Duration) {
 
 // ReadDetails has each listing that lands read its rows' details in the background, for the
 // document's sections that detail fills and each row's review round. Inside tmux it also has
-// the board read which windows are open, where a window action runs a review round. A board
-// printed once leaves it off, since nothing waits for them.
+// the board read which windows are open, where a window action runs a review round or the
+// config adds a merge fix. A board printed once leaves it off, since nothing waits for them.
 func (b *Board) ReadDetails() {
 	b.readDetails = true
-	b.roundWindows = watchRoundWindows(b.reviewActions)
+	b.windows = watchTmuxWindows(b.reviewActions, b.fixes)
 }
 
 // ReadDiffs has each listing that lands read its rows' diffs in the background, for the
@@ -242,8 +263,8 @@ func (b *Board) Sources() []gotermboard.Refresher {
 	if b.openedOn != nil {
 		refreshers = append(refreshers, b.openedOn.source)
 	}
-	if b.roundWindows != nil {
-		refreshers = append(refreshers, b.roundWindows.source)
+	if b.windows != nil {
+		refreshers = append(refreshers, b.windows.source)
 	}
 	return refreshers
 }

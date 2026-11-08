@@ -35,13 +35,17 @@ type PullRequest struct {
 	Author string `json:"author"`
 	// Bot is true where the provider says an app opened it, and null where its listing
 	// does not say.
-	Bot       *bool     `json:"bot"`
-	Body      string    `json:"body"`
-	URL       string    `json:"url"`
-	Branch    string    `json:"branch"`
-	Base      string    `json:"base"`
-	Draft     bool      `json:"draft"`
-	CreatedAt time.Time `json:"created_at"`
+	Bot    *bool  `json:"bot"`
+	Body   string `json:"body"`
+	URL    string `json:"url"`
+	Branch string `json:"branch"`
+	Base   string `json:"base"`
+	Draft  bool   `json:"draft"`
+	// HeadInFork says the head branch is in another repo than the pull request's, which
+	// origin is not, so the fix menu pushes no merge to it. Bitbucket's listing does not say,
+	// so it stays out of --json rather than reading false there.
+	HeadInFork bool      `json:"-"`
+	CreatedAt  time.Time `json:"created_at"`
 	// The diff counts are null, never 0, from a provider whose listing does not count
 	// them. A pull request nobody counted is not one that changed nothing.
 	Additions    *int `json:"additions"`
@@ -158,14 +162,29 @@ const readTimeout = 2 * time.Minute
 // once the client itself has ended.
 const pipesGrace = 5 * time.Second
 
-// ErrNoAnswer is a client killed at its timeout. A client that changes a pull request may
-// have changed it by then.
-var ErrNoAnswer = fmt.Errorf("no answer in %s", readTimeout)
+// hooksTimeout bounds a git client that runs the repo's own hooks, such as a commit or a push,
+// which can run a repo's whole test suite.
+const hooksTimeout = 10 * time.Minute
+
+// ErrNoAnswer is a client killed at its timeout, which errors.Is finds whatever the timeout
+// was. A client that changes a pull request may have changed it by then.
+var ErrNoAnswer = errors.New("no answer")
+
+// noAnswer is ErrNoAnswer naming the timeout.
+type noAnswer struct{ within time.Duration }
+
+func (e noAnswer) Error() string        { return fmt.Sprintf("no answer in %s", e.within) }
+func (e noAnswer) Is(target error) bool { return target == ErrNoAnswer }
 
 // Run runs a client a key uses as a read runs one, and returns its stdout. It fails with the
 // first line the client said, or with ErrNoAnswer.
 func Run(ctx context.Context, dir string, argv ...string) ([]byte, error) {
-	out, said, err := run(ctx, dir, argv[0], argv[1:]...)
+	return RunWithin(ctx, readTimeout, dir, argv...)
+}
+
+// RunWithin is Run, bounded by within rather than a read's timeout.
+func RunWithin(ctx context.Context, within time.Duration, dir string, argv ...string) ([]byte, error) {
+	out, said, err := runFor(ctx, within, dir, argv[0], argv[1:]...)
 	switch {
 	case errors.Is(err, ErrNoAnswer), err != nil && said == "":
 		return out, err
@@ -207,16 +226,23 @@ func lastLineOf(path string) string {
 	return strings.TrimSpace(lines[len(lines)-1])
 }
 
-// run runs a client with stdin closed and returns its stdout, and stderr's first line on
+// run runs a client with stdin closed and returns its stdout, and failureLine of its stderr on
 // a failure. git and ssh ask on the terminal itself rather than on stdin, so the client runs
 // in a session of its own, with no terminal to open, and git's prompt is turned off as well.
-// At the timeout its whole process group is killed, ssh included.
+// git's editor is true, so a commit git words itself, as a rebase going on does, keeps the
+// message it has rather than wait on an editor nobody can see. At the timeout its whole
+// process group is killed, ssh included.
 func run(ctx context.Context, dir string, name string, args ...string) ([]byte, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, readTimeout)
+	return runFor(ctx, readTimeout, dir, name, args...)
+}
+
+// runFor is run bounded by within.
+func runFor(ctx context.Context, within time.Duration, dir string, name string, args ...string) ([]byte, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, within)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = pipesGrace
@@ -224,17 +250,30 @@ func run(ctx context.Context, dir string, name string, args ...string) ([]byte, 
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return out, ErrNoAnswer.Error(), ErrNoAnswer
+		late := noAnswer{within: within}
+		return out, late.Error(), late
 	}
 	if err != nil {
 		said := strings.TrimSpace(stderr.String())
 		if said == "" {
 			said = strings.TrimSpace(string(out))
 		}
-		first, _, _ := strings.Cut(said, "\n")
-		return out, first, err
+		return out, failureLine(said), err
 	}
 	return out, "", nil
+}
+
+// failureLine is the line of what a client said that names its failure: the first naming a
+// ref git refused, as ` ! [rejected] HEAD -> main (fetch first)` under a push's `To <remote>`,
+// and otherwise the first.
+func failureLine(said string) string {
+	for line := range strings.Lines(said) {
+		if refused, ok := strings.CutPrefix(strings.TrimSpace(line), "! "); ok {
+			return "! " + strings.Join(strings.Fields(refused), " ")
+		}
+	}
+	first, _, _ := strings.Cut(said, "\n")
+	return first
 }
 
 // Finish sets each pull request's age and its repo's checkout, and sorts them oldest

@@ -171,7 +171,7 @@ func (d *Diffs) readInTurn(ctx context.Context, queue []dueDiff) {
 		d.store(read.pr, diff, err)
 		if read.inCheckout && errors.Is(err, ErrNoAnswer) {
 			for _, rest := range queue[i+1:] {
-				d.store(rest.pr, Diff{}, fmt.Errorf("not fetched, because a fetch in %s just got %w", rest.pr.Path, ErrNoAnswer))
+				d.store(rest.pr, Diff{}, fmt.Errorf("not fetched, because a fetch in %s just got %w", rest.pr.Path, noAnswer{within: readTimeout}))
 			}
 			return
 		}
