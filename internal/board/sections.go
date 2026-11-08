@@ -38,7 +38,7 @@ func sectionOf(pr pullrequests.PullRequest) section {
 	if standing, err := pr.Standing(); err == nil && standing != pullrequests.Open {
 		return recentlyClosed
 	}
-	if pr.Bot != nil && *pr.Bot {
+	if isBot(pr) {
 		return bots
 	}
 	return people

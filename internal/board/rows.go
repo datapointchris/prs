@@ -3,6 +3,7 @@ package board
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -191,9 +192,7 @@ var listColumns = []rowColumn{
 	{Column: gotermboard.Column{Right: true}, cell: diffCell(1)},
 	{Column: gotermboard.Column{Right: true}, cell: diffCell(2)},
 	{Column: gotermboard.Column{Title: "REPO", Max: repoWidth}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return repoCell(at.pr) }},
-	{Column: gotermboard.Column{Title: "#", Right: true}, cell: func(_ *Board, at rowAt) gotermboard.Cell {
-		return gotermboard.C(fmt.Sprintf("%s #%d", numberGlyph, at.pr.Number), gotermboard.Yellow)
-	}},
+	{Column: gotermboard.Column{Title: "#", Right: true}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return numberCell(at.pr) }},
 	{Column: gotermboard.Column{Title: "PULL REQUEST"}},
 }
 
@@ -373,18 +372,38 @@ func titleCell(pr pullrequests.PullRequest, state rowState) gotermboard.Cell {
 func titleLine(pr pullrequests.PullRequest, parent int, state rowState) gotermboard.Line {
 	line := gotermboard.Line{titleCell(pr, state)}
 	if parent != 0 {
-		line = append(line, gotermboard.C(fmt.Sprintf("  %s #%d", stackGlyph, parent), gotermboard.Yellow))
+		line = append(line, titleGap, stackCell(parent))
 	}
-	if pr.Bot != nil && *pr.Bot {
-		line = append(line, gotermboard.C("  "+botGlyph+" bot "+pr.Author, gotermboard.Magenta))
+	if isBot(pr) {
+		line = append(line, titleGap, botCell(pr))
 	}
 	return line
 }
+
+// titleGap is the space between the title and each mark after it in prs list.
+var titleGap = gotermboard.C("  ", "")
 
 // branchCell is the branch the pull request merges from.
 func branchCell(pr pullrequests.PullRequest) gotermboard.Cell {
 	return gotermboard.C(branchGlyph+"  "+orDash(pr.Branch), gotermboard.Blue)
 }
+
+// numberCell is the pull request's number.
+func numberCell(pr pullrequests.PullRequest) gotermboard.Cell {
+	return gotermboard.C(fmt.Sprintf("%s  #%d", numberGlyph, pr.Number), gotermboard.Yellow)
+}
+
+// stackCell is the number of the open pull request this one is stacked on.
+func stackCell(parent int) gotermboard.Cell {
+	return gotermboard.C(fmt.Sprintf("%s #%d", stackGlyph, parent), gotermboard.Yellow)
+}
+
+// botCell names the app that opened the pull request.
+func botCell(pr pullrequests.PullRequest) gotermboard.Cell {
+	return gotermboard.C(botGlyph+"  bot "+pr.Author, gotermboard.Magenta)
+}
+
+func isBot(pr pullrequests.PullRequest) bool { return pr.Bot != nil && *pr.Bot }
 
 // fieldGap is the space between two fields of a second line, wider than a field's own glyph
 // and words are apart, so each reads as a field.
@@ -399,37 +418,48 @@ func (b *Board) secondLine(at rowAt, parent int) gotermboard.Line {
 	pr := at.pr
 	line := gotermboard.Line{checksCell(pr)}
 	line = append(line, whereCells(pr)...)
-	line = append(line, fieldGap, gotermboard.C(fmt.Sprintf("%s  #%d", numberGlyph, pr.Number), gotermboard.Yellow))
+	line = append(line, fieldGap, numberCell(pr))
 	if parent != 0 {
-		line = append(line, gotermboard.C(fmt.Sprintf(" %s #%d", stackGlyph, parent), gotermboard.Yellow))
+		line = append(line, gotermboard.C(" ", ""), stackCell(parent))
 	}
 	line = append(line, fieldGap, reviewCell(pr))
 	if claude := claudeCell(b.reviewOf(pr, at.now)); claude.Text != "" {
 		line = append(line, fieldGap, claude)
 	}
-	if pr.Bot != nil && *pr.Bot {
-		line = append(line, fieldGap, gotermboard.C(botGlyph+"  bot "+pr.Author, gotermboard.Magenta))
+	if isBot(pr) {
+		line = append(line, fieldGap, botCell(pr))
 	}
 	return line
 }
 
-// whereCells are where the pull request is checked out on this disk, written ~-rooted as it
-// would be typed, or its repo where it is not cloned here, which d and the window keys refuse.
+// whereCells are where the pull request is checked out on this disk, or its repo where it is
+// not cloned here, which d and the window keys refuse.
 func whereCells(pr pullrequests.PullRequest) gotermboard.Line {
 	if pr.Path == "" {
 		return gotermboard.Line{gotermboard.C(pathGlyph+"  "+pr.Slug, gotermboard.Cyan), gotermboard.C("  not cloned here", dim)}
 	}
-	where := pr.Path
-	if home, err := os.UserHomeDir(); err == nil {
-		if rest, ok := strings.CutPrefix(where, home); ok {
-			where = "~" + rest
-		}
+	return gotermboard.Line{gotermboard.C(pathGlyph+"  "+homeAsTilde(pr.Path), gotermboard.Cyan)}
+}
+
+// homeAsTilde is path for a person to read, with the home directory written ~ where path sits
+// inside it. The cut falls at a path segment, so a sibling of home keeps its whole path.
+func homeAsTilde(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
 	}
-	return gotermboard.Line{gotermboard.C(pathGlyph+"  "+where, gotermboard.Cyan)}
+	if path == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(path, home+string(filepath.Separator)); ok {
+		return "~" + string(filepath.Separator) + rest
+	}
+	return path
 }
 
 // sideMargin is the columns of margin at each side of the board from marginFrom columns
-// wide, which narrower screens give up a column a side for every two they lack.
+// wide. A narrower screen gives up a column a side for every two columns it lacks, rounded
+// up, and keeps one.
 const (
 	sideMargin = 12
 	marginFrom = 150
@@ -437,9 +467,14 @@ const (
 
 // Look is gotermboard.LookBoard's: a margin around the screen, the columns spread across the
 // width, rules under the titles and above the keys, and the cursor's pull request bold on the
-// selection. Every row opens its document, so no row draws a chevron.
+// selection. The margin gives way to the side panel, which gotermboard measures inside it, so
+// a screen wide enough for the panel keeps it. Every row opens its document, so no row draws
+// a chevron.
 func (b *Board) Look(width int) gotermboard.Look {
 	sides := min(sideMargin, max(sideMargin-(marginFrom-width+1)/2, 1))
+	if width >= gotermboard.PanelFrom {
+		sides = min(sides, (width-gotermboard.PanelFrom)/2)
+	}
 	return gotermboard.Look{Sides: sides, Ends: 1, Spread: true, Rules: true, BoldCursor: true, NoRowChevrons: true}
 }
 

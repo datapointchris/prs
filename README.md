@@ -125,8 +125,8 @@ field it filters on drops a repo silently, and every list it prints still looks 
 - **Each pull request takes two lines, with a dotted rule between it and the next.** The
   first line holds where it stands, its title, its diff, its age and its branch, its
   columns spread across the width. The second holds its checks, its checkout, its number
-  and its review. A glyph marks each field, and a field's glyph is the same in every
-  state.
+  and its review. A glyph marks each field but the title, and a field's glyph is the same
+  in every state.
 - **State is a word, never a color alone.** The first column says where a pull request
   stands: `ready`, `behind`, `conflicts`, `blocked`, `draft` or `unknown` while open, or
   `mergeable` where it can merge with its checks not passing, and `merged` or `closed`
@@ -146,9 +146,8 @@ field it filters on drops a repo silently, and every list it prints still looks 
   line.
 - **A checkout reads from `~`**, and a repo not cloned here reads as its owner/name, `not
   cloned here` beside it.
-- **The board keeps a margin of 12 columns a side**, and a terminal under 150 columns wide
-  gives up a column a side for every two it lacks. The side panel wants 160 columns inside
-  the margin, so it shows from 184.
+- **The board keeps a margin at each side**, which a narrow terminal gives up first. The
+  margin also gives way to the side panel, so a terminal wide enough for the panel shows it.
 - **The glyphs are Nerd Font glyphs**, so the board wants a Nerd Font in the terminal.
 
 ## Each pull request's document

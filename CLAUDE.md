@@ -133,12 +133,13 @@ is the shape of the threads file `d` hands nvim, held the same way.
   round reviews never has it. On the board the round follows the review on a row's second
   line. `listColumns` and `boardColumns` hold every column with the cell it draws, so a
   column's header and its cells cannot drift apart.
-- **A pull request is two lines on the board, and a field keeps its line.** The first is
-  `boardColumns`: state, title, diff, age and branch. The second is `secondLine`: checks
-  under the state, then the checkout, the number, the review, the round and the bot. A new
-  field goes at the end of `secondLine`'s flow before the bot, or into `boardColumns`. The
-  second line is cut at the table's edge, so the checkout's length decides what a narrow
-  screen loses.
+- **A pull request is two lines on the board, and a field keeps its line.** The first line
+  is `boardColumns` and the second is `secondLine`. A new field goes at the end of
+  `secondLine`'s flow before the bot, or into `boardColumns`. The second line is cut at the
+  table's edge, so the checkout's length decides what a narrow screen loses.
+- **A field the board and `prs list` both show has one cell builder**, such as `numberCell`
+  or `botCell`, so the two layouts choose only where it sits. `prs list` places them through
+  `listColumns` and `titleLine`.
 - **A window marked `runs_review_round` reads running only until a round finishes after
   prs opened it.** A session that ran a round keeps its window afterwards, so one prs did
   not open reads running only where no round has finished. tmux is asked every
@@ -192,8 +193,8 @@ is the shape of the threads file `d` hands nvim, held the same way.
   otherwise title the Reader with the row's first cells, which here are its state words.
 - **`Board.Look` is gotermboard's `LookBoard`**: a margin, the columns spread across the
   width, rules under the titles and over the keys, the cursor's row bold on the selection,
-  and no row chevrons. `PanelFrom` is measured inside the margin, so the side panel shows
-  from 184 columns.
+  and no row chevrons. `PanelFrom` is measured inside the margin, so the margin gives way
+  from `PanelFrom` columns and the panel shows wherever it would with no margin.
 - **A column with no title continues the one before it under `Look.Spread`**, so the
   diff's three counts take two untitled columns after DIFF and stay together.
 - **`f` applies only where a row or group sets `Under`**, and no prs row does, so `f`
