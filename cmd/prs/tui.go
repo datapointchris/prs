@@ -35,10 +35,17 @@ func tuiCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "Open the board of every open pull request",
-		Long: `The board lists every open pull request on the repos prs reads, which prs config
-show names, oldest first, and reads each provider again while it is open. Each row gives its checks and
-review in words, its age, its diff, its repo and number, and its title. f shows its
-branch and checkout under it.
+		Long: fmt.Sprintf(`The board lists every open pull request on the repos prs reads, which prs config
+show names, oldest first. Each row gives its checks and review in words, its age, its
+diff, its repo and number, and its title. f shows its branch and checkout under it.
+
+It opens on the rows the last run on the same repos read, kept under $XDG_CACHE_HOME/prs,
+with their age on the first line, and reads each provider behind them. It reads them again
+every refresh_every_seconds in the config, %d by default, whenever its terminal gains
+focus, and whenever a program a key handed the terminal to exits. A spinner follows the age
+while a read runs, and a read that fails keeps the rows and names why on that line. A
+refresh leaves the cursor on its pull request, and one the read no longer lists stays under
+the cursor, marked gone, until the cursor moves off it.`, int(config.DefaultRefreshEvery.Seconds())) + `
 
 enter opens a pull request's description, full screen where it runs past the screen.
 A letter acts on the pull request under the cursor, and ? lists every key. d hands the
@@ -51,8 +58,8 @@ backs out one level, and q quits.
 --pr opens on one pull request, named as owner/name#number or by its URL, with the cursor
 on it and its description open. q then exits 0, back to whatever ran prs. An open one sits
 where the list puts it, and a merged or closed one sits above the list. One no listing
-holds is read again each minute. A pull request prs cannot read is refused before the
-board draws.
+holds is read again on the same timer. A pull request prs cannot read is refused before
+the board draws.
 
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
 so an agent reads what a person reads. Either exits 1 after printing when a provider
@@ -95,11 +102,16 @@ refuses.`,
 			pal := gotermstyle.PaletteFor(os.Stdout)
 			if !printing {
 				b.ReadDetails()
+				// With no home and no XDG_CACHE_HOME the board reads first, as it would with
+				// nothing kept.
+				if kept, err := config.ListingCacheDir(); err == nil {
+					b.KeepListings(kept)
+				}
 				tabs, err := gotermboard.NewTabs([]gotermboard.Tab{{Name: board.View, Board: b}}, pal, view)
 				if err != nil {
 					return err
 				}
-				_, err = tea.NewProgram(tabs).Run()
+				_, err = tea.NewProgram(reportsFocus{tabs}).Run()
 				return err
 			}
 			gotermboard.RefreshAll(cmd.Context(), b.Sources()...)
@@ -148,9 +160,25 @@ func loadBoard() (*board.Board, error) {
 			return nil, err
 		}
 	}
-	b, err := board.New(repos, cfg.WindowActions)
+	b, err := board.New(repos, cfg.RefreshEvery, cfg.WindowActions)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", cfg.File, err)
 	}
 	return b, nil
+}
+
+// reportsFocus is the board's program with the terminal's focus reported, so the board reads
+// the providers again when its window or pane is returned to, such as from a tmux window a
+// key opened. tmux passes focus on only with its focus-events option on.
+type reportsFocus struct{ tea.Model }
+
+func (r reportsFocus) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := r.Model.Update(msg)
+	return reportsFocus{model}, cmd
+}
+
+func (r reportsFocus) View() tea.View {
+	view := r.Model.View()
+	view.ReportFocus = true
+	return view
 }

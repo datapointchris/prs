@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/datapointchris/gotermboard"
@@ -82,7 +83,9 @@ func (b *Board) UnderWay() string {
 	return strings.Join(doing, " · ")
 }
 
-// Receive is gotermboard.ReceivingBoard's.
+// Receive is gotermboard.ReceivingBoard's. Each provider is read again when the terminal gains
+// focus and when a program prs handed the terminal to exits, because either is someone coming
+// back to the list, maybe from changing a pull request.
 func (b *Board) Receive(m *gotermboard.Model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case workEnded:
@@ -93,22 +96,34 @@ func (b *Board) Receive(m *gotermboard.Model, msg tea.Msg) tea.Cmd {
 		}
 		return msg.work.done(m)
 	case handedBack:
+		b.readAgain()
 		return msg.then(m, msg.err)
+	case tea.FocusMsg:
+		b.readAgain()
 	}
 	return nil
 }
 
 // settle gives a pull request the state a merge or close left it in, which its row reads until
 // a listing drops it, however long the provider's search takes to see the change.
-func (b *Board) settle(m *gotermboard.Model, pr pullrequests.PullRequest, state settledState) {
+func (b *Board) settle(m *gotermboard.Model, pr pullrequests.PullRequest, state rowState) {
 	b.settled[pr.Key()] = state
 	m.Rebuild()
 }
 
-// readAgain reads every provider on the board's next tick.
+// freshFor is how recent a provider's last good read is to stand when someone comes back to
+// the list. Focus arrives on every move between tmux panes, and each GitHub read spends from
+// the token's hourly GraphQL allowance, so rows read moments ago are not read again.
+const freshFor = 10 * time.Second
+
+// readAgain reads, on the board's next tick, every provider whose last good read is older
+// than freshFor, and every one that has not read yet here.
 func (b *Board) readAgain() {
+	now := time.Now()
 	for _, source := range b.sources {
-		source.Force()
+		if now.Sub(source.Status().ReadAt) >= freshFor {
+			source.Force()
+		}
 	}
 }
 

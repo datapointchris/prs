@@ -97,9 +97,20 @@ field it filters on drops a repo silently, and every list it prints still looks 
   and how many comments, threads, files and commits there are. A pull request's detail is
   read again when its head commit, its update time or its checks state moves, or when its
   last read failed.
-- **Each provider is read again every minute while the board is open.** The line at the
-  top says how old the newest read is, and names a read that failed. A failed read keeps
-  the last good rows, and so does one Bitbucket repo that failed while the rest read.
+- **The board opens on the rows the last run on the same repos read**, kept under
+  `$XDG_CACHE_HOME/prs/listings/` in a file for each set of repos, and reads each provider
+  behind them, so the first frame never waits on GitHub. Only `prs tui` keeps them.
+  `prs list`, `--once` and `--json` wait for their reads.
+- **Each provider is read again on a timer while the board is open**, whenever its
+  terminal gains focus, and whenever a program a key handed the terminal to exits.
+  `refresh_every_seconds` in the config sets the timer, and `prs config path` prints its
+  default. A return within a few seconds of the last read does not read again. Returning
+  from a tmux window reaches prs as focus where tmux's `focus-events` option is on. The
+  line at the top says how old the newest read is, turns a spinner while a read runs, and
+  names a read that failed. A failed read keeps the last good rows, and so does one
+  Bitbucket repo that failed while the rest read.
+- **A refresh leaves the cursor on its pull request.** One the read no longer lists stays
+  under the cursor, marked `gone`, until the cursor moves off it, and `m` and `x` refuse it.
 - **State is a word, never a color alone.** `checks passing`, `review required` and
   `review 2 posted` read under every theme, and the colors are the terminal's own 16.
 - **A pull request whose base is another open one's branch names that one**, as `↑ #12`
@@ -114,7 +125,8 @@ when it runs past the screen. On a wide terminal a side panel shows it beside th
 
 `d` fetches the pull request's head and hands the terminal to nvim's diff (with the
 Diffview plugin) against the base it targets. `:qa` comes back to the list with the same
-row under the cursor, and every provider is read again. It never checks the branch out.
+row under the cursor, and reads again as any return to the list does. It never checks the
+branch out.
 nvim listens on `$TMPDIR/prs-diff-<repo>-<number>.sock`, so another program can ask it
 what is under the cursor. Inside tmux, prs's window is named `diff <repo> #<number>` while
 nvim has it.
@@ -168,9 +180,9 @@ prs tui --pr https://bitbucket.example.com/projects/FIN/repos/ledger/pull-reques
   is drawn among the list's rows too.
 - **A merged or closed one sits in a group above the list.** Its row reads `merged` or
   `closed`, and `m` and `x` refuse it. Bitbucket's `declined` reads `closed`.
-- **While no listing holds it, prs reads it again each minute**, so one merged elsewhere
-  moves above the list, and one on a repo prs does not read stays current. One merged
-  with `m` moves there once the listing drops it.
+- **While no listing holds it, prs reads it again on the board's timer**, so one merged
+  elsewhere moves above the list, and one on a repo prs does not read stays current. One
+  merged with `m` moves there once the listing drops it.
 - **`owner/name#number` is the registry's repo of that name**, on whichever provider hosts
   it, and GitHub where the registry names none. A URL says its provider itself. bbkt reads
   a Bitbucket one by its project and name, so its repo need not be checked out.

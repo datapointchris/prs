@@ -1,5 +1,5 @@
 // Package config reads prs's config file, which names the registry of repos or the owners
-// read in its place, and the keys a person adds to the board.
+// read in its place, how often the board reads them, and the keys a person adds to it.
 package config
 
 import (
@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -44,9 +45,17 @@ type Config struct {
 	Registry  string
 	Owners    []string
 	ReposFrom string
+	// RefreshEvery is how often the board reads each provider again while it is open, and
+	// RefreshFrom names the layer that set it.
+	RefreshEvery time.Duration
+	RefreshFrom  string
 	// WindowActions are the keys the file adds, each opening a tmux window on a pull request.
 	WindowActions []WindowAction
 }
+
+// DefaultRefreshEvery is how often the board reads each provider while it is open, where the
+// file does not say. Each GitHub read spends points from the token's hourly GraphQL allowance.
+const DefaultRefreshEvery = time.Minute
 
 // WindowAction is a key that runs a command in a new tmux window, started in the pull
 // request's checkout. It is offered only where every program it needs is on PATH.
@@ -67,9 +76,10 @@ type WindowAction struct {
 
 // file is the document as written.
 type file struct {
-	Registry      string         `yaml:"repos_registry"`
-	Owners        []string       `yaml:"owners"`
-	WindowActions []WindowAction `yaml:"window_actions"`
+	Registry            string         `yaml:"repos_registry"`
+	Owners              []string       `yaml:"owners"`
+	RefreshEverySeconds yaml.Node      `yaml:"refresh_every_seconds"`
+	WindowActions       []WindowAction `yaml:"window_actions"`
 }
 
 // Fields are what a window action's Window and Command can name of a pull request.
@@ -126,6 +136,13 @@ func DefaultRegistry() (string, error) {
 	return xdgPath("XDG_DATA_HOME", filepath.Join(".local", "share"), "repos.json")
 }
 
+// ListingCacheDir is where the board keeps each provider's last listing, a file for each set
+// of repos it reads, so the next start draws it before any read returns: listings under
+// $XDG_CACHE_HOME/prs, or ~/.cache/prs where that is unset.
+func ListingCacheDir() (string, error) {
+	return xdgPath("XDG_CACHE_HOME", ".cache", "listings")
+}
+
 func xdgPath(variable, fallback, name string) (string, error) {
 	dir := os.Getenv(variable)
 	if dir == "" {
@@ -164,6 +181,14 @@ func Load() (Config, error) {
 	if cfg.Registry, cfg.Owners, cfg.ReposFrom, err = repos(doc); err != nil {
 		return cfg, fmt.Errorf("%s: %w", path, err)
 	}
+	cfg.RefreshEvery, cfg.RefreshFrom = DefaultRefreshEvery, FromDefault
+	if node := doc.RefreshEverySeconds; node.Kind != 0 {
+		seconds, err := wholeSeconds(node)
+		if err != nil {
+			return cfg, fmt.Errorf("%s: %w", path, err)
+		}
+		cfg.RefreshEvery, cfg.RefreshFrom = time.Duration(seconds)*time.Second, "refresh_every_seconds in the config file"
+	}
 	for i, action := range doc.WindowActions {
 		if err := action.check(); err != nil {
 			return cfg, fmt.Errorf("%s: window_actions[%d]: %w", path, i, err)
@@ -174,6 +199,16 @@ func Load() (Config, error) {
 	}
 	cfg.WindowActions = doc.WindowActions
 	return cfg, nil
+}
+
+// wholeSeconds reads refresh_every_seconds as written. yaml would truncate 0.5 into an int
+// without a word, so anything not tagged an integer is refused with the value it held.
+func wholeSeconds(node yaml.Node) (int, error) {
+	var seconds int
+	if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" || node.Decode(&seconds) != nil || seconds < 1 {
+		return 0, fmt.Errorf("refresh_every_seconds is %q, and it takes a whole number of seconds, 1 or more", node.Value)
+	}
+	return seconds, nil
 }
 
 // ownerName is what GitHub allows in a user or organization's login.
