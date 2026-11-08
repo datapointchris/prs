@@ -19,6 +19,10 @@ type Provider struct {
 	// Detail reads what the listing leaves out of one pull request. Nil where the host's
 	// client reads no more than its listing.
 	Detail func(ctx context.Context, pr PullRequest) (Detail, error)
+	// ReadOne reads the one pull request ref names, open or not, with its detail. Nil where
+	// the host's client reads no single pull request, so ReadReference looks in its repo's
+	// listing instead.
+	ReadOne func(ctx context.Context, ref Reference) (PullRequest, Detail, error)
 	// ReadsOwners says Read can read an owner whole, for a config that names owners.
 	ReadsOwners bool
 	// Head is what git fetches from origin as the pull request's head.
@@ -44,6 +48,7 @@ var Providers = []Provider{
 		Name:        registry.GitHub,
 		Read:        ReadGitHub,
 		Detail:      readGitHubDetail,
+		ReadOne:     readGitHubReference,
 		ReadsOwners: true,
 		Head:        func(pr PullRequest) string { return fmt.Sprintf("pull/%d/head", pr.Number) },
 		Browse: func(pr PullRequest) ([]string, bool) {

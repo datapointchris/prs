@@ -144,6 +144,7 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 		Under:       gotermboard.C(identity(pr), dim),
 		Document:    b.description(pr, false),
 		ReaderTitle: pr.Title,
+		StartsOpen:  b.isOpenedOn(pr),
 		Panel:       b.description(pr, true),
 		Text:        strings.Join([]string{pr.Body, pr.Author, pr.Branch, pr.Slug}, " "),
 	}

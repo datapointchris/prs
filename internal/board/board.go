@@ -57,6 +57,8 @@ type Board struct {
 	// details holds each row's detail, read after each listing once ReadDetails is called.
 	details     *pullrequests.Details
 	readDetails bool
+	// openedOn is the pull request OpenOn read, and nil where the board opened on none.
+	openedOn *openedOn
 }
 
 // New is a board over repos, with the window actions the config adds. It refuses a window
@@ -117,13 +119,14 @@ func (b *Board) Sources() []gotermboard.Refresher {
 // Groupings is gotermboard.Board's. The board has one.
 func (b *Board) Groupings() []string { return nil }
 
-// pullRequests is every provider's last good read, oldest first.
+// pullRequests is every provider's last good read, and an open pull request the board
+// opened on that no read holds, oldest first.
 func (b *Board) pullRequests(now time.Time) []pullrequests.PullRequest {
 	var prs []pullrequests.PullRequest
 	for _, source := range b.sources {
 		prs = append(prs, source.Value().PullRequests...)
 	}
-	return pullrequests.Finish(prs, b.repos, now)
+	return pullrequests.Finish(b.withOpenedOn(prs), b.repos, now)
 }
 
 // Row is one pull request as both --json outputs print it, with the open pull request it
@@ -205,6 +208,10 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 		b.shown[pr.Key()] = pr
 		group.Rows = append(group.Rows, b.row(pr, parents, now))
 	}
+	groups := []gotermboard.Group{group}
+	if apart, ok := b.apart(parents, now); ok {
+		groups = append([]gotermboard.Group{apart}, groups...)
+	}
 	maps.DeleteFunc(b.settled, func(key string, _ settledState) bool { return !b.listed(key) })
 	maps.DeleteFunc(b.diffed, func(key, _ string) bool { return !b.listed(key) })
 	if len(prs) == 0 {
@@ -213,7 +220,8 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 	return gotermboard.Frame{
 		Strip:   []gotermboard.Line{gotermboard.ReadStatus(b.statuses(), now)},
 		Columns: columns,
-		Groups:  []gotermboard.Group{group},
+		Groups:  groups,
+		StartAt: b.startAt(),
 	}
 }
 
@@ -243,16 +251,22 @@ func (b *Board) emptyReason() string {
 
 // Snapshot is what --json prints: the rows the board draws, and how each read stands.
 // Registry is empty where the board reads owners whole, and Owners names them, with @me
-// for the token's own account.
+// for the token's own account. OpenedOn is the pull request --pr named, which may be
+// merged or closed, and null without one.
 type Snapshot struct {
 	View         string               `json:"view"`
 	Registry     string               `json:"registry"`
 	Owners       []string             `json:"owners,omitempty"`
 	PullRequests []Row                `json:"pull_requests"`
+	OpenedOn     *Row                 `json:"opened_on"`
 	Sources      []gotermboard.Status `json:"sources"`
 }
 
 // Snapshot reads what the board holds now.
 func (b *Board) Snapshot(now time.Time) Snapshot {
-	return Snapshot{View: View, Registry: b.registry, Owners: b.owners, PullRequests: b.Rows(now), Sources: b.statuses()}
+	rows := b.Rows(now)
+	return Snapshot{
+		View: View, Registry: b.registry, Owners: b.owners, PullRequests: rows,
+		OpenedOn: b.openedOnRow(rows, now), Sources: b.statuses(),
+	}
 }

@@ -152,6 +152,29 @@ window_actions:
 because tmux would open the window and the command would die in it. `{number}`, `{repo}`
 and `{slug}` are filled in. Quote a value holding ` #`, which YAML reads as a comment.
 
+## Opening on one pull request
+
+`prs tui --pr` opens the board on one pull request, named as `owner/name#number` or by its
+URL. The cursor starts on it with its description open, and `q` exits 0, so another
+terminal program can run prs to show a pull request and get its screen back.
+
+```bash
+prs tui --pr 'acme/widget#12'
+prs tui --pr https://github.com/acme/widget/pull/12
+prs tui --pr https://bitbucket.example.com/projects/FIN/repos/ledger/pull-requests/4
+```
+
+- **An open pull request sits where the list puts it.** One on a repo prs does not read
+  joins the list.
+- **A merged or closed one on GitHub is read on its own**, and sits in a group above the
+  list. Its row reads `merged` or `closed`, and `m` and `x` refuse it.
+- **`owner/name#number` is the registry's repo of that name**, on whichever provider hosts
+  it, and GitHub where the registry names none. A URL says its provider itself. A GitHub
+  URL on a host other than the one prs reads is refused.
+- **A pull request prs cannot read is refused before the board draws**, with one line on
+  stderr and exit 1. Bitbucket's client has no read for a single pull request, so a
+  Bitbucket one must be among its repo's open pull requests, read in its checkout.
+
 ## Reading it from a program
 
 `prs list` reads each provider once and prints the board's rows as a table, under a line
@@ -161,8 +184,9 @@ gives. Beside the row's columns it carries each pull request's state, its merge 
 head commit and the open pull request it is stacked on.
 
 `prs tui --json` prints the board's snapshot instead: the same rows under
-`pull_requests`, and how each read stands. `prs tui --once` prints one frame at `COLUMNS`
-by `LINES`.
+`pull_requests`, and how each read stands. With `--pr`, `opened_on` is that pull request
+in the same shape, merged or closed where it is, and null without `--pr`. `prs tui --once`
+prints one frame at `COLUMNS` by `LINES`.
 
 Each of these exits 1 after printing when a read failed or left pull requests out,
 because a failed read and a repo with no open pull requests otherwise print the same rows.

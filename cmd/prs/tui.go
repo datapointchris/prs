@@ -29,7 +29,7 @@ const (
 
 func tuiCommand() *cobra.Command {
 	var (
-		view         string
+		view, openOn string
 		once, asJSON bool
 	)
 	cmd := &cobra.Command{
@@ -48,11 +48,20 @@ usable, named on the footer until it ends. p opens its page and comments in a tm
 window, and the config can add keys of its own, each a command in a tmux window. esc
 backs out one level, and q quits.
 
+--pr opens on one pull request, named as owner/name#number or by its URL, with the cursor
+on it and its description open. q then exits 0, back to whatever ran prs. One among the
+open pull requests sits where the list puts it. A merged or closed one on GitHub is read
+on its own and sits above the list. A pull request prs cannot read is refused before the
+board draws. On Bitbucket that is one not among its repo's open pull requests, because
+Bitbucket's client has no read for a single pull request.
+
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
 so an agent reads what a person reads. Either exits 1 after printing when a provider
 could not be read or left pull requests out. With no terminal and neither flag it
 refuses.`,
 		Example: `  prs tui
+  prs tui --pr 'acme/widget#12'
+  prs tui --pr https://github.com/acme/widget/pull/12
   COLUMNS=160 LINES=50 prs tui --once > frame.txt
   prs tui --json | jq '.pull_requests[] | {slug, number, checks}'`,
 		Args: cobra.NoArgs,
@@ -63,6 +72,14 @@ refuses.`,
 			if once && asJSON {
 				return goclikit.UsageError(errors.New("--once prints a frame and --json a snapshot, so give one of them"))
 			}
+			var ref *pullrequests.Reference
+			if openOn != "" {
+				parsed, err := pullrequests.ParseReference(openOn)
+				if err != nil {
+					return goclikit.UsageError(fmt.Errorf("--pr: %w", err))
+				}
+				ref = &parsed
+			}
 			printing := once || asJSON
 			if !printing && (!term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))) {
 				return goclikit.UsageError(errors.New("prs tui needs a terminal; --once prints one frame and --json the snapshot"))
@@ -70,6 +87,11 @@ refuses.`,
 			b, err := loadBoard()
 			if err != nil {
 				return err
+			}
+			if ref != nil {
+				if err := b.OpenOn(cmd.Context(), *ref); err != nil {
+					return err
+				}
 			}
 			pal := gotermstyle.PaletteFor(os.Stdout)
 			if !printing {
@@ -103,6 +125,7 @@ refuses.`,
 		},
 	}
 	cmd.Flags().StringVar(&view, "view", "", "Open on this tab: "+board.View)
+	cmd.Flags().StringVar(&openOn, "pr", "", "Open on this pull request, as owner/name#number or its URL")
 	cmd.Flags().BoolVar(&once, "once", false, "Print one frame of the tab at COLUMNS by LINES, then exit")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output the tab's snapshot as JSON to stdout")
 	return cmd
