@@ -121,7 +121,7 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 			continue
 		}
 		b.scopes[provider.Name] = scope
-		b.sources = append(b.sources, b.listingSource(provider, provider.Name, every,
+		b.sources = append(b.sources, b.listingSource(provider, provider.Name, every, true,
 			func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error) {
 				return provider.Read(ctx, scope, last)
 			}))
@@ -131,9 +131,12 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 }
 
 // listingSource reads a provider's listing with read every interval, from its last good
-// one, under name. Each listing that lands has its open rows' details read, once
-// ReadDetails is called, and is kept under name for the next start, once KeepListings is.
-func (b *Board) listingSource(provider pullrequests.Provider, name string, every time.Duration,
+// one, under name. Each open listing that lands has its rows' details read, once ReadDetails
+// is called, and every listing is kept under name for the next start, once KeepListings is.
+// A recently closed listing reads no details, and handing its rows to Prefetch would drop the
+// details the open listing read, because Prefetch drops the provider's details of every pull
+// request it is not handed.
+func (b *Board) listingSource(provider pullrequests.Provider, name string, every time.Duration, open bool,
 	read func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error),
 ) *gotermboard.Source[pullrequests.Listing] {
 	var source *gotermboard.Source[pullrequests.Listing]
@@ -142,7 +145,7 @@ func (b *Board) listingSource(provider pullrequests.Provider, name string, every
 		if err != nil {
 			return listing, "", err
 		}
-		if b.readDetails {
+		if open && b.readDetails {
 			b.details.Prefetch(ctx, provider, slices.DeleteFunc(slices.Clone(listing.PullRequests), func(pr pullrequests.PullRequest) bool {
 				return !readsDetail(pr)
 			}))
@@ -168,7 +171,7 @@ func (b *Board) ReadClosed(since pullrequests.Since, every time.Duration) {
 		if !ok || provider.ReadClosed == nil {
 			continue
 		}
-		b.closedSources = append(b.closedSources, b.listingSource(provider, provider.Name+" closed", every,
+		b.closedSources = append(b.closedSources, b.listingSource(provider, provider.Name+" closed", every, false,
 			func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error) {
 				return provider.ReadClosed(ctx, scope, since.From(time.Now()), last)
 			}))
