@@ -36,9 +36,6 @@ type Provider struct {
 	// Browse is the command that opens the pull request in the browser, and whether it
 	// runs in the checkout.
 	Browse func(PullRequest) (argv []string, inCheckout bool)
-	// Page is a shell command paging the pull request with its comments, and the programs
-	// it runs.
-	Page func(PullRequest) (command string, needs []string)
 	// Merge, Close and Comment are the commands that change the pull request, and whether
 	// each runs in the checkout. Each runs with no terminal, so none may prompt. Where head
 	// is not empty and the client can pin a commit, Merge refuses a head other than head.
@@ -67,13 +64,6 @@ var Providers = []Provider{
 		Head:        func(pr PullRequest) string { return fmt.Sprintf("pull/%d/head", pr.Number) },
 		Browse: func(pr PullRequest) ([]string, bool) {
 			return []string{"gh", "pr", "view", strconv.Itoa(pr.Number), "--repo", pr.Slug, "--web"}, false
-		},
-		// GH_FORCE_TTY makes gh render the page for a pager rather than print key: value
-		// lines. A slug holds only the characters GitHub allows in an owner and a name, so
-		// it needs no quoting.
-		Page: func(pr PullRequest) (string, []string) {
-			return fmt.Sprintf("GH_FORCE_TTY=$(tput cols) gh pr view %d --repo %s --comments | less -R", pr.Number, pr.Slug),
-				[]string{"gh", "tput", "less"}
 		},
 		// --merge names the method, so gh asks nothing. A pull request lands as a merge
 		// commit, and the repo's own setting deletes the remote branch.

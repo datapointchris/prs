@@ -386,22 +386,34 @@ func TestListPrintsAnEmptyArrayAndExits1WhenARepoIsLeftOut(t *testing.T) {
 	}
 }
 
-func TestTheBoardSaysEachStateInWordsOpensADescriptionAndRunsAKeyTheConfigAdds(t *testing.T) {
+// On a wide screen the cursor's document sits beside the list and follows the cursor, and
+// enter opens it full screen rather than draw it a second time under the row.
+func TestTheBoardSaysEachStateInWordsShowsTheDocumentBesideTheListAndRunsAKeyTheConfigAdds(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
-	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 30})
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 378, Rows: 91})
 	term.WaitFor("open · 4")
 	for _, words := range []string{"checks passing", "checks failing", "checks not run", "review required", "review 2 posted", "bot acme-automation", "Tidy the gadget (draft)", " #12"} {
 		term.WaitFor(words)
 	}
 
 	// The cursor starts on the first row of whichever provider answered first.
-	term.Press("g")
-	term.Press("j")
-	term.Press("enter")
-	term.WaitFor("Caches the widget lookups for a minute.")
+	term.Press("g", "j")
 	// The board read the pull request's own detail after its listing landed.
-	term.WaitFor("approved   mona  at 9e8d7c6")
+	term.WaitFor("mona approved at 9e8d7c6")
+	beside := false
+	for line := range strings.SplitSeq(term.Frame().Text(), "\n") {
+		beside = beside || strings.Contains(line, "#12  Cache the widget lookups") && strings.Contains(line, "acme/widget #12 · opened by octo")
+	}
+	if !beside {
+		t.Errorf("#12's row and its document should share a line of the screen:\n%s", term.Frame().Text())
+	}
+	term.Press("j")
+	term.WaitFor("Counts the hits the cache in #12 takes.")
+	term.WaitGone("Caches the widget lookups for a minute.")
+	term.Press("k", "enter")
+	term.WaitFor("[/] section")
+	term.Press("esc")
 
 	term.Press("r")
 	term.WaitFor("opened review widget #12 in a tmux window")
@@ -485,16 +497,22 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *tes
 
 // Another program jumps to a pull request with --pr and gets its screen back on q. A listed
 // pull request opens where the list puts it, and a merged one is read on its own and opens
-// above the list. Each opens with its description showing and the cursor on it, which a
-// key's question naming it proves.
-func TestTuiOpensOnTheNamedPullRequestWithItsDescriptionAndQExits0(t *testing.T) {
+// above the list. Each opens with its document showing and the cursor on it, which a key's
+// question naming it proves.
+func TestTuiOpensOnTheNamedPullRequestWithItsDocumentAndQExits0(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
-	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "acme/widget#12"}, Env: s.env, Cols: 140, Rows: 30})
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "acme/widget#12"}, Env: s.env, Cols: 140, Rows: 40})
 	term.WaitFor("open · 4")
 	term.WaitFor("Caches the widget lookups for a minute.")
-	term.WaitFor("approved   mona  at 9e8d7c6")
-	term.Press("m")
+	// With no side panel, a document running past the screen reads full screen, and ] brings
+	// each heading to the top.
+	term.Press("enter")
+	term.WaitFor("[/] section")
+	term.Press("]", "]")
+	term.WaitGone("Caches the widget lookups for a minute.")
+	term.WaitFor("cache/cache.go:14 · unresolved")
+	term.Press("esc", "m")
 	term.WaitFor("merge acme/widget #12 — Cache the widget lookups? [Y/n]")
 	term.Press("n", "enter")
 	term.WaitFor("did not merge acme/widget #12")
@@ -506,6 +524,7 @@ func TestTuiOpensOnTheNamedPullRequestWithItsDescriptionAndQExits0(t *testing.T)
 	term = tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "https://github.com/acme/widget/pull/7"}, Env: s.env, Cols: 140, Rows: 30})
 	term.WaitFor("merged · 1")
 	term.WaitFor("Pins the schema the widget reads, so a newer one fails loudly.")
+	term.Press("space")
 	term.WaitFor("open · 4")
 	term.Press("m")
 	term.WaitFor("acme/widget #7 is merged already, so there is nothing to merge")

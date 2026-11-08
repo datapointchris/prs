@@ -42,18 +42,18 @@ const (
 
 // meaning is what a GitHub state says on the board. A state is a word, because a legend
 // made the reader carry a color from the foot of the screen back up to a glyph. Each state
-// the board gives a meaning has one entry, which a row's cell and the description's
-// detail both read.
+// the board gives a meaning has one entry, which a row's cell and the document both read.
 type meaning struct {
-	// word is the row's, after "checks" or "review". The description writes the state itself.
+	// word is the row's, after "checks" or "review", and the document's for one check.
 	word string
 	code string
-	// passed is a check that needs nothing from anyone, which the description leaves out.
+	// passed is a check that needs nothing from anyone, which the document lists after
+	// those that do.
 	passed bool
 }
 
 // checkMeanings covers a rollup on a row and one check run or commit status in the
-// description.
+// document.
 var checkMeanings = map[string]meaning{
 	"SUCCESS":   {word: "passing", code: gotermboard.Green, passed: true},
 	"NEUTRAL":   {word: "neutral", code: gotermboard.Green, passed: true},
@@ -64,7 +64,7 @@ var checkMeanings = map[string]meaning{
 	"":          {word: "not run", code: dim},
 }
 
-// reviewMeanings covers a decision on a row and one submitted review in the description.
+// reviewMeanings covers a decision on a row.
 var reviewMeanings = map[string]meaning{
 	"APPROVED":          {word: "approved", code: gotermboard.Green},
 	"CHANGES_REQUESTED": {word: "changes", code: gotermboard.Red},
@@ -142,10 +142,10 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 		Cells:       cells,
 		WrapLast:    titleLine(pr, parentOf(pr, parents), b.stateOf(pr)),
 		Under:       gotermboard.C(identity(pr), dim),
-		Document:    b.description(pr, false),
+		Document:    b.document(pr, false),
 		ReaderTitle: pr.Title,
 		StartsOpen:  b.isOpenedOn(pr),
-		Panel:       b.description(pr, true),
+		Panel:       b.document(pr, true),
 		Text:        strings.Join([]string{pr.Body, pr.Author, pr.Branch, pr.Slug}, " "),
 	}
 }
@@ -270,28 +270,40 @@ func orDash(text string) string {
 	return text
 }
 
-// description is what identifies the pull request, then its body as markdown. Enter opens it
-// under the row or on a reader, each of which already shows the title, so only the side
-// panel's copy carries the title too.
-func (b *Board) description(pr pullrequests.PullRequest, titled bool) gotermboard.Document {
+// document is the pull request's MarkdownDocument laid out at the width it is drawn at.
+// Enter opens it under the row or on a reader, each of which already shows the title, so
+// only the side panel's copy carries the title too. A row gone from the listing says why its
+// detail is not read, which is the board's to say rather than the pull request's.
+func (b *Board) document(pr pullrequests.PullRequest, titled bool) gotermboard.Document {
 	return func(width int) []gotermboard.Line {
 		var lines []gotermboard.Line
 		if titled {
 			lines = append(lines, gotermboard.Line{gotermboard.C(pr.Title, gotermboard.Bold)})
 		}
-		lines = append(lines, []gotermboard.Line{
-			{gotermboard.C(fmt.Sprintf("%s #%d   opened by %s", pr.Slug, pr.Number, orDash(pr.Author)), dim)},
-			{
-				gotermboard.C(branchGlyph+" "+orDash(pr.Branch), gotermboard.Blue), gotermboard.C("  into  ", dim),
-				gotermboard.C(orDash(pr.Base), gotermboard.Blue),
-			},
-			{},
-		}...)
-		if strings.TrimSpace(pr.Body) == "" {
-			lines = append(lines, gotermboard.Line{gotermboard.C("No description.", dim)})
-		} else {
-			lines = append(lines, b.renderer.Lines(pr.Body, min(width, gotermboard.ReadingWidth))...)
+		if b.stateOf(pr) == gone {
+			lines = append(lines, gotermboard.Line{gotermboard.C("It is gone from the open pull requests, so its checks, files and comments are not read.", dim)}, gotermboard.Line{})
 		}
-		return append(lines, b.detailLines(pr)...)
+		markdown := MarkdownDocument(pr, b.detailOf(pr), time.Now())
+		return append(lines, b.renderer.Lines(markdown, min(width, gotermboard.ReadingWidth))...)
 	}
+}
+
+// detailOf is how the pull request's detail stands for its document, and nil where its host
+// reads no detail. The pull request the board opened on shows its own read's detail until
+// the cache holds one.
+func (b *Board) detailOf(pr pullrequests.PullRequest) *pullrequests.DetailState {
+	provider, err := pullrequests.ProviderOf(pr.Provider)
+	if err != nil || provider.Detail == nil {
+		return nil
+	}
+	state := b.details.Of(pr)
+	if detail, own := b.openedOnDetail(pr); own && !state.Held {
+		state.Detail, state.Held = detail, true
+	}
+	// A listing claims its rows' reads once it lands, so a row drawn before that is due a read.
+	// A row gone from the listing is due none.
+	if !state.Held && state.Fault == "" && b.readDetails && b.stateOf(pr) != gone {
+		state.Reading = true
+	}
+	return &state
 }

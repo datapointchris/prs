@@ -52,8 +52,8 @@ github.com/datapointchris/goclikit v0.5.3 h1:6ec9nuswLXeIqZLa0YVEQeqsCnrjkqF/3gD
 github.com/datapointchris/goclikit v0.5.3/go.mod h1:hEbplQyvrWq5m5UepXVNKfv8jvvlmQshNMrWdoHBb6Y=
 github.com/datapointchris/goselfupdate v0.11.2 h1:7aiYmeatQnfLqHiFawNlFHUohxAyOsiKyio8Vosje4I=
 github.com/datapointchris/goselfupdate v0.11.2/go.mod h1:k3gVv/y3AwoAyGGn5sN/UcAxhANB2W+GdN9rYw/oob4=
-github.com/datapointchris/gotermboard v0.23.0 h1:gGZ84sTqSj2OfnFWnsUcU+PY2/Y8mCURDfAZ017U4aU=
-github.com/datapointchris/gotermboard v0.23.0/go.mod h1:3ghG1KGjgzWBGEsdmIYv/CzdGT4gZzKEhdLL7iqjK2Y=
+github.com/datapointchris/gotermboard v0.24.0 h1:r31RM4I00DTtojxdTPtDAjBG7whCzX9j03f2BNLJnVc=
+github.com/datapointchris/gotermboard v0.24.0/go.mod h1:3ghG1KGjgzWBGEsdmIYv/CzdGT4gZzKEhdLL7iqjK2Y=
 github.com/datapointchris/gotermstyle v0.2.1 h1:TQnavpeSmNVR08vTMNfPWKhxjHiy+a8ggme02NYBgI0=
 github.com/datapointchris/gotermstyle v0.2.1/go.mod h1:59Nmf3Ty+izIaiIxFaJDxSkWZLWmx7RAQDGp58ohiXo=
 github.com/datapointchris/tuidrive v0.1.3 h1:Gmu8Lye5+UMMJB30AbMk0EHosWk6AOW+PxgiEWi7dMA=

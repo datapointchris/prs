@@ -19,7 +19,7 @@ type openedOn struct {
 }
 
 // OpenOn reads the pull request ref names, for the board to start with the cursor on it
-// and its description open. OpenOn refuses one it cannot read, so the refusal comes before
+// and its document open. OpenOn refuses one it cannot read, so the refusal comes before
 // anything draws.
 //
 // While a listing holds it, it is that listing's row. Otherwise its own read draws it: an
@@ -136,7 +136,7 @@ func (b *Board) openedOnRow(rows []Row, now time.Time) *Row {
 }
 
 // openedOnDetail is the detail the newest read of the pull request the board opened on
-// found, for its description while the cache holds none.
+// found, for its document while the cache holds none.
 func (b *Board) openedOnDetail(pr pullrequests.PullRequest) (pullrequests.Detail, bool) {
 	named, ok := b.named()
 	if !ok || !b.isOpenedOn(pr) || named.Detail == nil {

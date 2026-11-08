@@ -1,5 +1,5 @@
 // Package board is prs's view on gotermboard: every open pull request as a row, its
-// description a key away, and a key per action.
+// document beside the list or a key away, and a key per action.
 package board
 
 import (
@@ -121,7 +121,7 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 }
 
 // ReadDetails has each listing that lands read its rows' details in the background, for
-// the description to show. A board printed once leaves it off, since nothing waits for them.
+// each document's Checks, Files and Comments. A board printed once leaves it off, since nothing waits for them.
 func (b *Board) ReadDetails() { b.readDetails = true }
 
 // KeepListings has the board draw the listings the last run on these repos kept in dir until

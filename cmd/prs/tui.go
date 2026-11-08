@@ -47,16 +47,19 @@ while a read runs, and a read that fails keeps the rows and names why on that li
 refresh leaves the cursor on its pull request, and one the read no longer lists stays under
 the cursor, marked gone, until the cursor moves off it.`, int(config.DefaultRefreshEvery.Seconds())) + `
 
-enter opens a pull request's description, full screen where it runs past the screen.
+A pull request's document holds its description, then its checks, its files and its
+comments, each under a heading. From 160 columns a side panel shows the document of the
+row under the cursor. enter opens it full screen, where [ and ] jump between headings,
+and / searches it. Narrower, enter opens it in place where it fits on the screen.
+
 A letter acts on the pull request under the cursor, and ? lists every key. d hands the
 terminal to its diff in nvim, and :qa comes back to the list. m merges and x closes,
 each after asking, and c posts what your editor wrote. Each runs while the list stays
-usable, named on the footer until it ends. p opens its page and comments in a tmux
-window, and the config can add keys of its own, each a command in a tmux window. esc
-backs out one level, and q quits.
+usable, named on the footer until it ends. The config can add keys of its own, each a
+command in a tmux window. esc backs out one level, and q quits.
 
 --pr opens on one pull request, named as owner/name#number or by its URL, with the cursor
-on it and its description open. q then exits 0, back to whatever ran prs. An open one sits
+on it and its document open. q then exits 0, back to whatever ran prs. An open one sits
 where the list puts it, and a merged or closed one sits above the list. One no listing
 holds is read again on the same timer. A pull request prs cannot read is refused before
 the board draws.
