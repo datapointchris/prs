@@ -195,6 +195,10 @@ is the shape of the threads file `d` hands nvim, held the same way.
   lands while nvim or the editor has the terminal. The board reads the providers again
   once a program it handed the terminal to exits, and when the terminal gains focus, except
   a provider whose last good read is under `freshFor` old.
+- **`m.HandOver` is how a key hands the terminal over, and `gotermboard.OpenWindow` how it
+  opens a tmux window.** HandOver keeps the program's stderr, so a failure says its last
+  line through `gotermboard.LastLine`. Its `gotermboard.HandedBack` reaches `Board.Receive`
+  for the read again, and the model runs the key's own `then` after.
 - **A read's spinner turns on the strip, through `MovingBoard`**, so the footer's height
   never changes with a read. It draws `gotermboard.SpinnerAt`, the footer's own spinner.
 - **Bubble Tea v2 reports focus only where the View sets `ReportFocus`.** `reportsFocus`
