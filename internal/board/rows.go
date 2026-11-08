@@ -51,6 +51,9 @@ type meaning struct {
 	// passed is a check that needs nothing from anyone, which the document lists after
 	// those that do.
 	passed bool
+	// ready is a merge state that merges on its own, which space marks, and computing one
+	// GitHub has not worked out yet, which a batch reads again.
+	ready, computing bool
 }
 
 // checkMeanings covers a rollup on a row and one check run or commit status in the
@@ -95,14 +98,14 @@ func reviewMeaning(state string) meaning {
 // mergeable branch whose checks are not passing reads mergeable, and its checks cell says
 // why.
 var mergeMeanings = map[string]meaning{
-	"CLEAN":     {word: "ready", code: gotermboard.Green},
-	"HAS_HOOKS": {word: "ready", code: gotermboard.Green},
+	"CLEAN":     {word: "ready", code: gotermboard.Green, ready: true},
+	"HAS_HOOKS": {word: "ready", code: gotermboard.Green, ready: true},
 	"UNSTABLE":  {word: "mergeable", code: gotermboard.Yellow},
 	"BEHIND":    {word: "behind", code: gotermboard.Cyan},
 	"BLOCKED":   {word: "blocked"},
 	"DIRTY":     {word: "conflicts", code: gotermboard.Yellow},
 	"DRAFT":     {word: "draft", code: dim},
-	"UNKNOWN":   {word: "unknown", code: dim},
+	"UNKNOWN":   {word: "unknown", code: dim, computing: true},
 }
 
 // standingMeanings cover a row that waits on nobody. Merged and closed are GitHub's colors,
@@ -193,6 +196,7 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 		Document:    b.document(pr),
 		ReaderTitle: pr.Title,
 		StartsOpen:  b.isOpenedOn(pr),
+		Marked:      b.marked[pr.Key()],
 		Text:        strings.Join([]string{pr.Body, pr.Author, pr.Branch, pr.Slug}, " "),
 	}
 }

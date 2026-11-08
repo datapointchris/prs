@@ -47,10 +47,17 @@ type Board struct {
 	repos    []registry.Repo
 	renderer *markdown.Renderer
 	actions  []gotermboard.Action
-	// shown is the last frame's pull requests by key, for a key to find the cursor's, and
-	// drawnIn the section each was drawn in.
-	shown   map[string]pullrequests.PullRequest
-	drawnIn map[string]section
+	// shown is the last frame's pull requests by key, for a key to find the cursor's, drawnIn
+	// the section each was drawn in, and drawnOrder the keys of the sections' rows as they drew.
+	shown      map[string]pullrequests.PullRequest
+	drawnIn    map[string]section
+	drawnOrder []string
+	// marked is each open pull request space marked for m to merge in one batch, by key, and
+	// refused each one space would not mark since the last batch, which its question names.
+	marked  map[string]bool
+	refused map[string]bool
+	// batching says a batch m started is still merging.
+	batching bool
 	// closedHere is each pull request a key merged or closed, by key.
 	closedHere map[string]closeMadeHere
 	// diffed is the head commit d last fetched for a pull request, by key, which its merge
@@ -97,6 +104,8 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 		every:      every,
 		shown:      map[string]pullrequests.PullRequest{},
 		drawnIn:    map[string]section{},
+		marked:     map[string]bool{},
+		refused:    map[string]bool{},
 		closedHere: map[string]closeMadeHere{},
 		diffed:     map[string]string{},
 		documents:  map[string]documentMemo{},
@@ -112,7 +121,7 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 			continue
 		}
 		b.scopes[provider.Name] = scope
-		b.sources = append(b.sources, b.listingSource(provider, provider.Name, every,
+		b.sources = append(b.sources, b.listingSource(provider, provider.Name, every, true,
 			func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error) {
 				return provider.Read(ctx, scope, last)
 			}))
@@ -122,9 +131,11 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 }
 
 // listingSource reads a provider's listing with read every interval, from its last good
-// one, under name. Each listing that lands has its open rows' details read, once
-// ReadDetails is called, and is kept under name for the next start, once KeepListings is.
-func (b *Board) listingSource(provider pullrequests.Provider, name string, every time.Duration,
+// one, under name. Each open listing that lands has its rows' details read, once ReadDetails
+// is called, and every listing is kept under name for the next start, once KeepListings is.
+// Only an open listing is handed to Prefetch, because Prefetch takes a provider's whole open
+// listing as the set of details to keep.
+func (b *Board) listingSource(provider pullrequests.Provider, name string, every time.Duration, open bool,
 	read func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error),
 ) *gotermboard.Source[pullrequests.Listing] {
 	var source *gotermboard.Source[pullrequests.Listing]
@@ -133,7 +144,7 @@ func (b *Board) listingSource(provider pullrequests.Provider, name string, every
 		if err != nil {
 			return listing, "", err
 		}
-		if b.readDetails {
+		if open && b.readDetails {
 			b.details.Prefetch(ctx, provider, slices.DeleteFunc(slices.Clone(listing.PullRequests), func(pr pullrequests.PullRequest) bool {
 				return !readsDetail(pr)
 			}))
@@ -159,7 +170,7 @@ func (b *Board) ReadClosed(since pullrequests.Since, every time.Duration) {
 		if !ok || provider.ReadClosed == nil {
 			continue
 		}
-		b.closedSources = append(b.closedSources, b.listingSource(provider, provider.Name+" closed", every,
+		b.closedSources = append(b.closedSources, b.listingSource(provider, provider.Name+" closed", every, false,
 			func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error) {
 				return provider.ReadClosed(ctx, scope, since.From(time.Now()), last)
 			}))
@@ -348,6 +359,7 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 	rows := ordered(b.hold(placedBy(prs)))
 	clear(b.shown)
 	clear(b.drawnIn)
+	b.drawnOrder = b.drawnOrder[:0]
 	var groups []gotermboard.Group
 	if at := slices.IndexFunc(rows, func(p placed) bool { return b.isOpenedOn(p.pr) && p.in == recentlyClosed }); at >= 0 {
 		groups = append(groups, b.apart(rows[at].pr, parents, now))
@@ -356,6 +368,8 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 	groups = append(groups, b.groups(rows, parents, now)...)
 	maps.DeleteFunc(b.diffed, func(key, _ string) bool { return !b.listed(key) })
 	maps.DeleteFunc(b.documents, func(key string, _ documentMemo) bool { return !b.listed(key) })
+	maps.DeleteFunc(b.marked, func(key string, _ bool) bool { return !b.listedOpen(key) })
+	maps.DeleteFunc(b.refused, func(key string, _ bool) bool { return !b.listedOpen(key) })
 	return gotermboard.Frame{
 		Strip:   b.StripAt(now),
 		Columns: columns,
@@ -368,6 +382,19 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 func (b *Board) listed(key string) bool {
 	_, ok := b.shown[key]
 	return ok
+}
+
+// drew records that the frame drew the pull request's row in section, after every row drawn
+// before it.
+func (b *Board) drew(pr pullrequests.PullRequest, in section) {
+	b.shown[pr.Key()], b.drawnIn[pr.Key()] = pr, in
+	b.drawnOrder = append(b.drawnOrder, pr.Key())
+}
+
+// listedOpen says the last frame holds the pull request keyed key, and it waits on someone.
+func (b *Board) listedOpen(key string) bool {
+	pr, ok := b.shown[key]
+	return ok && b.stateOf(pr) == ""
 }
 
 // CursorOn is gotermboard.CursorBoard's.

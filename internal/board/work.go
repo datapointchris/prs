@@ -24,8 +24,9 @@ type work struct {
 	doing string
 	run   func(ctx context.Context) error
 	// done runs once run succeeds, to say what was done and return the next step. A failure
-	// says run's error instead.
-	done func(m *gotermboard.Model) tea.Cmd
+	// runs failed, where set, and otherwise says run's error.
+	done   func(m *gotermboard.Model) tea.Cmd
+	failed func(m *gotermboard.Model, err error) tea.Cmd
 }
 
 type underWay struct {
@@ -90,7 +91,10 @@ func (b *Board) Receive(m *gotermboard.Model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case workEnded:
 		b.working = slices.DeleteFunc(b.working, func(w underWay) bool { return w.id == msg.id })
-		if msg.err != nil {
+		switch {
+		case msg.err != nil && msg.work.failed != nil:
+			return msg.work.failed(m, msg.err)
+		case msg.err != nil:
 			m.Say(msg.err.Error())
 			return nil
 		}
@@ -105,8 +109,48 @@ func (b *Board) Receive(m *gotermboard.Model, msg tea.Msg) tea.Cmd {
 }
 
 // closeHere moves a pull request a key merged or closed into recently closed at once, in the
-// state the key left it in, until a listing read after the key holds it.
+// state the key left it in, until a listing read after the key holds it. A cursor on its row
+// moves on to the next open row in its group, else the one above, else another group's first,
+// so a queue reads one key a pull request.
 func (b *Board) closeHere(m *gotermboard.Model, pr pullrequests.PullRequest, standing pullrequests.Standing) {
+	next := b.openRowsAfter(pr.Key())
+	b.keepClosed(m, pr, standing)
+	if m.Cursor() != pr.Key() {
+		return
+	}
+	for _, key := range next {
+		if m.MoveCursorTo(key) {
+			return
+		}
+	}
+}
+
+// openRowsAfter is every open row the last frame drew but key's, in the order the cursor
+// prefers them once key's row leaves: the rest of its group below it, then above it nearest
+// first, then the other groups' as they drew.
+func (b *Board) openRowsAfter(key string) []string {
+	at := slices.Index(b.drawnOrder, key)
+	if at < 0 {
+		return nil
+	}
+	in := b.drawnIn[key]
+	var below, above, others []string
+	for i, k := range b.drawnOrder {
+		switch {
+		case i == at || !b.listedOpen(k):
+		case b.drawnIn[k] != in:
+			others = append(others, k)
+		case i > at:
+			below = append(below, k)
+		default:
+			above = slices.Insert(above, 0, k)
+		}
+	}
+	return slices.Concat(below, above, others)
+}
+
+// keepClosed holds the pull request in the state the key left it in, in recently closed.
+func (b *Board) keepClosed(m *gotermboard.Model, pr pullrequests.PullRequest, standing pullrequests.Standing) {
 	if provider, err := pullrequests.ProviderOf(pr.Provider); err == nil {
 		pr.State = provider.Word(standing)
 	}
