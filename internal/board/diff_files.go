@@ -44,8 +44,9 @@ func diffFilesAt(stem string) diffFiles {
 }
 
 // write puts the pull request's title over its MarkdownDocument in the document file, and its
-// review threads in the threads file. base and head are the revisions the diff compares.
-func (f diffFiles) write(pr pullrequests.PullRequest, detail *pullrequests.DetailState, base, head string, now time.Time) error {
+// review threads in the threads file. roundWindow is the open tmux window running a review
+// round on it, where one is. base and head are the revisions the diff compares.
+func (f diffFiles) write(pr pullrequests.PullRequest, detail *pullrequests.DetailState, roundWindow, base, head string, now time.Time) error {
 	threads := diffThreads{
 		Slug: pr.Slug, Number: pr.Number, Title: pr.Title, URL: pr.URL, Base: base, Head: head,
 		Threads: []pullrequests.Thread{},
@@ -58,7 +59,7 @@ func (f diffFiles) write(pr pullrequests.PullRequest, detail *pullrequests.Detai
 	if err != nil {
 		return err
 	}
-	document := "# " + pr.Title + "\n\n" + MarkdownDocument(pr, detail, nil, now)
+	document := "# " + pr.Title + "\n\n" + MarkdownDocument(pr, detail, nil, roundWindow, now)
 	err = errors.Join(os.WriteFile(f.document, []byte(document), 0o600), os.WriteFile(f.threads, append(encoded, '\n'), 0o600))
 	if err != nil {
 		f.remove()

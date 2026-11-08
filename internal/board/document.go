@@ -15,16 +15,21 @@ import (
 	"github.com/yuin/goldmark/text"
 
 	"github.com/datapointchris/prs/internal/pullrequests"
+	"github.com/datapointchris/prs/internal/reviewrounds"
 )
 
 // documentInput is what each section of a pull request's document is written from. detail
 // is how its detail read stands, and nil where its host reads no detail. diff is how its
-// diff read stands, and nil where the reader has the diff in front of them already.
+// diff read stands, and nil where the reader has the diff in front of them already. rounds
+// are the review rounds the detail carries, and roundWindow the open tmux window running one,
+// where one is.
 type documentInput struct {
-	pr     pullrequests.PullRequest
-	detail *pullrequests.DetailState
-	diff   *pullrequests.DiffState
-	now    time.Time
+	pr          pullrequests.PullRequest
+	detail      *pullrequests.DetailState
+	diff        *pullrequests.DiffState
+	rounds      reviewrounds.Rounds
+	roundWindow string
+	now         time.Time
 }
 
 // documentSection is one level-1 heading of the document and what goes under it. A section
@@ -40,6 +45,7 @@ type documentSection struct {
 // reaches every place MarkdownDocument is drawn, and every sentence that names the sections.
 var documentSections = []documentSection{
 	{heading: "Description", write: describe},
+	{heading: "Review", fromDetail: true, write: reviewSection},
 	{heading: "Checks", fromDetail: true, write: checkSection},
 	{heading: "Files", fromDetail: true, write: fileSection},
 	{heading: "Diff", write: diffSection},
@@ -71,11 +77,15 @@ func sectionNames(keep func(documentSection) bool) string {
 // level-1 heading per section. Description is the listing's body, so it is whole at once.
 // The sections the detail read fills say they are reading until it lands, and so does Diff
 // until its own read does. A nil detail is a host that reads none, whose document has no
-// detail section, and a nil diff leaves Diff out, as beside d's diff in nvim. now is what
+// detail section, and a nil diff leaves Diff out, as beside d's diff in nvim. roundWindow is
+// the open tmux window running a review round on it, and empty where none is. now is what
 // each age counts from. The title is not in it, since every place it shows names the title
 // already.
-func MarkdownDocument(pr pullrequests.PullRequest, detail *pullrequests.DetailState, diff *pullrequests.DiffState, now time.Time) string {
-	in := documentInput{pr: pr, detail: detail, diff: diff, now: now}
+func MarkdownDocument(pr pullrequests.PullRequest, detail *pullrequests.DetailState, diff *pullrequests.DiffState, roundWindow string, now time.Time) string {
+	in := documentInput{pr: pr, detail: detail, diff: diff, roundWindow: roundWindow, now: now}
+	if detail != nil && detail.Held {
+		in.rounds = reviewrounds.Read(detail.Detail)
+	}
 	parts := []string{preamble(in)}
 	for _, section := range documentSections {
 		if body := section.write(in); body != "" {
@@ -290,7 +300,8 @@ func counted(n int, noun string) string {
 }
 
 // commentSection is who is still asked to review, the conversation oldest first with each
-// submitted review in it, then each review thread, unresolved first.
+// submitted review in it, then each review thread, unresolved first. A review round's post
+// the Review section shows is left out of the conversation.
 func commentSection(in documentInput) string {
 	d := in.detail
 	if d == nil {
@@ -304,13 +315,17 @@ func commentSection(in documentInput) string {
 	if len(detail.ReviewRequests) > 0 {
 		parts = append(parts, "Asked to review: "+strings.Join(detail.ReviewRequests, ", ")+".")
 	}
-	if conversation := conversationOf(detail, in.now); conversation != "" {
+	shown := reviewShowsOf(in.rounds).bodies()
+	if conversation := conversationOf(detail, shown, in.now); conversation != "" {
 		parts = append(parts, "## Conversation\n\n"+conversation)
 	}
 	if threads := threadsOf(detail, in.now); threads != "" {
 		parts = append(parts, "## Review threads\n\n"+threads)
 	}
-	if len(parts) == 0 {
+	switch {
+	case len(parts) == 0 && len(shown) > 0:
+		return "No comments beside the review round's, which the Review section shows."
+	case len(parts) == 0:
 		return "No comments yet."
 	}
 	return strings.Join(parts, "\n\n")
@@ -325,15 +340,19 @@ type said struct {
 
 // conversationOf is each timeline comment and each submitted review, oldest first, each
 // under a level-3 heading naming who said it and when. A review that only commented and
-// says nothing itself is left out, since its comments are in the threads.
-func conversationOf(detail pullrequests.Detail, now time.Time) string {
+// says nothing itself is left out, since its comments are in the threads, and so is any
+// post whose body is in shown.
+func conversationOf(detail pullrequests.Detail, shown map[string]bool, now time.Time) string {
 	var entries []said
 	for _, comment := range detail.Comments {
+		if shown[comment.Body] {
+			continue
+		}
 		at := comment.CreatedAt
 		entries = append(entries, said{at: &at, heading: orDash(comment.Author) + " commented", body: comment.Body})
 	}
 	for _, review := range detail.Reviews {
-		if review.State == "COMMENTED" && strings.TrimSpace(review.Body) == "" {
+		if review.State == "COMMENTED" && strings.TrimSpace(review.Body) == "" || shown[review.Body] {
 			continue
 		}
 		heading := fmt.Sprintf("%s %s at %s", orDash(review.Author), words(review.State), short(review.CommitOID))

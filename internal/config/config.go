@@ -92,6 +92,9 @@ type WindowAction struct {
 	// the names Placeholders lists.
 	Window  string `yaml:"window"`
 	Command string `yaml:"command"`
+	// RunsReviewRound says the command runs a Claude review round on the pull request, so the
+	// row reads the round as running while the window is open and the round has not finished.
+	RunsReviewRound bool `yaml:"runs_review_round"`
 }
 
 // file is the document as written.

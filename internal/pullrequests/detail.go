@@ -35,8 +35,13 @@ type Detail struct {
 // says how much changed since.
 type Review struct {
 	Author string `json:"author"`
-	State  string `json:"state"`
-	Body   string `json:"body"`
+	// AuthorType is the author's kind, such as User or Bot, and AuthorAssociation what the
+	// author is to the repo, such as OWNER or NONE, in the provider's words. Both are empty
+	// where the provider does not say.
+	AuthorType        string `json:"author_type"`
+	AuthorAssociation string `json:"author_association"`
+	State             string `json:"state"`
+	Body              string `json:"body"`
 	// SubmittedAt is null for a review still pending, and CommitOID empty where the commit
 	// is gone from the branch.
 	SubmittedAt *time.Time `json:"submitted_at"`
@@ -44,12 +49,15 @@ type Review struct {
 	URL         string     `json:"url"`
 }
 
-// Comment is one comment, on the conversation or in a review thread.
+// Comment is one comment, on the conversation or in a review thread. AuthorType and
+// AuthorAssociation are as on a Review.
 type Comment struct {
-	Author    string    `json:"author"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"created_at"`
-	URL       string    `json:"url"`
+	Author            string    `json:"author"`
+	AuthorType        string    `json:"author_type"`
+	AuthorAssociation string    `json:"author_association"`
+	Body              string    `json:"body"`
+	CreatedAt         time.Time `json:"created_at"`
+	URL               string    `json:"url"`
 }
 
 // Thread is one review thread on a line of a file. Line is null where the thread's line is

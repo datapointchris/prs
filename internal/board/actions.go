@@ -213,7 +213,7 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview(target.Range()))
 			nvim.Dir = target.Checkout
 			files := diffFilesAt(stem)
-			unwritten := files.write(pr, b.detailOf(pr), "origin/"+target.Base, got.Head, time.Now())
+			unwritten := files.write(pr, b.detailOf(pr), b.roundWindowOf(pr), "origin/"+target.Base, got.Head, time.Now())
 			if unwritten == nil {
 				nvim.Env = append(os.Environ(), files.env()...)
 			}
@@ -637,21 +637,34 @@ func (b *Board) comment(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 	})
 }
 
+// windowOn is the name of the window the action opens on the pull request and the fields its
+// command fills in, or why the action does not run on the pull request's provider. The board
+// finds a round's window by this name, so the window opened and the window looked for agree.
+func windowOn(action config.WindowAction, pr pullrequests.PullRequest) (string, config.Fields, error) {
+	if len(action.Providers) > 0 && !slices.Contains(action.Providers, pr.Provider) {
+		return "", config.Fields{}, fmt.Errorf("%s runs on %s pull requests, and #%d is on %s",
+			action.Label, strings.Join(action.Providers, " and "), pr.Number, pr.Provider)
+	}
+	fields := config.Fields{Number: pr.Number, Repo: pr.Repo, Slug: pr.Slug}
+	return config.Fill(action.Window, fields), fields, nil
+}
+
 // windowAction runs a key the config declares in a tmux window in the checkout.
 func (b *Board) windowAction(window config.WindowAction) func(pullrequests.PullRequest) (string, error) {
 	return func(pr pullrequests.PullRequest) (string, error) {
-		if len(window.Providers) > 0 && !slices.Contains(window.Providers, pr.Provider) {
-			return "", fmt.Errorf("%s runs on %s pull requests, and #%d is on %s",
-				window.Label, strings.Join(window.Providers, " and "), pr.Number, pr.Provider)
+		name, fields, err := windowOn(window, pr)
+		if err != nil {
+			return "", err
 		}
 		checkout, err := pullrequests.CheckoutOf(pr)
 		if err != nil {
 			return "", err
 		}
-		fields := config.Fields{Number: pr.Number, Repo: pr.Repo, Slug: pr.Slug}
-		name := config.Fill(window.Window, fields)
 		if err := openWindow(name, config.Fill(window.Command, fields), checkout, window.Needs...); err != nil {
 			return "", err
+		}
+		if window.RunsReviewRound {
+			b.roundWindows.openedHere(name)
 		}
 		return "opened " + name + " in a tmux window", nil
 	}

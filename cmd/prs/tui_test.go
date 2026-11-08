@@ -41,7 +41,8 @@ const standInToken = "stand-in-token"
 // The stand-in gh holds no login, takes a second to merge, so the work shows under way, and
 // refuses to merge #13 in gh's own words. The stand-in git names fetchedHead as any ref's
 // commit, and diffs a pull request's fetched head as testdata/pull-request-<number>.diff,
-// which the stand-in GitHub sends as its diff too. The stand-in tmux names prs's window prs.
+// which the stand-in GitHub sends as its diff too. The stand-in tmux names prs's window prs,
+// and lists each window it opened, which the windows file holds one to a line.
 // The stand-in nvim also records the variables naming the pull request's files, and copies
 // each to handed.md and handed.threads.json, since prs removes them once nvim exits.
 type standIn struct {
@@ -52,6 +53,7 @@ type standIn struct {
 	tmp      string
 	recorded string
 	handed   string
+	windows  string
 	github   *gitHub
 }
 
@@ -62,13 +64,15 @@ const fetchedHead = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
 // testdata/search.json until a test hands it another listing, and refuses each listing with
 // a 502 while down. One pull request reads as the listing's row over testdata/pull-request.json,
 // with the merge state mergeStates names for its number where it names one, and each such read
-// is recorded beside the stand-in programs' arguments.
+// is recorded beside the stand-in programs' arguments. Once a test calls withRounds, it also
+// carries a review round.
 type gitHub struct {
 	mu          sync.Mutex
 	listing     []byte
 	down        bool
 	mergeStates map[int]string
 	recorded    string
+	rounds      bool
 }
 
 // readsAs has one pull request read on its own carry state as its merge state, whatever the
@@ -79,11 +83,19 @@ func (g *gitHub) readsAs(number int, state string) {
 	g.mergeStates[number] = state
 }
 
+// withRounds has each pull request read on its own carry the review round in
+// testdata/review-round.json, a real one, cut per pull request as withRoundOf says.
+func (g *gitHub) withRounds() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.rounds = true
+}
+
 // serveOne answers a read of one pull request: the listing's row for number laid over
 // testdata/pull-request.json, which carries the detail.
 func (g *gitHub) serveOne(w http.ResponseWriter, number int) {
 	g.mu.Lock()
-	listing, state := g.listing, g.mergeStates[number]
+	listing, state, rounds := g.listing, g.mergeStates[number], g.rounds
 	g.mu.Unlock()
 	if listing == nil {
 		listing, _ = os.ReadFile(filepath.Join("testdata", "search.json"))
@@ -101,6 +113,12 @@ func (g *gitHub) serveOne(w http.ResponseWriter, number int) {
 	if state != "" {
 		pr["mergeStateStatus"] = state
 	}
+	if rounds {
+		if err := withRoundOf(pr, number); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	file, err := os.OpenFile(g.recorded, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err == nil {
 		_, _ = fmt.Fprintf(file, "github\npullRequest\n%d\n", number)
@@ -108,6 +126,61 @@ func (g *gitHub) serveOne(w http.ResponseWriter, number int) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(answer)
+}
+
+// withRoundOf adds to pr's reviews and comments the cut of testdata/review-round.json its
+// number takes.
+func withRoundOf(pr map[string]any, number int) error {
+	var round struct {
+		Reviews struct {
+			Nodes []map[string]any `json:"nodes"`
+		} `json:"submittedReviews"`
+		Comments struct {
+			Nodes []map[string]any `json:"nodes"`
+		} `json:"comments"`
+	}
+	held, err := os.ReadFile(filepath.Join("testdata", "review-round.json"))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(held, &round); err != nil {
+		return err
+	}
+	reviews, comments := round.Reviews.Nodes, round.Comments.Nodes
+	g1 := reviews[slices.IndexFunc(reviews, func(review map[string]any) bool { return strings.Contains(fmt.Sprint(review["body"]), " reviewer=G1 ") })]
+	// One finished round, one cut short, one under a version prs does not read.
+	switch number {
+	case 13:
+		// A finding quoting <details>, as one on a reader of this grammar would, keeps its
+		// review read. Anyone who can comment can post a round's marker, and an outsider's
+		// round 99 counts in no round.
+		g1["body"] = strings.ReplaceAll(fmt.Sprint(g1["body"]), "with a hidden ssh prompt", "with a hidden ssh prompt, which no `<details>` block shows")
+		comments = append(comments, map[string]any{
+			"author": map[string]any{"login": "mallory", "__typename": "User"}, "authorAssociation": "NONE",
+			"body": "<!-- pr-review-round v6 round=99 head=abc1234 -->\n## Review round 99\n\nNothing to fix.\n\n" +
+				"<details><summary>Round record</summary>\n\n````json\n" + `{"round": 99, "reviewers": [{"label": "G1", "status": "ran", "findings": 0}]}` + "\n````\n\n</details>\n",
+			"createdAt": time.Now().Add(-time.Minute).Format(time.RFC3339), "url": "https://github.com/acme/widget/pull/13#issuecomment-99",
+		})
+	case 5:
+		reviews, comments = reviews[:3], nil
+		for _, review := range reviews {
+			review["submittedAt"] = time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
+		}
+	case 12:
+		g1["body"] = strings.Replace(fmt.Sprint(g1["body"]), "<!-- pr-review v6 ", "<!-- pr-review v7 ", 1)
+		reviews, comments = []map[string]any{g1}, nil
+	default:
+		return nil
+	}
+	for key, added := range map[string][]map[string]any{"submittedReviews": reviews, "comments": comments} {
+		connection := pr[key].(map[string]any)
+		nodes := connection["nodes"].([]any)
+		for _, node := range added {
+			nodes = append(nodes, node)
+		}
+		connection["nodes"], connection["totalCount"] = nodes, len(nodes)
+	}
+	return nil
 }
 
 func (g *gitHub) answer(listing []byte) {
@@ -249,7 +322,7 @@ func newStandIn(t *testing.T) standIn {
 	s := standIn{
 		config: filepath.Join(dir, "config", "prs", "config.yml"), checkout: filepath.Join(dir, "widget"), ledger: filepath.Join(dir, "ledger"),
 		tmp: filepath.Join(dir, "tmp"), recorded: filepath.Join(dir, "recorded"), handed: filepath.Join(dir, "handed"),
-		github: &gitHub{mergeStates: map[int]string{}, recorded: filepath.Join(dir, "recorded")},
+		windows: filepath.Join(dir, "windows"), github: &gitHub{mergeStates: map[int]string{}, recorded: filepath.Join(dir, "recorded")},
 	}
 	bin := filepath.Join(dir, "bin")
 	for _, d := range []string{bin, s.checkout, s.ledger, s.tmp, filepath.Join(dir, "config", "prs")} {
@@ -283,7 +356,8 @@ exit 1
   exit 1 ;;
 esac
 ` + fmt.Sprintf("cat %q\n", listed),
-		"tmux":   "#!/bin/sh\n" + record + "case \"$*\" in *automatic-rename}*) printf 'prs\\t0\\n' ;; esac\n",
+		"tmux": "#!/bin/sh\n" + record + "case \"$*\" in *automatic-rename}*) printf 'prs\\t0\\n' ;; esac\n" +
+			fmt.Sprintf("case \"$1\" in new-window) printf '%%s\\n' \"$3\" >> %[1]q ;; list-windows) cat %[1]q 2>/dev/null ;; esac\n", s.windows),
 		"claude": "#!/bin/sh\n" + record,
 		"git": "#!/bin/sh\n" + record + "[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\n" +
 			`case " $* " in *' diff '*) for a; do last=$a; done; cat "` + filepath.Dir(listed) + `/pull-request-${last##*/pr/}.diff" 2>/dev/null ;; esac` + "\nexit 0\n",
@@ -310,6 +384,7 @@ window_actions:
     providers: [github]
     window: "review {repo} #{number}"
     command: claude '/review-pr {number}'
+    runs_review_round: true
 `, filepath.Join(dir, "repos.json"))
 	files := map[string]string{filepath.Join(dir, "repos.json"): registry, s.config: config}
 	for path, body := range files {
@@ -536,7 +611,7 @@ func TestTheBoardSortsPeopleAboveBotsAndClosedBelowInWordsShowsTheDocumentBeside
 	term.WaitFor("Counts the hits the cache in #12 takes.")
 	term.WaitGone("Caches the widget lookups for a minute.")
 	term.Press("G")
-	term.WaitFor("It is closed, so its checks, files and comments are not read")
+	term.WaitFor("It is closed, so its review, checks, files and comments are not read")
 	term.Press("[", "enter")
 	term.WaitGone("Log the widget misses")
 	term.WaitFor("recently closed · 2")
@@ -552,6 +627,89 @@ func TestTheBoardSortsPeopleAboveBotsAndClosedBelowInWordsShowsTheDocumentBeside
 		t.Error("r did not open the review's tmux window in the checkout")
 	}
 
+	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+}
+
+// A pull request's newest Claude review round reads on its row: its finding counts once its
+// round comment posts, unfinished where its reviews stopped before one did, and reviewed where
+// the newest review is of a version prs does not read. Its document's Review section, after
+// Description, reads the synthesis and each finding from the reviews' JSON, shows a review it
+// cannot read whole, and leaves the round's posts out of Comments. The window r opens reads
+// running until tmux lists it no more.
+func TestEachRowReadsItsNewestReviewRoundAndItsDocumentHoldsTheRound(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t)
+	s.github.withRounds()
+	s.env["NO_COLOR"] = "1"
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(s.checkout), "gadget"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 300, Rows: 40})
+	term.WaitForPattern(`claude 5 correctness · 3 design · 4 prose .*Count cache hits`)
+	term.WaitForPattern(`claude unfinished .*Tidy the gadget`)
+	term.WaitForPattern(`claude reviewed .*Cache the widget lookups`)
+
+	// d hands nvim the whole document, which the stand-in nvim keeps. The people's rows run
+	// ledger #4, widget #12 and gadget #5, then widget #13 under the bots' header.
+	documents := map[string]string{}
+	for _, row := range []struct {
+		name string
+		keys []string
+	}{{"widget #12", []string{"g", "j", "j"}}, {"gadget #5", []string{"j"}}, {"widget #13", []string{"j", "j"}}} {
+		term.Press(row.keys...)
+		term.Press("d")
+		term.WaitFor("closed the diff of " + row.name)
+		document, err := os.ReadFile(s.handed + ".md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		documents[row.name] = string(document)
+	}
+	for row, wants := range map[string][]string{
+		"widget #12": {
+			"# Review\n\n## G1 · pr-review v7 · ", "_prs reads pr-review v6, and this one's marker names v7, so it shows whole._",
+			"<!-- pr-review v7 reviewer=G1 ",
+		},
+		"gadget #5": {
+			"# Review\n\nRound 1 of `7d8516d` stopped 2h ago, before its round comment posted. Running a review again continues it. " +
+				"system-design, stale-prose and code-architecture raised 7 findings: 2 correctness · 2 design · 3 prose.",
+		},
+		"widget #13": {
+			"# Review\n\nRound 1 of `7d8516d` finished ",
+			"## pr-review-round v6 · mallory · ",
+			"_mallory is neither an app on the repo nor someone who can write to it, so it shows whole._",
+			"system-design, stale-prose, code-architecture, failure-paths, contracts and G1 raised 12 findings: 5 correctness · 3 design · 4 prose. useless-test and patterns found nothing.",
+			"## Synthesis\n\n### synthesis.1 · Design and architecture\n\nExplains `G1.1` · `system-design.1` · `contracts.1` · `failure-paths.1`.",
+			"### One defect, raised more than once\n\n- `G1.2` · `stale-prose.2`: README.md:129",
+			"## Correctness\n\n### system-design.1 · ",
+			"### G1.1 · `internal/pullrequests/diff.go:205`\n\nAlso `internal/pullrequests/pullrequest.go:156` · ",
+		},
+	} {
+		for _, want := range wants {
+			if !strings.Contains(documents[row], want) {
+				t.Errorf("%s's document should hold %q:\n%s", row, want, documents[row])
+			}
+		}
+	}
+	finished := documents["widget #13"]
+	if review := strings.Index(finished, "# Review"); review < strings.Index(finished, "# Description") || review > strings.Index(finished, "# Checks") {
+		t.Errorf("the Review section should sit between Description and Checks:\n%s", finished)
+	}
+	if n := strings.Count(finished, "splits the user's keystrokes with a hidden ssh prompt"); n != 1 {
+		t.Errorf("G1.1 should read once, in the Review section and not again in Comments, not %d times", n)
+	}
+
+	// The cursor is on #13, whose round finished before r opened a window for another.
+	term.Press("r")
+	term.WaitFor("opened review widget #13 in a tmux window")
+	term.WaitForPattern(`claude running .*Count cache hits`)
+	if err := os.WriteFile(s.windows, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitForPattern(`claude 5 correctness · 3 design · 4 prose .*Count cache hits`)
 	term.Press("q")
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)

@@ -7,9 +7,11 @@ sources, the frame and the `--json` snapshot, `sections.go` the people, bots and
 closed groups, one record per pull request and the row held under the cursor,
 `listing_cache.go` the last listing kept on
 disk for the next start, `table.go` what `prs list` prints, `document.go` each pull
-request's markdown document, a section per heading, `diff_files.go` the document and
+request's markdown document, a section per heading, `review_rounds.go` the CLAUDE cell,
+the Review section and the tmux windows that run a round, `diff_files.go` the document and
 review threads `d` writes for nvim, and `opened_on.go` the pull request `prs tui --pr`
-names. `internal/pullrequests` reads each provider: GitHub in-process
+names. `internal/reviewrounds` reads a pull request's Claude review rounds out of its
+detail read. `internal/pullrequests` reads each provider: GitHub in-process
 through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
 differently by host, `detail.go` the per-PR detail cache, `diff.go` the per-PR diff cache
 the Diff section reads, `fetch.go` a pull request's checkout and the fetch of its head that
@@ -110,6 +112,30 @@ is the shape of the threads file `d` hands nvim, held the same way.
   running it with `owner/name#number` or a URL, and get their screen back when `q` exits
   0. A pull request it cannot read is refused before anything draws, with one line on
   stderr and exit 1, so a caller can show why.
+- **A review round is read from the reviews and comments the detail read already holds**,
+  so it costs no read of its own. A round's posts are read from the JSON block each closes
+  with, never the markdown, and a post whose marker names a version other than
+  `reviewrounds.Version` shows whole rather than read wrong. The Review section shows the
+  newest round and each post read whole, and Comments leaves exactly those out, so no post
+  reads twice. `reviewShows` is that one set.
+- **A round's post counts only from an app on the repo or someone who can write to it**:
+  an author GitHub types Bot, or associates as OWNER, MEMBER or COLLABORATOR. Anyone can
+  comment with a round's marker, so anyone else's marked post shows whole and moves no cell.
+- **A round with no round comment reads running only for `roundPostsWithin` after its
+  newest post**, or while a window runs one, because a round cut short looks the same and
+  is continued by running it again. After that it reads unfinished. Where the detail read
+  holds only the newest comments, it reads its counts instead, because its round comment
+  may sit outside the read.
+- **A round record's statuses stay apart.** A skipped reviewer was skipped on purpose and
+  reads as skipped. One not run or not posted counts as a gap beside the findings, and a
+  round none ran reads `claude did not run`, never as a clean one.
+- **The CLAUDE column draws only while a row fills it**, so a board on repos no round
+  reviews never has it. `rowColumns` holds every column with the cell it draws, so a
+  column's header and its cells cannot drift apart.
+- **A window marked `runs_review_round` reads running only until a round finishes after
+  prs opened it.** A session that ran a round keeps its window afterwards, so one prs did
+  not open reads running only where no round has finished. tmux is asked every
+  `roundWindowsEvery`, through `pullrequests.Run`, and only inside tmux.
 - **A Provider verb a host's client lacks is nil**, and its key refuses with `lacking`.
 - **A per-host fact lives in the Provider table**: the state words a client prints, mapped
   to `Standing`, and the path of a pull request's page, read by `PagePath`. The board
