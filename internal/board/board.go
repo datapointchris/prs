@@ -1,5 +1,5 @@
 // Package board is prs's view on gotermboard: every open pull request as a row, its
-// description a key away, and a key per action.
+// document beside the list or a key away, and a key per action.
 package board
 
 import (
@@ -49,6 +49,8 @@ type Board struct {
 	// diffed is the head commit d last fetched for a pull request, by key, which its merge
 	// pins.
 	diffed map[string]string
+	// documents is each shown pull request's MarkdownDocument and its inputs, by key.
+	documents map[string]documentMemo
 	// working is every command a key started that has not ended, oldest first.
 	working   []underWay
 	workCount int
@@ -78,17 +80,18 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 		}
 	}
 	b := &Board{
-		from:     repos.From,
-		registry: repos.Registry,
-		owners:   repos.Owners,
-		repos:    repos.Repos,
-		renderer: markdown.New(nil),
-		every:    every,
-		shown:    map[string]pullrequests.PullRequest{},
-		settled:  map[string]rowState{},
-		diffed:   map[string]string{},
-		details:  pullrequests.NewDetails(),
-		scopes:   map[string]pullrequests.Scope{},
+		from:      repos.From,
+		registry:  repos.Registry,
+		owners:    repos.Owners,
+		repos:     repos.Repos,
+		renderer:  markdown.New(nil),
+		every:     every,
+		shown:     map[string]pullrequests.PullRequest{},
+		settled:   map[string]rowState{},
+		diffed:    map[string]string{},
+		documents: map[string]documentMemo{},
+		details:   pullrequests.NewDetails(),
+		scopes:    map[string]pullrequests.Scope{},
 	}
 	for _, provider := range pullrequests.Providers {
 		scope := pullrequests.Scope{Repos: registry.Hosted(repos.Repos, provider.Name)}
@@ -120,8 +123,9 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 	return b, nil
 }
 
-// ReadDetails has each listing that lands read its rows' details in the background, for
-// the description to show. A board printed once leaves it off, since nothing waits for them.
+// ReadDetails has each listing that lands read its rows' details in the background, for the
+// document's sections that detail fills. A board printed once leaves it off, since nothing
+// waits for them.
 func (b *Board) ReadDetails() { b.readDetails = true }
 
 // KeepListings has the board draw the listings the last run on these repos kept in dir until
@@ -282,6 +286,7 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 	}
 	maps.DeleteFunc(b.settled, func(key string, _ rowState) bool { return !b.listed(key) })
 	maps.DeleteFunc(b.diffed, func(key, _ string) bool { return !b.listed(key) })
+	maps.DeleteFunc(b.documents, func(key string, _ documentMemo) bool { return !b.listed(key) })
 	return gotermboard.Frame{
 		Strip:   b.StripAt(now),
 		Columns: columns,

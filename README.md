@@ -1,8 +1,8 @@
 # prs
 
 Every open pull request across the repos you work on, on one terminal board that keeps
-itself current: each one's checks and review in words, its description a key away, and a
-key per action.
+itself current: each one's checks and review in words, its description, checks, files and
+comments beside the list, and a key per action.
 
 It is for reading a backlog of pull requests, yours and the ones an app opens for you,
 and acting on each one without leaving the terminal. It reads GitHub with the login
@@ -91,12 +91,10 @@ field it filters on drops a repo silently, and every list it prints still looks 
   first, because a backlog is a gauge and age is what it measures. One GitHub request asks
   for the registry's repos by name, and `bbkt` lists each Bitbucket repo in its checkout,
   several repos at once.
-- **Each GitHub row's reviews, checks and conversation are read after the list lands**,
-  a few pull requests at a time, so the list never waits on them. The description shows
-  each review and the commit it was against, who is still asked, each check not passing,
-  and how many comments, threads, files and commits there are. A pull request's detail is
-  read again when its head commit, its update time or its checks state moves, or when its
-  last read failed.
+- **Each GitHub row's checks, files and conversation are read after the list lands**,
+  a few pull requests at a time, so the list never waits on them. A pull request's detail
+  is read again when its head commit, its update time or its checks state moves, or when
+  its last read failed.
 - **The board opens on the rows the last run on the same repos read**, kept under
   `$XDG_CACHE_HOME/prs/listings/` in a file for each set of repos, and reads each provider
   behind them, so the first frame never waits on GitHub. Only `prs tui` keeps them.
@@ -118,10 +116,28 @@ field it filters on drops a repo silently, and every list it prints still looks 
 - **The branch and the checkout are under the row**, dim, where `f` shows them.
 - **The glyphs are Nerd Font glyphs**, so the board wants a Nerd Font in the terminal.
 
-## Keys
+## Each pull request's document
 
-`enter` opens the pull request's description, in place when it is short and full screen
-when it runs past the screen. On a wide terminal a side panel shows it beside the list.
+A pull request's document is markdown, under a line naming its repo, author and branches:
+
+- **Description** is its body, drawn as soon as the list lands.
+- **Checks** is each check on its head commit and its state, those not passing first.
+- **Files** is each changed path with its lines added and removed, and says how many more
+  the read left out.
+- **Comments** names who is still asked to review, then the conversation oldest first with
+  each submitted review in it, then each review thread, unresolved first.
+
+Checks, Files and Comments fill in once the pull request's own read lands, and say they
+are reading until then. Bitbucket's client reads no more than its listing, so a Bitbucket
+pull request's document is its description alone.
+
+On a wide terminal a side panel beside the list shows the document of the row under the
+cursor, under its title, and `p` hides or shows it. `enter` opens the document full screen,
+where `[` and `]` jump between its headings and `/` searches it. On a narrower terminal
+`enter` opens it in place under the row where it fits on the screen, and full screen where
+it runs past.
+
+## Keys
 
 `d` fetches the pull request's head and hands the terminal to nvim's diff (with the
 Diffview plugin) against the base it targets. `:qa` comes back to the list with the same
@@ -141,9 +157,7 @@ merged or closed row reads `merged` or `closed` at once, and a failure says the 
 own reason on the footer. Bitbucket's client has no verb to close a pull request, so `x`
 refuses there.
 
-`p` opens GitHub's page with its comments in a pager in a new tmux window, so it needs prs
-to run inside tmux. Bitbucket has no such page, and `o` opens one there. `y` copies the
-branch.
+`y` copies the branch.
 
 ### Keys of your own
 
@@ -167,8 +181,9 @@ and `{slug}` are filled in. Quote a value holding ` #`, which YAML reads as a co
 ## Opening on one pull request
 
 `prs tui --pr` opens the board on one pull request, named as `owner/name#number` or by its
-URL. The cursor starts on it with its description open, and `q` exits 0, so another
-terminal program can run prs to show a pull request and get its screen back.
+URL. The cursor starts on it with its document showing, in the side panel on a wide
+terminal and open under its row otherwise, and `q` exits 0, so another terminal program
+can run prs to show a pull request and get its screen back.
 
 ```bash
 prs tui --pr 'acme/widget#12'

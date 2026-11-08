@@ -4,11 +4,12 @@ A Go command whose board is a view on gotermboard. `cmd/prs` holds the commands.
 `internal/board` is the view: `rows.go` the row grammar, `actions.go` the key table,
 `work.go` what a key runs in the background or hands the terminal to, `board.go` the
 sources, the frame and the `--json` snapshot, `listing_cache.go` the last listing kept on
-disk for the next start, `table.go` what `prs list` prints, `detail.go` the detail under
-a description, and `opened_on.go` the pull request `prs tui --pr` names.
-`internal/pullrequests` reads each provider: GitHub in-process through go-gh, Bitbucket
-through bbkt. `provider.go` holds everything prs does differently by host, `detail.go`
-the per-PR detail cache, and `reference.go` what `--pr` takes and how it is read.
+disk for the next start, `table.go` what `prs list` prints, `document.go` each pull
+request's markdown document, a section per heading, and `opened_on.go` the pull request
+`prs tui --pr` names. `internal/pullrequests` reads each provider: GitHub in-process
+through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
+differently by host, `detail.go` the per-PR detail cache, and `reference.go` what `--pr`
+takes and how it is read.
 `internal/registry` reads the registry file, and `internal/config` reads
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
@@ -83,10 +84,18 @@ the per-PR detail cache, and `reference.go` what `--pr` takes and how it is read
 
 ## gotermboard facts the board relies on
 
-- **A board's key takes that key from the table even where it does nothing**, so prs's `p`
-  hides the table's side-panel toggle. A window action on a bound key would take it the
-  same way, so `board.Refused` refuses one, reading the table's keys from
-  `gotermboard.TableKeys()` and adding esc.
+- **A board's key takes that key from the table even where it does nothing.** A window
+  action on a bound key would take it the same way, such as `p`, the side panel's toggle,
+  so `board.Refused` refuses one, reading the table's keys from `gotermboard.TableKeys()`
+  and adding esc.
+- **The side panel and the Reader draw one document, `MarkdownDocument`.** A row sets
+  `Document` and no `Panel`, so from `PanelFrom` columns gotermboard's panel draws the
+  `Document` under the row's `ReaderTitle`. Such a row then starts folded beside the panel
+  rather than open from `StartsOpen`, and enter opens it on the Reader. A `Panel` would end
+  all three. The Reader's `[` and `]` land on each heading, so text written under a section
+  goes through `nestedAt`, which keeps its own headings inside that section.
+- **The panel calls a row's `Document` on every frame**, so `markdownOf` keeps each pull
+  request's markdown until its row, its detail state or the minute moves.
 - **A row's `ReaderTitle` is its pull request's title**, because the table's enter would
   otherwise title the Reader with the row's first cells, which here are its state words.
 - **A row's `Under` line shows only once `f` turns summaries on.**

@@ -50,7 +50,6 @@ func Refused(window config.WindowAction) error {
 func (b *Board) keyTable(windows []config.WindowAction) []gotermboard.Action {
 	actions := []gotermboard.Action{
 		{Keys: []string{"d"}, Label: "view diff: fetch its head and open it in nvim here, until :qa", Footer: "d diff", Run: b.onRow(b.diff)},
-		{Keys: []string{"p"}, Label: "page and comments: GitHub's page and every comment, in a pager in a tmux window", Run: b.onCursor(b.page)},
 	}
 	for _, window := range windows {
 		if len(window.Missing()) > 0 {
@@ -346,24 +345,6 @@ func (b *Board) comment(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 			},
 		})
 	})
-}
-
-// page is the provider's own rendering of the pull request and its comments, which the
-// listing does not carry, in a pager.
-func (b *Board) page(pr pullrequests.PullRequest) (string, error) {
-	provider, err := pullrequests.ProviderOf(pr.Provider)
-	if err != nil {
-		return "", err
-	}
-	if provider.Page == nil {
-		return "", fmt.Errorf("%w; o opens it in the browser", lacking(pr, "page through"))
-	}
-	name := fmt.Sprintf("page %s #%d", pr.Repo, pr.Number)
-	command, needs := provider.Page(pr)
-	if err := openWindow(name, command, "", needs...); err != nil {
-		return "", err
-	}
-	return "opened " + name + " in a tmux window", nil
 }
 
 // windowAction runs a key the config declares in a tmux window in the checkout.
