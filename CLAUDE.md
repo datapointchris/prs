@@ -35,10 +35,15 @@ reads `$XDG_CONFIG_HOME/prs/config.yml` and resolves the registry's path.
 - **A key that changes a pull request acts only on the row under the cursor, or asks
   first.** Merge asks with enter meaning yes, and close with enter meaning no, because a
   reflex merge lands work that was landing anyway and a reflex close discards a branch
-  nobody read.
+  nobody read. A pull request with a change under way refuses another.
 - **A key that waits on the network runs in the background**, through `work` in
-  `work.go`, so the list stays usable and the footer names it until it ends. Its client
-  runs with stdin closed and a timeout, as a read's does.
+  `work.go`, so the list stays usable and the footer names it until it ends. Every client
+  it runs, git included, goes through `pullrequests.Run`, which a read's client shares.
+- **The diff's socket and window name are a contract.** A program split into the tmux
+  window, such as a Claude session explaining the diff, reads `diff <repo> #<n>` off the
+  window's name and asks nvim on `prs-diff-<repo>-<n>.sock` what is under the cursor. So
+  `d` names prs's window that way while nvim has it.
+- **A Provider verb a host's client lacks is nil**, and its key refuses with `lacking`.
 - **No test reads a real account or starts a real program a key runs.** `cmd/prs/tui_test.go`
   puts a stand-in on `PATH` for every program a read or a key in the test runs, and its
   testdata answers in each provider's published shape.

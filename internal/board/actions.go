@@ -65,7 +65,7 @@ func (b *Board) keyTable(windows []config.WindowAction) []gotermboard.Action {
 	return append(actions,
 		gotermboard.Action{Keys: []string{"o"}, Label: "open in browser", Footer: "o browser", Run: b.onRow(b.browse)},
 		gotermboard.Action{Keys: []string{"y"}, Label: "copy branch: its name, to the system clipboard", Footer: "y copy", Run: b.onCursor(b.copyBranch)},
-		gotermboard.Action{Keys: []string{"c"}, Label: "comment: write it in $EDITOR, and it posts when the editor exits", Run: b.onRow(b.comment)},
+		gotermboard.Action{Keys: []string{"c"}, Label: "comment: write it in your editor, and it posts when the editor exits", Run: b.onRow(b.comment)},
 		gotermboard.Action{Keys: []string{"x"}, Label: "close without merging, after asking, and enter alone keeps it open", Run: b.onRow(b.closePR)},
 		gotermboard.Action{Keys: []string{"m"}, Label: "merge, after asking, and enter alone merges", Run: b.onRow(b.merge)},
 	)
@@ -101,14 +101,15 @@ func (b *Board) onCursor(act func(pullrequests.PullRequest) (string, error)) fun
 // terminal to nvim's diff against the base it targets, run in the checkout. Quitting nvim
 // gives the terminal back to the board, with the cursor where it was, and every provider is
 // read again. It never checks the branch out, which would abort on uncommitted work and
-// disturb the tree where there is none.
+// disturb the tree where there is none. The head it fetched is the one m then pins.
 //
 // The base is the one the listing reports, because a pull request stacked on another
 // targets its parent, and a diff against main would show both as one change. The diff is
 // three-dot, from where the branch left the base, which is what the provider shows.
 //
-// nvim listens on a socket named for the pull request, so another program in the tmux
-// window can ask it what is under the cursor.
+// nvim listens on a socket named for the pull request, so another program can ask it what
+// is under the cursor. Inside tmux the window is named diff <repo> #<n> while nvim has it,
+// so a program split into the window finds that socket from the name.
 func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 	refuse := func(err error) tea.Cmd {
 		m.Say(err.Error())
@@ -137,36 +138,67 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 		return refuse(fmt.Errorf("#%d in %s names no source branch to fetch", pr.Number, pr.Repo))
 	}
 	ref := "refs/remotes/origin/pr/" + strconv.Itoa(pr.Number)
+	// run writes these and done reads them, after the message that ends the work.
+	var fetched, baseFailed string
 	return b.start(work{
+		pr:    pr,
 		doing: fmt.Sprintf("fetching %s #%d", pr.Repo, pr.Number),
 		run: func(ctx context.Context) error {
-			if out, err := git(ctx, checkout, "fetch", "--quiet", "--force", "origin", head+":"+ref); err != nil {
-				return fmt.Errorf("could not fetch #%d in %s: %s", pr.Number, pr.Repo, firstLine(out, err))
+			if _, err := pullrequests.Run(ctx, checkout, "git", "fetch", "--quiet", "--force", "origin", head+":"+ref); err != nil {
+				return fmt.Errorf("could not fetch #%d in %s: %w", pr.Number, pr.Repo, err)
 			}
-			// A base that failed to fetch still diffs against the origin/<base> fetched last,
-			// and the check below refuses where there is none.
-			_, _ = git(ctx, checkout, "fetch", "--quiet", "origin", base)
-			if _, err := git(ctx, checkout, "rev-parse", "--verify", "--quiet", "origin/"+base); err != nil {
-				return fmt.Errorf("%s has no origin/%s to diff against", pr.Repo, base)
+			// A base that failed to fetch still diffs against the origin/<base> fetched
+			// earlier, and the footer says so once nvim exits.
+			if _, err := pullrequests.Run(ctx, checkout, "git", "fetch", "--quiet", "origin", base); err != nil {
+				baseFailed = err.Error()
 			}
+			if _, err := pullrequests.Run(ctx, checkout, "git", "rev-parse", "--verify", "--quiet", "origin/"+base); err != nil {
+				return fmt.Errorf("%s has no origin/%s to diff against: %s", pr.Repo, base, orDash(baseFailed))
+			}
+			out, err := pullrequests.Run(ctx, checkout, "git", "rev-parse", "--verify", ref)
+			if err != nil {
+				return fmt.Errorf("could not read the head fetched for #%d: %w", pr.Number, err)
+			}
+			fetched = strings.TrimSpace(string(out))
 			return nil
 		},
 		done: func(*gotermboard.Model) tea.Cmd {
+			b.diffed[pr.Key()] = fetched
 			socket := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d.sock", pr.Repo, pr.Number))
 			_ = os.Remove(socket)
-			nvim := exec.Command("nvim", "--listen", socket, "-c", fmt.Sprintf("DiffviewOpen origin/%s...%s", base, ref))
+			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview("origin/"+base+"..."+ref))
 			nvim.Dir = checkout
+			restore := nameWindow(fmt.Sprintf("diff %s #%d", pr.Repo, pr.Number))
 			return handOver(nvim, func(m *gotermboard.Model, err error) tea.Cmd {
+				restore()
 				b.readAgain()
-				if err != nil {
+				var exit *exec.ExitError
+				switch {
+				case errors.As(err, &exit) && exit.ExitCode() == noDiffview:
+					m.Say("nvim has no :DiffviewOpen, and the diff needs the diffview.nvim plugin")
+				case err != nil:
 					m.Say(fmt.Sprintf("nvim ended the diff of #%d with %v", pr.Number, err))
-					return nil
+				case baseFailed != "":
+					m.Say(fmt.Sprintf("closed the diff of %s #%d, which ran against the origin/%s fetched earlier, because fetching it again failed: %s",
+						pr.Repo, pr.Number, base, baseFailed))
+				default:
+					m.Say(fmt.Sprintf("closed the diff of %s #%d, and reading every provider again", pr.Repo, pr.Number))
 				}
-				m.Say(fmt.Sprintf("closed the diff of %s #%d, and reading every provider again", pr.Repo, pr.Number))
 				return nil
 			})
 		},
 	})
+}
+
+// noDiffview is the status nvim exits with where Diffview is not installed.
+const noDiffview = 3
+
+// openDiffview is the command nvim runs to open Diffview on revisions, or to exit at once
+// with noDiffview where the plugin is not installed, so the board can say so rather than
+// leave an empty buffer. A plugin that loads on its command still defines the command.
+func openDiffview(revisions string) string {
+	quoted := "'DiffviewOpen " + strings.ReplaceAll(revisions, "'", "''") + "'"
+	return fmt.Sprintf("if exists(':DiffviewOpen') == 2 | execute %s | else | cquit %d | endif", quoted, noDiffview)
 }
 
 // merge asks first, and enter alone merges. A merge confirmed by reflex lands work that was
@@ -174,16 +206,20 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 // but y or yes leaves it, so a stray key still stops it.
 func (b *Board) merge(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 	provider, err := b.writable(pr, "merge")
+	if err == nil && provider.Merge == nil {
+		err = lacking(pr, "merge")
+	}
 	if err != nil {
 		m.Say(err.Error())
 		return nil
 	}
-	argv, inCheckout := provider.Merge(pr)
+	argv, inCheckout := provider.Merge(pr, b.diffed[pr.Key()])
 	b.ask(m, pr, "merge", true, work{
+		pr:    pr,
 		doing: fmt.Sprintf("merging %s #%d", pr.Slug, pr.Number),
 		run:   runClient(pr, "merge", argv, inCheckout),
 		done: func(m *gotermboard.Model) tea.Cmd {
-			b.settle(m, pr, "merged")
+			b.settle(m, pr, merged)
 			m.Say(fmt.Sprintf("merged %s #%d", pr.Slug, pr.Number))
 			return nil
 		},
@@ -196,20 +232,20 @@ func (b *Board) merge(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd
 // does not.
 func (b *Board) closePR(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 	provider, err := b.writable(pr, "close")
+	if err == nil && provider.Close == nil {
+		err = lacking(pr, "close")
+	}
 	if err != nil {
 		m.Say(err.Error())
 		return nil
 	}
-	if provider.Close == nil {
-		m.Say(fmt.Sprintf("prs cannot close a pull request on %s, because its client has no verb for it; o opens its page", pr.Provider))
-		return nil
-	}
 	argv, inCheckout := provider.Close(pr)
 	b.ask(m, pr, "close", false, work{
+		pr:    pr,
 		doing: fmt.Sprintf("closing %s #%d", pr.Slug, pr.Number),
 		run:   runClient(pr, "close", argv, inCheckout),
 		done: func(m *gotermboard.Model) tea.Cmd {
-			b.settle(m, pr, "closed")
+			b.settle(m, pr, closed)
 			m.Say(fmt.Sprintf("closed %s #%d without merging", pr.Slug, pr.Number))
 			return nil
 		},
@@ -217,13 +253,22 @@ func (b *Board) closePR(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 	return nil
 }
 
-// writable is the provider of a pull request a key may change, and refuses one a merge or a
-// close already settled.
+// writable is the provider of a pull request a key may change. It refuses one a merge or a
+// close already settled, and one whose merge, close or fetch is still under way, so a second
+// press never sends a second change beside the first.
 func (b *Board) writable(pr pullrequests.PullRequest, verb string) (pullrequests.Provider, error) {
 	if settled := b.settled[pr.Key()]; settled != "" {
 		return pullrequests.Provider{}, fmt.Errorf("%s #%d is %s already, so there is nothing to %s", pr.Slug, pr.Number, settled, verb)
 	}
+	if doing := b.busy(pr); doing != "" {
+		return pullrequests.Provider{}, fmt.Errorf("%s is still under way; %s it once that ends", doing, verb)
+	}
 	return pullrequests.ProviderOf(pr.Provider)
+}
+
+// lacking is the refusal for a verb a host's client cannot do, which its Provider leaves nil.
+func lacking(pr pullrequests.PullRequest, verb string) error {
+	return fmt.Errorf("prs cannot %s a pull request on %s, because its client has no verb for it", verb, pr.Provider)
 }
 
 // ask puts the question for verb on the footer, naming the pull request it acts on, and
@@ -255,6 +300,9 @@ func (b *Board) ask(m *gotermboard.Model, pr pullrequests.PullRequest, verb stri
 // the comment is not lost.
 func (b *Board) comment(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 	provider, err := pullrequests.ProviderOf(pr.Provider)
+	if err == nil && provider.Comment == nil {
+		err = lacking(pr, "comment on")
+	}
 	if err != nil {
 		m.Say(err.Error())
 		return nil
@@ -266,7 +314,7 @@ func (b *Board) comment(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 	}
 	path := file.Name()
 	_ = file.Close()
-	return handOver(editor(path), func(m *gotermboard.Model, err error) tea.Cmd {
+	return handOver(gotermboard.EditorCommand(path), func(m *gotermboard.Model, err error) tea.Cmd {
 		body, readErr := os.ReadFile(path)
 		switch {
 		case err != nil:
@@ -280,12 +328,14 @@ func (b *Board) comment(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 		argv, inCheckout := provider.Comment(pr, path)
 		post := runClient(pr, "comment on", argv, inCheckout)
 		return b.start(work{
+			pr:    pr,
 			doing: fmt.Sprintf("commenting on %s #%d", pr.Slug, pr.Number),
 			run: func(ctx context.Context) error {
 				if err := post(ctx); err != nil {
 					return fmt.Errorf("%w; the comment is kept in %s", err, path)
 				}
-				return os.Remove(path)
+				_ = os.Remove(path)
+				return nil
 			},
 			done: func(m *gotermboard.Model) tea.Cmd {
 				m.Say(fmt.Sprintf("commented on %s #%d", pr.Slug, pr.Number))
@@ -293,19 +343,6 @@ func (b *Board) comment(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 			},
 		})
 	})
-}
-
-// editor is $VISUAL, then $EDITOR, then vi, on path, split as a shell would split it, so
-// EDITOR="code --wait" works.
-func editor(path string) *exec.Cmd {
-	command := []string{"vi"}
-	for _, variable := range []string{"VISUAL", "EDITOR"} {
-		if configured := strings.Fields(os.Getenv(variable)); len(configured) > 0 {
-			command = configured
-			break
-		}
-	}
-	return exec.Command(command[0], append(command[1:], path)...)
 }
 
 // page is the provider's own rendering of the pull request and its comments, which the
@@ -316,7 +353,7 @@ func (b *Board) page(pr pullrequests.PullRequest) (string, error) {
 		return "", err
 	}
 	if provider.Page == nil {
-		return "", fmt.Errorf("prs has no page for a pull request on %s; o opens it in the browser", pr.Provider)
+		return "", fmt.Errorf("%w; o opens it in the browser", lacking(pr, "page through"))
 	}
 	name := fmt.Sprintf("page %s #%d", pr.Repo, pr.Number)
 	command, needs := provider.Page(pr)
@@ -350,12 +387,16 @@ func (b *Board) windowAction(window config.WindowAction) func(pullrequests.PullR
 // background, because the client asks the provider for the page's address first.
 func (b *Board) browse(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 	provider, err := pullrequests.ProviderOf(pr.Provider)
+	if err == nil && provider.Browse == nil {
+		err = lacking(pr, "open")
+	}
 	if err != nil {
 		m.Say(err.Error())
 		return nil
 	}
 	argv, inCheckout := provider.Browse(pr)
 	return b.start(work{
+		pr:    pr,
 		doing: fmt.Sprintf("opening #%d in the browser", pr.Number),
 		run:   runClient(pr, "open", argv, inCheckout),
 		done: func(m *gotermboard.Model) tea.Cmd {

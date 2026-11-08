@@ -5,6 +5,7 @@ package board
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/datapointchris/gotermboard"
@@ -34,7 +35,10 @@ type Board struct {
 	// shown is the last frame's pull requests by key, for a key to find the cursor's.
 	shown map[string]pullrequests.PullRequest
 	// settled is the state a merge or close left a pull request in, by key.
-	settled map[string]string
+	settled map[string]settledState
+	// diffed is the head commit d last fetched for a pull request, by key, which its merge
+	// pins.
+	diffed map[string]string
 	// working is every command a key started that has not ended, oldest first.
 	working   []underWay
 	workCount int
@@ -53,7 +57,8 @@ func New(registryPath string, repos []registry.Repo, windows []config.WindowActi
 		repos:    repos,
 		renderer: markdown.New(nil),
 		shown:    map[string]pullrequests.PullRequest{},
-		settled:  map[string]string{},
+		settled:  map[string]settledState{},
+		diffed:   map[string]string{},
 	}
 	for _, provider := range pullrequests.Providers {
 		hosted := registry.Hosted(repos, provider.Name)
@@ -135,11 +140,8 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 		b.shown[pr.Key()] = pr
 		group.Rows = append(group.Rows, b.row(pr, parents, now))
 	}
-	for key := range b.settled {
-		if _, listed := b.shown[key]; !listed {
-			delete(b.settled, key)
-		}
-	}
+	maps.DeleteFunc(b.settled, func(key string, _ settledState) bool { return !b.listed(key) })
+	maps.DeleteFunc(b.diffed, func(key, _ string) bool { return !b.listed(key) })
 	if len(prs) == 0 {
 		group.Below = []gotermboard.Line{{gotermboard.C(b.emptyReason(), dim)}}
 	}
@@ -148,6 +150,12 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 		Columns: columns,
 		Groups:  []gotermboard.Group{group},
 	}
+}
+
+// listed says the last frame holds the pull request keyed key.
+func (b *Board) listed(key string) bool {
+	_, ok := b.shown[key]
+	return ok
 }
 
 func (b *Board) emptyReason() string {

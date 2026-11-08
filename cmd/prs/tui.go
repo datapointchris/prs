@@ -43,7 +43,7 @@ branch and checkout under it.
 enter opens a pull request's description, full screen where it runs past the screen.
 A letter acts on the pull request under the cursor, and ? lists every key. d hands the
 terminal to its diff in nvim, and :qa comes back to the list. m merges and x closes,
-each after asking, and c posts what $EDITOR wrote. Each runs while the list stays
+each after asking, and c posts what your editor wrote. Each runs while the list stays
 usable, named on the footer until it ends. p opens its page and comments in a tmux
 window, and the config can add keys of its own, each a command in a tmux window. esc
 backs out one level, and q quits.

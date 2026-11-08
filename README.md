@@ -78,14 +78,19 @@ when it runs past the screen. On a wide terminal a side panel shows it beside th
 `d` fetches the pull request's head and hands the terminal to nvim's diff (with the
 Diffview plugin) against the base it targets. `:qa` comes back to the list with the same
 row under the cursor, and every provider is read again. It never checks the branch out.
+nvim listens on `$TMPDIR/prs-diff-<repo>-<number>.sock`, so another program can ask it
+what is under the cursor. Inside tmux, prs's window is named `diff <repo> #<number>` while
+nvim has it.
 
 `m` merges and `x` closes without merging. Each names the pull request and asks first:
-enter alone merges, and enter alone leaves it open rather than closing it. `c` opens
-`$EDITOR` on an empty file and posts what was written when the editor exits. Merging,
-closing, commenting and `o`, which opens the page in the browser, each run while the list
-stays usable, named on the footer until they end. A merged or closed row reads `merged` or
-`closed` at once, and a failure says the client's own reason on the footer. Bitbucket's
-client has no verb to close a pull request, so `x` refuses there.
+enter alone merges, and enter alone leaves it open rather than closing it. A second press
+while one runs is refused. On GitHub a merge after `d` pins the head the diff showed, so it
+fails where the branch moved since. `c` opens your editor on an empty file and posts what
+was written when it exits. Merging, closing, commenting and `o`, which opens the page in
+the browser, each run while the list stays usable, named on the footer until they end. A
+merged or closed row reads `merged` or `closed` at once, and a failure says the client's
+own reason on the footer. Bitbucket's client has no verb to close a pull request, so `x`
+refuses there.
 
 `p` opens GitHub's page with its comments in a pager in a new tmux window, so it needs prs
 to run inside tmux. Bitbucket has no such page, and `o` opens one there. `y` copies the

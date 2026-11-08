@@ -19,8 +19,9 @@ import (
 // records its arguments, and a client records the body it was handed to post, so no test
 // reads a real account, changes a real pull request or starts a real Claude.
 //
-// The stand-in gh takes half a second to merge, so the work shows under way, and refuses to
-// merge #13 in gh's own words.
+// The stand-in gh takes a second to merge, so the work shows under way, and refuses to merge
+// #13 in gh's own words. The stand-in git names fetchedHead as any ref's commit, and the
+// stand-in tmux names prs's window prs.
 type standIn struct {
 	env      map[string]string
 	checkout string
@@ -28,6 +29,9 @@ type standIn struct {
 	tmp      string
 	recorded string
 }
+
+// fetchedHead is the commit the stand-in git names for any ref.
+const fetchedHead = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
 
 func newStandIn(t *testing.T) standIn {
 	t.Helper()
@@ -57,7 +61,7 @@ func newStandIn(t *testing.T) standIn {
     echo 'To have the pull request merged after all the requirements have been met, add the ` + "`--auto`" + ` flag.' >&2
     exit 1
   fi
-  sleep 0.5; exit 0 ;;
+  sleep 1; exit 0 ;;
 'pr close') exit 0 ;;
 'pr comment') ` + posted + ` exit 0 ;;
 esac
@@ -67,9 +71,9 @@ esac
 'pr comment') ` + posted + ` exit 0 ;;
 esac
 ` + fmt.Sprintf("cat %q\n", listed),
-		"tmux":   "#!/bin/sh\n" + record,
+		"tmux":   "#!/bin/sh\n" + record + "case \"$*\" in *automatic-rename}*) printf 'prs\\t0\\n' ;; esac\n",
 		"claude": "#!/bin/sh\n" + record,
-		"git":    "#!/bin/sh\n" + record,
+		"git":    "#!/bin/sh\n" + record + "[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\nexit 0\n",
 		"nvim":   "#!/bin/sh\n" + record,
 		"editor": "#!/bin/sh\n" + record + "printf 'Looks good to me.\\n' > \"$1\"\n",
 	}
@@ -102,6 +106,7 @@ window_actions:
 		"PATH":            bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"XDG_CONFIG_HOME": filepath.Join(dir, "config"),
 		"TMUX":            filepath.Join(dir, "tmux") + ",1,0",
+		"TMUX_PANE":       "%1",
 		"EDITOR":          filepath.Join(bin, "editor"),
 		"TMPDIR":          s.tmp,
 	}
@@ -202,8 +207,13 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *tes
 	term.WaitFor("merge acme/widget #12 — Cache the widget lookups? [Y/n]")
 	term.Press("enter")
 	term.WaitFor("merging acme/widget #12")
+	term.Press("m")
+	term.WaitFor("merging acme/widget #12 is still under way; merge it once that ends")
 	term.WaitFor("merged acme/widget #12")
 	term.WaitFor("merged  Cache the widget lookups")
+	if recorded, _ := os.ReadFile(s.recorded); strings.Count(string(recorded), "pr\nmerge\n12\n") != 1 {
+		t.Error("m pressed while a merge is under way should not send a second merge")
+	}
 
 	term.Press("j", "m", "enter")
 	term.WaitFor("gh could not merge #13: X Pull request acme/widget#13 is not mergeable")
@@ -224,12 +234,22 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *tes
 		t.Error("d should fetch the head into its own ref in the checkout")
 	}
 	socket := filepath.Join(s.tmp, "prs-diff-widget-13.sock")
-	if !s.ran(t, "nvim", "cwd="+s.checkout, "--listen", socket, "-c", "DiffviewOpen origin/add-cache...refs/remotes/origin/pr/13") {
+	open := "if exists(':DiffviewOpen') == 2 | execute 'DiffviewOpen origin/add-cache...refs/remotes/origin/pr/13' | else | cquit 3 | endif"
+	if !s.ran(t, "nvim", "cwd="+s.checkout, "--listen", socket, "-c", open) {
 		t.Error("d should diff three-dot against the base the listing reports, in the checkout")
+	}
+	// A program split into the window reads the pull request off its name.
+	if !s.ran(t, "rename-window", "-t", "%1", "diff widget #13") || !s.ran(t, "rename-window", "-t", "%1", "prs") {
+		t.Error("d should name prs's tmux window for the diff while nvim has it, then give its name back")
 	}
 	term.Press("m")
 	term.WaitFor("merge acme/widget #13 — Count cache hits? [Y/n]")
-	term.Press("esc", "q")
+	term.Press("enter")
+	term.WaitFor("gh could not merge #13")
+	if !s.ran(t, "pr", "merge", "13", "--repo", "acme/widget", "--merge", "--match-head-commit", fetchedHead) {
+		t.Error("a merge after d should pin the head d fetched")
+	}
+	term.Press("q")
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
 	}

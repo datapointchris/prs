@@ -105,8 +105,17 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 	}
 }
 
-// settledCodes color the state a merge or close left a pull request in, as GitHub does.
-var settledCodes = map[string]string{"merged": gotermboard.Magenta, "closed": gotermboard.Red}
+// settledState is the state a key's merge or close left a pull request in, which is also the
+// word its row reads.
+type settledState string
+
+const (
+	merged settledState = "merged"
+	closed settledState = "closed"
+)
+
+// settledCodes color each settled state as GitHub does.
+var settledCodes = map[settledState]string{merged: gotermboard.Magenta, closed: gotermboard.Red}
 
 // checksCell is the CI state. A rollup state this does not know is yellow rather than
 // dim, because GitHub adds states and a new one is in flight rather than absent.
@@ -178,11 +187,11 @@ func repoCell(pr pullrequests.PullRequest) gotermboard.Cell {
 // titleLine is the state a merge or close left it in, the title, the open pull request it is
 // stacked on, and the app that opened it. A pull request a person opened carries no mark, so
 // the mark sets an app's row apart. A settled one dims its title, because it waits on nobody.
-func titleLine(pr pullrequests.PullRequest, parent int, settled string) gotermboard.Line {
+func titleLine(pr pullrequests.PullRequest, parent int, settled settledState) gotermboard.Line {
 	line := gotermboard.Line{gotermboard.C(pr.Title, "")}
 	switch {
 	case settled != "":
-		line = gotermboard.Line{gotermboard.C(settled, settledCodes[settled]), gotermboard.C("  "+pr.Title, dim)}
+		line = gotermboard.Line{gotermboard.C(string(settled), settledCodes[settled]), gotermboard.C("  "+pr.Title, dim)}
 	case pr.Draft:
 		line = gotermboard.Line{gotermboard.C(pr.Title+" (draft)", dim)}
 	}
