@@ -61,9 +61,10 @@ const (
 	readyKey       = "r"
 	mergeAnywayKey = "m"
 	abortKey       = "a"
+	pushKey        = "p"
 )
 
-var menuKeys = []string{resolveKey, closeKey, updateKey, logKey, rerunKey, mergeAnywayKey, abortKey}
+var menuKeys = []string{resolveKey, closeKey, updateKey, logKey, rerunKey, mergeAnywayKey, abortKey, pushKey}
 
 // RefusedFix says why a merge fix cannot have its key, and is nil where the key is free: one the
 // fix menu offers a choice of its own on, or one that closes the menu.
@@ -83,17 +84,17 @@ type fixFrom struct {
 }
 
 // fixMenu is what the menu is drawn from: the pull request as it was just read, its detail, for
-// a conflict what the checkout here says of it, and the worktree the menu merges the base into,
+// a conflict what the checkout here says of it, and the worktree the menu rebases the head in,
 // nil where there is no checkout.
 type fixMenu struct {
 	from      fixFrom
 	pr        pullrequests.PullRequest
 	detail    *pullrequests.Detail
 	conflicts conflicts
-	worktree  *pullrequests.MergeWorktree
-	// left says the worktree is there, from an earlier n, and waiting that a merge is still
-	// under way in it.
-	left, waiting bool
+	worktree  *pullrequests.RebaseWorktree
+	// left says the worktree is there, from an earlier n, and rebase where a rebase in it stands.
+	left   bool
+	rebase pullrequests.Rebase
 }
 
 // conflicts is what the checkout here says of a conflict: the files it is in, or why git could
@@ -146,8 +147,8 @@ func (b *Board) readThenFix(m *gotermboard.Model, pr pullrequests.PullRequest, f
 			menu.pr, menu.detail = pullrequests.Finish([]pullrequests.PullRequest{fresh}, b.repos, time.Now())[0], detail
 			target, err := pullrequests.LocalDiffOf(ctx, menu.pr)
 			if err == nil {
-				w := pullrequests.MergeWorktreeAt(b.worktreeRoot, target, menu.pr.Branch)
-				menu.worktree, menu.left, menu.waiting = &w, w.Exists(), w.Merging(ctx)
+				w := pullrequests.RebaseWorktreeAt(b.worktreeRoot, target, menu.pr.Branch)
+				menu.worktree, menu.left, menu.rebase = &w, w.Exists(), w.State(ctx)
 			}
 			if blockerOf(menu.pr) == conflictsBlocker {
 				menu.conflicts = conflictsOf(ctx, target, err)
@@ -184,7 +185,7 @@ func conflictsOf(ctx context.Context, target pullrequests.LocalDiff, local error
 
 // openFixMenu asks which fix to run for what keeps the menu's pull request from merging, after
 // what the host said where a merge was refused. A pull request that reads ready asks to merge
-// where m opened the menu, offers to remove a worktree an earlier n left where f did, and
+// where m opened the menu, offers what a worktree an earlier n left needs where f did, and
 // otherwise says so. A blocker with nothing to offer says why.
 func (b *Board) openFixMenu(m *gotermboard.Model, menu fixMenu) tea.Cmd {
 	pr := menu.pr
@@ -198,7 +199,7 @@ func (b *Board) openFixMenu(m *gotermboard.Model, menu fixMenu) tea.Cmd {
 			return b.askMerge(m, pr)
 		case menu.left:
 			b.askFix(m, pr, []gotermboard.Line{{gotermboard.C(ready+".", gotermboard.Bold)}, {gotermboard.C(leftLine(menu), "")}},
-				[]fixChoice{b.removeLeft(pr, menu)}, fmt.Sprintf("left %s as it is", homeAsTilde(menu.worktree.Path)))
+				b.leftChoices(pr, menu), fmt.Sprintf("left %s as it is", homeAsTilde(menu.worktree.Path)))
 		default:
 			m.Say(ready)
 		}
@@ -251,15 +252,15 @@ func (b *Board) askFix(m *gotermboard.Model, pr pullrequests.PullRequest, listin
 }
 
 // fixesFor is what the menu says of the blocker, a line each, the first leading, and the choices
-// it offers for it: its own, then the config's fixes for that kind, then removing a worktree an
-// earlier n left.
+// it offers for it: its own, then the config's fixes for that kind, then pushing or removing a
+// worktree an earlier n left.
 func (b *Board) fixesFor(kind blocker, menu fixMenu) ([]string, []fixChoice) {
 	pr := menu.pr
 	provider, _ := pullrequests.ProviderOf(pr.Provider)
 	var about []string
 	var choices []fixChoice
 	worktree := ""
-	if menu.waiting {
+	if menu.rebase != pullrequests.NoRebase {
 		worktree = menu.worktree.Path
 	}
 	switch kind {
@@ -270,10 +271,10 @@ func (b *Board) fixesFor(kind blocker, menu fixMenu) ([]string, []fixChoice) {
 		if provider.UpdateBranch != nil {
 			argv, inCheckout := provider.UpdateBranch(pr)
 			choices = append(choices, fixChoice{
-				key: updateKey, label: fmt.Sprintf("update the branch: %s merges %s into it on GitHub, and its checks run again", strings.Join(argv[:3], " "), pr.Base),
+				key: updateKey, label: fmt.Sprintf("update the branch: %s rebases it onto %s on GitHub, and its checks run again", strings.Join(argv[:3], " "), pr.Base),
 				run: func(*gotermboard.Model) tea.Cmd {
-					return b.hostVerb(pr, argv, inCheckout, "update", fmt.Sprintf("updating the branch of %s #%d", pr.Slug, pr.Number),
-						fmt.Sprintf("updated the branch of %s #%d with %s on GitHub, so its checks run again", pr.Slug, pr.Number, pr.Base))
+					return b.hostVerb(pr, argv, inCheckout, "update", fmt.Sprintf("rebasing the branch of %s #%d onto %s on GitHub", pr.Slug, pr.Number, pr.Base),
+						fmt.Sprintf("rebased the branch of %s #%d onto %s on GitHub, so its checks run again", pr.Slug, pr.Number, pr.Base))
 				},
 			})
 		}
@@ -300,7 +301,7 @@ func (b *Board) fixesFor(kind blocker, menu fixMenu) ([]string, []fixChoice) {
 	choices = append(choices, b.configuredFixes(pr, kind, menu, worktree)...)
 	if menu.left {
 		about = append(about, leftLine(menu))
-		choices = append(choices, b.removeLeft(pr, menu))
+		choices = append(choices, b.leftChoices(pr, menu)...)
 	}
 	if kind == conflictsBlocker {
 		choices = append(choices, fixChoice{key: closeKey, label: "close without merging, after asking", run: func(m *gotermboard.Model) tea.Cmd { return b.closePR(m, pr) }})
@@ -323,25 +324,39 @@ func (b *Board) fixesFor(kind blocker, menu fixMenu) ([]string, []fixChoice) {
 
 // leftLine is what the menu says of a worktree an earlier n left.
 func leftLine(menu fixMenu) string {
-	if menu.waiting {
-		return fmt.Sprintf("A merge of origin/%s into it waits in %s.", menu.pr.Base, homeAsTilde(menu.worktree.Path))
+	where := homeAsTilde(menu.worktree.Path)
+	switch menu.rebase {
+	case pullrequests.Stopped:
+		return fmt.Sprintf("A rebase of it onto origin/%s stopped in %s.", menu.pr.Base, where)
+	case pullrequests.Rebased:
+		return fmt.Sprintf("A rebase of it onto origin/%s waits to be pushed in %s.", menu.pr.Base, where)
 	}
-	return fmt.Sprintf("A worktree an earlier merge here left, with no merge under way, is in %s.", homeAsTilde(menu.worktree.Path))
+	return fmt.Sprintf("A worktree an earlier rebase here left, with no rebase under way, is in %s.", where)
 }
 
-// removeLeft is the choice that aborts a merge an earlier n left and removes its worktree.
-func (b *Board) removeLeft(pr pullrequests.PullRequest, menu fixMenu) fixChoice {
+// leftChoices are what the menu offers for a worktree an earlier n left: pushing a rebase that
+// finished, and aborting a rebase under way or removing the worktree.
+func (b *Board) leftChoices(pr pullrequests.PullRequest, menu fixMenu) []fixChoice {
 	w := *menu.worktree
-	label := fmt.Sprintf("remove %s: git worktree remove, which refuses it while it holds changes", homeAsTilde(w.Path))
-	if menu.waiting {
-		label = fmt.Sprintf("abort the merge waiting in %s: git merge --abort, then remove the worktree", homeAsTilde(w.Path))
+	where := homeAsTilde(w.Path)
+	var choices []fixChoice
+	label := fmt.Sprintf("remove %s: git worktree remove, which refuses it while it holds changes", where)
+	switch menu.rebase {
+	case pullrequests.Stopped:
+		label = fmt.Sprintf("abort the rebase stopped in %s: git rebase --abort, then remove the worktree", where)
+	case pullrequests.Rebased:
+		choices = append(choices, fixChoice{key: pushKey, label: fmt.Sprintf("push the rebase waiting in %s, after asking", where), run: func(*gotermboard.Model) tea.Cmd {
+			return b.readPushable(pr, w)
+		}})
+		label = fmt.Sprintf("remove %s and the rebase in it, unpushed: git worktree remove", where)
 	}
-	return fixChoice{key: abortKey, label: label, run: func(*gotermboard.Model) tea.Cmd { return b.abortMerge(pr, w) }}
+	return append(choices, fixChoice{key: abortKey, label: label, run: func(*gotermboard.Model) tea.Cmd { return b.abortRebase(pr, w) }})
 }
 
-// conflictFixes is what the menu says of a conflict, and resolving it in nvim, where its repo is
-// checked out here, git and nvim are installed, and the head branch is on origin rather than in
-// a fork, which prs pushes nothing to.
+// conflictFixes is what the menu says of a conflict, and rebasing it to resolve in nvim, where
+// its repo is checked out here, git and nvim are installed, and the head branch is on origin
+// rather than in a fork, which prs pushes nothing to. A rebase that finished and waits to be
+// pushed is offered p among the left worktree's choices instead.
 func (b *Board) conflictFixes(menu fixMenu) ([]string, []fixChoice) {
 	pr, c := menu.pr, menu.conflicts
 	var about []string
@@ -357,15 +372,15 @@ func (b *Board) conflictFixes(menu fixMenu) ([]string, []fixChoice) {
 		about = append(about, fmt.Sprintf("GitHub reads it as conflicting with %s, and git merges the two cleanly here, so GitHub may not have read the newest of either yet.", pr.Base))
 	}
 	if pr.HeadInFork {
-		about = append(about, fmt.Sprintf("Its branch %s is in a fork rather than on origin, so prs pushes no merge to it.", pr.Branch))
+		about = append(about, fmt.Sprintf("Its branch %s is in a fork rather than on origin, so prs pushes no rebase to it.", pr.Branch))
 	}
-	if menu.worktree == nil || pr.HeadInFork || len(config.MissingPrograms([]string{"git", "nvim"})) > 0 {
+	if menu.worktree == nil || pr.HeadInFork || menu.rebase == pullrequests.Rebased || len(config.MissingPrograms([]string{"git", "nvim"})) > 0 {
 		return about, nil
 	}
 	w := *menu.worktree
-	label := fmt.Sprintf("resolve in nvim: merge origin/%s into it in %s, then resolve it in diffview", pr.Base, homeAsTilde(w.Path))
-	if menu.waiting {
-		label = fmt.Sprintf("resolve in nvim: open the merge waiting in %s", homeAsTilde(w.Path))
+	label := fmt.Sprintf("resolve in nvim: rebase it onto origin/%s in %s, then resolve each stop in diffview", pr.Base, homeAsTilde(w.Path))
+	if menu.rebase == pullrequests.Stopped {
+		label = fmt.Sprintf("resolve in nvim: open the rebase stopped in %s", homeAsTilde(w.Path))
 	}
 	return about, []fixChoice{{key: resolveKey, label: label, run: func(m *gotermboard.Model) tea.Cmd { return b.resolve(m, pr, w) }}}
 }
@@ -417,8 +432,8 @@ func failedChecks(detail *pullrequests.Detail, provider pullrequests.Provider) (
 }
 
 // configuredFixes is each merge fix the config offers for the kind, whose programs are on
-// PATH, each opening its window behind the board. worktree is where a merge of the base is
-// under way, for {worktree}.
+// PATH, each opening its window behind the board. worktree is where a rebase stopped or waits
+// to be pushed, for {worktree}.
 func (b *Board) configuredFixes(pr pullrequests.PullRequest, kind blocker, menu fixMenu, worktree string) []fixChoice {
 	_, runs := failedChecks(menu.detail, mustProvider(pr))
 	var choices []fixChoice
@@ -592,134 +607,183 @@ func logDocument(log string) gotermboard.Document {
 	}
 }
 
-// resolve merges origin/<base> into the pull request's head in the worktree, after fetching
-// both, then hands the terminal to nvim's resolver there. A merge already under way there opens
-// as it was left. A head that already holds the base has nothing to resolve, and says so.
-func (b *Board) resolve(m *gotermboard.Model, pr pullrequests.PullRequest, w pullrequests.MergeWorktree) tea.Cmd {
-	merging := false
+// resolve rebases the pull request's head onto origin/<base> in the worktree, after fetching
+// the base, and hands each stop to nvim's resolver there. A rebase already under way there
+// opens as it was left, and one that finished asks to push. A head that already holds the base
+// has nothing to rebase, and says so.
+func (b *Board) resolve(m *gotermboard.Model, pr pullrequests.PullRequest, w pullrequests.RebaseWorktree) tea.Cmd {
+	state := pullrequests.NoRebase
+	var commits []string
 	return b.start(work{
 		pr:    pr,
-		doing: fmt.Sprintf("merging origin/%s into %s #%d in %s", pr.Base, pr.Slug, pr.Number, homeAsTilde(w.Path)),
+		doing: fmt.Sprintf("rebasing %s #%d onto origin/%s in %s", pr.Slug, pr.Number, pr.Base, homeAsTilde(w.Path)),
 		run: func(ctx context.Context) error {
-			got, err := pullrequests.Fetch(ctx, w.Target)
-			if err != nil {
+			if _, err := pullrequests.Fetch(ctx, w.Target); err != nil {
 				return err
 			}
-			merging, err = w.Start(ctx, got.Head)
+			var err error
+			if state, err = w.Start(ctx); err != nil || state != pullrequests.Rebased {
+				return err
+			}
+			commits, err = w.Commits(ctx)
 			return err
 		},
 		done: func(m *gotermboard.Model) tea.Cmd {
-			if !merging {
-				m.Say(fmt.Sprintf("the head of %s #%d already holds origin/%s, so there was nothing to merge", pr.Slug, pr.Number, pr.Base))
+			switch state {
+			case pullrequests.Stopped:
+				return b.resolveInNvim(m, pr, w)
+			case pullrequests.Rebased:
+				b.askPush(m, pr, w, commits)
 				return nil
 			}
-			return b.resolveInNvim(m, pr, w)
+			m.Say(fmt.Sprintf("the head of %s #%d already holds origin/%s, so there was nothing to rebase", pr.Slug, pr.Number, pr.Base))
+			return nil
 		},
 	})
 }
 
 // resolveInNvim hands the terminal to nvim in the worktree, where Diffview with no revisions
-// opens its three-way resolver on the merge under way, and reads what is left unmerged once
-// nvim exits.
-func (b *Board) resolveInNvim(m *gotermboard.Model, pr pullrequests.PullRequest, w pullrequests.MergeWorktree) tea.Cmd {
+// opens its three-way resolver on the rebase's stop, and goes on from what nvim left once it
+// exits.
+func (b *Board) resolveInNvim(m *gotermboard.Model, pr pullrequests.PullRequest, w pullrequests.RebaseWorktree) tea.Cmd {
 	nvim := exec.Command("nvim", "-c", openDiffview(""))
 	nvim.Dir = w.Path
 	return m.HandOver(nvim, func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
 		var exit *exec.ExitError
 		switch {
 		case errors.As(err, &exit) && exit.ExitCode() == noDiffview:
-			m.Say(fmt.Sprintf("nvim has no :DiffviewOpen, which resolving needs from the diffview.nvim plugin; the merge waits in %s", homeAsTilde(w.Path)))
+			m.Say(fmt.Sprintf("nvim has no :DiffviewOpen, which resolving needs from the diffview.nvim plugin; the rebase waits in %s", homeAsTilde(w.Path)))
 			return nil
 		case err != nil:
-			m.Say(fmt.Sprintf("nvim ended resolving #%d: %s; the merge waits in %s", pr.Number, gotermboard.LastLine(stderr, err), homeAsTilde(w.Path)))
+			m.Say(fmt.Sprintf("nvim ended resolving #%d: %s; the rebase waits in %s", pr.Number, gotermboard.LastLine(stderr, err), homeAsTilde(w.Path)))
 			return nil
 		}
 		return b.afterResolving(pr, w)
 	})
 }
 
-// afterResolving reads what nvim left unmerged, then asks to commit and push a merge with none
-// left, or offers the merge's choices again where some are.
-func (b *Board) afterResolving(pr pullrequests.PullRequest, w pullrequests.MergeWorktree) tea.Cmd {
-	var unmerged, staged []string
+// afterResolving reads what nvim left unmerged. With none left it goes on with the rebase,
+// opening nvim again at its next stop and asking to push once it finishes. With some left, or
+// at a stop git cannot go on from, it offers the stop's choices.
+func (b *Board) afterResolving(pr pullrequests.PullRequest, w pullrequests.RebaseWorktree) tea.Cmd {
+	var unmerged, commits []string
+	state, stuck := pullrequests.Stopped, ""
 	return b.start(work{
 		pr:    pr,
-		doing: fmt.Sprintf("reading what is left unmerged in %s", homeAsTilde(w.Path)),
+		doing: fmt.Sprintf("going on with the rebase in %s", homeAsTilde(w.Path)),
 		run: func(ctx context.Context) error {
 			var err error
 			if unmerged, err = w.Unmerged(ctx); err != nil || len(unmerged) > 0 {
 				return err
 			}
-			staged, err = w.Staged(ctx)
+			switch state, err = w.Continue(ctx); {
+			case err != nil && state == pullrequests.Stopped:
+				stuck = err.Error()
+				return nil
+			case err != nil || state != pullrequests.Rebased:
+				return err
+			}
+			commits, err = w.Commits(ctx)
 			return err
 		},
 		done: func(m *gotermboard.Model) tea.Cmd {
-			if len(unmerged) > 0 {
-				b.unmergedMenu(m, pr, w, unmerged)
-				return nil
+			switch {
+			case len(unmerged) > 0:
+				listing := []gotermboard.Line{{gotermboard.C(fmt.Sprintf("%s still unmerged in %s:", counted(len(unmerged), "path"), homeAsTilde(w.Path)), gotermboard.Bold)}}
+				for _, path := range unmerged {
+					listing = append(listing, gotermboard.Line{gotermboard.C("    "+path, "")})
+				}
+				b.stoppedMenu(m, pr, w, listing)
+			case stuck != "":
+				b.stoppedMenu(m, pr, w, []gotermboard.Line{{gotermboard.C(stuck, gotermboard.Red)}})
+			case state == pullrequests.Stopped:
+				return b.resolveInNvim(m, pr, w)
+			default:
+				b.askPush(m, pr, w, commits)
 			}
-			b.askPush(m, pr, w, staged)
 			return nil
 		},
 	})
 }
 
-// unmergedMenu offers what to do with a merge nvim left paths unmerged in: open nvim again, abort
-// it, or hand it to a merge fix for conflicts.
-func (b *Board) unmergedMenu(m *gotermboard.Model, pr pullrequests.PullRequest, w pullrequests.MergeWorktree, paths []string) {
-	listing := []gotermboard.Line{{gotermboard.C(fmt.Sprintf("%s still unmerged in %s:", counted(len(paths), "path"), homeAsTilde(w.Path)), gotermboard.Bold)}}
-	for _, path := range paths {
-		listing = append(listing, gotermboard.Line{gotermboard.C("    "+path, "")})
-	}
+// stoppedMenu offers what to do with a rebase stopped with paths unmerged, or at a stop git
+// cannot go on from: open nvim again, abort it, or hand it to a merge fix for conflicts.
+func (b *Board) stoppedMenu(m *gotermboard.Model, pr pullrequests.PullRequest, w pullrequests.RebaseWorktree, listing []gotermboard.Line) {
 	choices := []fixChoice{
-		{key: resolveKey, label: "resolve in nvim: open the merge again", run: func(m *gotermboard.Model) tea.Cmd { return b.resolveInNvim(m, pr, w) }},
-		{key: abortKey, label: "abort the merge: git merge --abort, then remove the worktree", run: func(*gotermboard.Model) tea.Cmd { return b.abortMerge(pr, w) }},
+		{key: resolveKey, label: "resolve in nvim: open the rebase again", run: func(m *gotermboard.Model) tea.Cmd { return b.resolveInNvim(m, pr, w) }},
+		{key: abortKey, label: "abort the rebase: git rebase --abort, then remove the worktree", run: func(*gotermboard.Model) tea.Cmd { return b.abortRebase(pr, w) }},
 	}
 	choices = append(choices, b.configuredFixes(pr, conflictsBlocker, fixMenu{pr: pr}, w.Path)...)
-	b.askFix(m, pr, listing, choices, fmt.Sprintf("left the merge under way in %s; f, then n, opens it again", homeAsTilde(w.Path)))
+	b.askFix(m, pr, listing, choices, fmt.Sprintf("left the rebase stopped in %s; f, then n, opens it again", homeAsTilde(w.Path)))
 }
 
-// askPush shows what the merge commit changes and asks to commit it and push it to the head
-// branch. Enter alone pushes, because the person just resolved it, and the push only adds the
-// merge commit on top of the branch.
-func (b *Board) askPush(m *gotermboard.Model, pr pullrequests.PullRequest, w pullrequests.MergeWorktree, staged []string) {
-	listing := []gotermboard.Line{{gotermboard.C(fmt.Sprintf("The merge of origin/%s into %s, ready to commit in %s:", pr.Base, w.Branch, homeAsTilde(w.Path)), gotermboard.Bold)}}
-	for _, line := range staged {
-		listing = append(listing, gotermboard.Line{gotermboard.C(line, "")})
+// readPushable reads the commits a finished rebase put on the base, then asks to push them.
+func (b *Board) readPushable(pr pullrequests.PullRequest, w pullrequests.RebaseWorktree) tea.Cmd {
+	var commits []string
+	return b.start(work{
+		pr:    pr,
+		doing: fmt.Sprintf("reading the rebase in %s", homeAsTilde(w.Path)),
+		run: func(ctx context.Context) error {
+			var err error
+			commits, err = w.Commits(ctx)
+			return err
+		},
+		done: func(m *gotermboard.Model) tea.Cmd {
+			b.askPush(m, pr, w, commits)
+			return nil
+		},
+	})
+}
+
+// maxListedCommits is the most commits the push question lists, so a long branch leaves the
+// question on the screen.
+const maxListedCommits = 10
+
+// askPush lists the commits the rebase put on the base and asks to force-push them to the head
+// branch. Enter alone pushes, because the person just resolved the rebase, and the lease
+// refuses the push where anyone pushed to the branch since.
+func (b *Board) askPush(m *gotermboard.Model, pr pullrequests.PullRequest, w pullrequests.RebaseWorktree, commits []string) {
+	listing := []gotermboard.Line{{gotermboard.C(fmt.Sprintf("%s rebased onto origin/%s in %s:", counted(len(commits), "commit"), pr.Base, homeAsTilde(w.Path)), gotermboard.Bold)}}
+	for i, commit := range commits {
+		if i == maxListedCommits {
+			listing = append(listing, gotermboard.Line{gotermboard.C(fmt.Sprintf("    and %d more", len(commits)-i), "")})
+			break
+		}
+		listing = append(listing, gotermboard.Line{gotermboard.C("    "+commit, "")})
 	}
 	left := func() tea.Cmd {
-		m.Say(fmt.Sprintf("left the merge uncommitted in %s; f, then n, opens it again", homeAsTilde(w.Path)))
+		m.Say(fmt.Sprintf("left the rebase unpushed in %s; f, then p, pushes it, and f, then a, removes it", homeAsTilde(w.Path)))
 		return nil
 	}
 	m.Ask(gotermboard.Question{
 		Listing: listing,
-		Text:    fmt.Sprintf("commit it and push it to %s? [Y/n]", w.Branch),
+		Text:    fmt.Sprintf("force-push it to %s, with a lease on the head it started from? [Y/n]", w.Branch),
 		Typed:   true,
 		Answer: func(typed string) tea.Cmd {
 			if !slices.Contains([]string{"", "y", "yes"}, strings.ToLower(typed)) {
 				return left()
 			}
-			return b.commitAndPush(pr, w)
+			return b.pushRebase(pr, w)
 		},
 		Cancel: left,
 	})
 }
 
-// commitAndPush commits the merge through the repo's hooks, pushes it to the head branch, and
-// removes the worktree, then reads the listings again for the merge state the push moves.
-func (b *Board) commitAndPush(pr pullrequests.PullRequest, w pullrequests.MergeWorktree) tea.Cmd {
+// pushRebase force-pushes the rebase to the head branch and removes the worktree, then reads
+// the listings again for the merge state the push moves.
+func (b *Board) pushRebase(pr pullrequests.PullRequest, w pullrequests.RebaseWorktree) tea.Cmd {
 	var pushed pullrequests.Pushed
 	return b.start(work{
 		pr:    pr,
-		doing: fmt.Sprintf("committing the merge into %s #%d and pushing it to %s", pr.Slug, pr.Number, w.Branch),
+		doing: fmt.Sprintf("pushing the rebase of %s #%d to %s", pr.Slug, pr.Number, w.Branch),
 		run: func(ctx context.Context) error {
 			var err error
-			pushed, err = w.CommitAndPush(ctx)
+			pushed, err = w.Push(ctx)
 			return err
 		},
 		done: func(m *gotermboard.Model) tea.Cmd {
 			b.readAgain()
-			said := fmt.Sprintf("pushed %s to %s, merging origin/%s into %s #%d", short(pushed.Commit), w.Branch, pr.Base, pr.Slug, pr.Number)
+			said := fmt.Sprintf("pushed %s to %s, rebasing %s #%d onto origin/%s", short(pushed.Commit), w.Branch, pr.Slug, pr.Number, pr.Base)
 			if pushed.Unremove != "" {
 				said += ". " + pushed.Unremove
 			}
@@ -727,14 +791,14 @@ func (b *Board) commitAndPush(pr pullrequests.PullRequest, w pullrequests.MergeW
 			return nil
 		},
 		failed: func(m *gotermboard.Model, err error) tea.Cmd {
-			m.Say(fmt.Sprintf("%v; the merge waits in %s, resolved: f, then n, opens it again, and f, then a, aborts it", err, homeAsTilde(w.Path)))
+			m.Say(fmt.Sprintf("%v; the rebase waits in %s: f, then p, pushes it again, and f, then a, removes it, so n rebases the newest head", err, homeAsTilde(w.Path)))
 			return nil
 		},
 	})
 }
 
-// abortMerge abandons any merge under way in the worktree and removes it.
-func (b *Board) abortMerge(pr pullrequests.PullRequest, w pullrequests.MergeWorktree) tea.Cmd {
+// abortRebase abandons any rebase under way in the worktree and removes it.
+func (b *Board) abortRebase(pr pullrequests.PullRequest, w pullrequests.RebaseWorktree) tea.Cmd {
 	aborted := false
 	return b.start(work{
 		pr:    pr,
@@ -746,9 +810,9 @@ func (b *Board) abortMerge(pr pullrequests.PullRequest, w pullrequests.MergeWork
 		},
 		done: func(m *gotermboard.Model) tea.Cmd {
 			if aborted {
-				m.Say(fmt.Sprintf("aborted the merge of origin/%s into %s #%d and removed %s", pr.Base, pr.Slug, pr.Number, homeAsTilde(w.Path)))
+				m.Say(fmt.Sprintf("aborted the rebase of %s #%d onto origin/%s and removed %s", pr.Slug, pr.Number, pr.Base, homeAsTilde(w.Path)))
 			} else {
-				m.Say(fmt.Sprintf("removed %s, which held no merge under way", homeAsTilde(w.Path)))
+				m.Say(fmt.Sprintf("removed %s, which held no rebase under way", homeAsTilde(w.Path)))
 			}
 			return nil
 		},

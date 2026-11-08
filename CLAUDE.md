@@ -20,8 +20,8 @@ detail read. `internal/pullrequests` reads each provider: GitHub in-process
 through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
 differently by host, `detail.go` the per-PR detail cache, `diff.go` the per-PR diff cache
 the Diff section reads, `fetch.go` a pull request's checkout and the fetch of its head that
-the diff keys and the Diff section share, `merge_worktree.go` the files a conflict names
-and the worktree it is resolved in, `reference.go` what `--pr` takes and how it is read,
+the diff keys and the Diff section share, `rebase_worktree.go` the files a conflict names
+and the worktree it is rebased in, `reference.go` what `--pr` takes and how it is read,
 and `since.go` what `--since` takes.
 `internal/registry` reads the registry file, and `internal/config` reads
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
@@ -131,19 +131,25 @@ own `Sources`, as the Summary tab does, so a read is not made twice.
 - **What a merge state means is `mergeMeanings`' alone**: its word, whether it is ready, and
   the blocker the fix menu offers fixes for. `mergeStateOf` reads a draft as DRAFT and a
   conflict as DIRTY whatever else GitHub reports, for the row's word and `blockerOf` alike.
-- **A conflict is resolved in a worktree detached at the pull request's head**, at
-  `<worktree_root>/<checkout's directory>/pr-<n>-merge`, never on its branch, because the
+- **A conflict is resolved by rebasing the head in a worktree detached at it**, at
+  `<worktree_root>/<checkout's directory>/pr-<n>-rebase`, never on its branch, because the
   branch is often checked out in another worktree and a local branch can hold commits
-  nobody pushed. `-merge` keeps it apart from a `pr-<n>` worktree another tool keeps, and
-  `Start` leaves alone a worktree it finds on a branch. Its merge is `origin/<base>` into
-  the head, never a rebase, and its push a plain `HEAD:refs/heads/<branch>`, which fails
-  rather than overwrites where the branch moved. A merge not pushed waits in the worktree,
-  and `f` then `n` opens it again rather than merging twice. A refused push takes the
-  commit back, through `uncommit`, so the merge is under way again, resolved. The commit
-  runs the repo's hooks, so it waits up to `hooksTimeout`. A head branch in a fork,
-  `HeadInFork`, gets no `n`, because the push goes to origin.
-- **A worktree a merge left is found on every menu**, whatever blocks the pull request or
-  where nothing does, so `a` can remove it once the conflict is fixed somewhere else.
+  nobody pushed. `-rebase` keeps it apart from a `pr-<n>` worktree another tool keeps, and
+  `Start` leaves alone a worktree it finds on a branch. `Start` fetches the head branch into
+  `origin/<branch>` and rebases from there onto `origin/<base>`, never merging the base in,
+  so the branch's history stays linear. Each stop opens nvim, and nvim exiting with nothing
+  unmerged runs `git rebase --continue`. Every client runs with `GIT_EDITOR=true`, so a
+  commit keeps its message rather than wait on an editor nobody can see.
+- **A rebase's push leases the head it started from**, `ORIG_HEAD`, as
+  `--force-with-lease=refs/heads/<branch>:<commit>`, so origin refuses it where anyone pushed
+  since. `--force-if-includes` reads the reflog of a local branch named for the head, which
+  a detached worktree pushes from none of, so git refuses that push even where nobody
+  pushed. A refused push leaves the rebase in the worktree, and `p` pushes it again. A head
+  branch in a fork, `HeadInFork`, gets no `n`, because the push goes to origin. `u` is
+  `gh pr update-branch --rebase` for the same reason the worktree rebases.
+- **A worktree a rebase left is found on every menu**, whatever blocks the pull request or
+  where nothing does, so `a` can remove it once the conflict is fixed somewhere else, and
+  `p` push one that finished.
 - **A merge fix's command quotes the placeholders declared in `quotedPlaceholders`**, because a
   branch name can hold `;` or `$`, and the config refuses a command that puts one inside
   quotes, where prs's quotes would end the command's. The rest are a number, a repo or a

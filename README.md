@@ -267,22 +267,25 @@ key, `esc` leaves the menu, and no choice exits prs. prs reads no merge state fr
 Bitbucket, so a Bitbucket row has no menu, and `m` there asks to merge.
 
 - **Conflicts** name the files that conflict, which `git merge-tree` reads before anything
-  is checked out. `n` resolves them in nvim. prs adds a worktree of the checkout under
-  `worktree_root`, as `<checkout's directory>/pr-<number>-merge`, detached at the pull
-  request's head, so no branch checked out elsewhere moves. It merges `origin/<base>` into
-  it, then hands the terminal to nvim's `:DiffviewOpen`. Once nvim exits with nothing left
-  unmerged, prs shows the merge's changes and asks to commit it and push it to the head
-  branch, enter meaning yes, then removes the worktree. The push is a plain one, so it fails
-  rather than overwrites where the branch moved, and the footer names git's refusal. With
-  paths left unmerged it offers nvim again, `git merge --abort`, or a fix of your own. A
-  merge not pushed, by choice or because the push failed, waits in the worktree resolved
-  as far as it got, so `f` then `n` opens it again. A head branch in a fork gets no `n`,
-  because prs pushes only to origin. `x` closes the pull request, after asking.
-- **A worktree a merge left** is named in the menu of any row it belongs to, and `a` aborts
-  its merge and removes it. So `f` on a row that reads ready offers that too, as when the
+  is checked out. `n` resolves them in nvim by rebasing the head onto its base. prs fetches
+  the head branch into `origin/<branch>` and adds a worktree of the checkout there, under
+  `worktree_root`, as `<checkout's directory>/pr-<number>-rebase`, detached, so no branch
+  checked out elsewhere moves. It runs `git rebase origin/<base>` and hands each stop to
+  nvim's `:DiffviewOpen`. Each time nvim exits with nothing left unmerged, prs runs `git
+  rebase --continue`, keeping each commit's message, and opens nvim again at the next stop.
+  Once the rebase finishes, it lists the rebased commits and asks to force-push them to the
+  head branch, enter meaning yes, then removes the worktree. The push's lease is on the head
+  the rebase started from, so it fails rather than overwrites where anyone pushed to the
+  branch since, and the footer names git's refusal. With paths left unmerged, or at a stop
+  git cannot go on from, it offers nvim again, `git rebase --abort`, or a fix of your own. A
+  rebase stopped or not pushed waits in the worktree, so `f` then `n` opens it again, and
+  `f` then `p` pushes a finished one. A head branch in a fork gets no `n`, because prs
+  pushes only to origin. `x` closes the pull request, after asking.
+- **A worktree a rebase left** is named in the menu of any row it belongs to, and `a` aborts
+  its rebase and removes it. So `f` on a row that reads ready offers that too, as when the
   conflict was fixed somewhere else.
-- **A branch behind its base** updates with `u`, which is `gh pr update-branch`. GitHub
-  merges the base into it, and its checks run again.
+- **A branch behind its base** updates with `u`, which is `gh pr update-branch --rebase`.
+  GitHub rebases it onto the base, and its checks run again.
 - **Failing checks** are named. `l` reads the failed jobs' log full screen, from `gh run
   view --log-failed`, and keeps it in `$TMPDIR`. `r` reruns the failed jobs with `gh run
   rerun --failed`. Only a check GitHub Actions runs has a log or a rerun here. Where GitHub
@@ -342,7 +345,7 @@ merge_fixes:
 lists. The command runs in a tmux window opened behind the board, in the checkout, so the board stays in
 front. The row reads `row_reads`, or `fixing`, while the window is open. `window` takes the
 window action's placeholders, so the board finds the window from the row. `command` also
-takes `{path}`, the checkout, `{worktree}`, where a merge waits in one, `{head}` and
+takes `{path}`, the checkout, `{worktree}`, where a rebase waits in one, `{head}` and
 `{base}`, the branches, `{blocker}`, the kind, and `{log}`, a file holding the failing
 checks' log. Each is empty where it does not apply. A branch name can hold `;` or `$`, so
 prs quotes the paths and branches for the shell itself. A command that puts one of them

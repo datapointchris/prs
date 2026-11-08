@@ -47,7 +47,8 @@ const standInToken = "stand-in-token"
 // each to handed.md and handed.threads.json, since prs removes them once nvim exits.
 // The stand-in gh updates a branch, readies a draft and reruns a run, and logs one failed
 // test for any run. The stand-in git finds two files conflicting with any base, keeps the
-// worktrees it adds, and leaves a merge under way, unmerged where the unmerged file says.
+// worktrees it adds, and stops a rebase, unmerged where the unmerged file says. Its rebase
+// --continue stops once more where the stops file is there, and otherwise finishes.
 type standIn struct {
 	env      map[string]string
 	config   string
@@ -57,10 +58,11 @@ type standIn struct {
 	recorded string
 	handed   string
 	windows  string
-	// worktrees is the config's worktree_root, and unmerged the file whose lines the stand-in
-	// git names as unmerged in a merge under way.
+	// worktrees is the config's worktree_root, unmerged the file whose lines the stand-in git
+	// names as unmerged in a rebase under way, and stops the file that stops it once more.
 	worktrees string
 	unmerged  string
+	stops     string
 	github    *gitHub
 }
 
@@ -406,6 +408,20 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newStandIn(t *testing.T) standIn {
 	t.Helper()
 	dir := t.TempDir()
@@ -416,7 +432,7 @@ func newStandIn(t *testing.T) standIn {
 	s := standIn{
 		config: filepath.Join(dir, "config", "prs", "config.yml"), checkout: filepath.Join(dir, "widget"), ledger: filepath.Join(dir, "ledger"),
 		tmp: filepath.Join(dir, "tmp"), recorded: filepath.Join(dir, "recorded"), handed: filepath.Join(dir, "handed"),
-		windows: filepath.Join(dir, "windows"), worktrees: filepath.Join(dir, "worktrees"), unmerged: filepath.Join(dir, "unmerged"),
+		windows: filepath.Join(dir, "windows"), worktrees: filepath.Join(dir, "worktrees"), unmerged: filepath.Join(dir, "unmerged"), stops: filepath.Join(dir, "stops"),
 		github: &gitHub{mergeStates: map[int]string{}, failedRuns: map[int]string{}, recorded: filepath.Join(dir, "recorded")},
 	}
 	bin := filepath.Join(dir, "bin")
@@ -455,21 +471,26 @@ esac
 		"tmux": "#!/bin/sh\n" + record + "case \"$*\" in *automatic-rename}*) printf 'prs\\t0\\n' ;; esac\n" +
 			fmt.Sprintf("case \"$1\" in new-window) while [ \"$1\" != -n ]; do shift; done; printf '%%s\\n' \"$2\" >> %[1]q ;; list-windows) cat %[1]q 2>/dev/null ;; esac\n", s.windows),
 		"claude": "#!/bin/sh\n" + record,
-		// A merge conflicts in two files, and a merge under way names unmerged what the unmerged
-		// file holds.
+		// A merge conflicts in two files, a rebase stops with what the unmerged file holds
+		// unmerged, and git keeps a rebase under way in the worktree's rebase-merge.
 		"git": "#!/bin/sh\n" + record + fmt.Sprintf(`case "$1 $2" in
 'merge-tree --write-tree') printf '%%s\n' 4b825dc642cb6eb9a060e54bf8d69288fbee4904 cache/cache.go cache/stats.go '' 'CONFLICT (content): Merge conflict in cache/cache.go'; exit 1 ;;
 'worktree add') mkdir -p "$5"; printf 'worktree %%s\n' "$5" >> %[1]q; exit 0 ;;
 'worktree list') cat %[1]q 2>/dev/null; exit 0 ;;
 'worktree remove') rm -rf "$3"; sed -i "\#^worktree $3\$#d" %[1]q; exit 0 ;;
-'merge --quiet') exit 1 ;;
+'rebase --quiet') mkdir -p rebase-merge; exit 1 ;;
+'rebase --continue')
+  if [ -f %[3]q ]; then rm %[3]q; printf 'cache/stats.go\n' > %[2]q; exit 1; fi
+  rm -rf rebase-merge; exit 0 ;;
+'rebase --abort') rm -rf rebase-merge; exit 0 ;;
+'rev-parse --path-format=absolute') printf '%%s\n' "$PWD/rebase-merge" "$PWD/rebase-apply"; exit 0 ;;
+'log --oneline') printf '1a2b3c4 Count cache hits\n'; exit 0 ;;
 'symbolic-ref --quiet') exit 1 ;;
 esac
 case "$*" in
 *--diff-filter=U*) cat %[2]q 2>/dev/null; exit 0 ;;
-'diff --cached --stat') printf ' cache/cache.go | 4 ++--\n'; exit 0 ;;
 esac
-`, filepath.Join(dir, "worktree-list"), s.unmerged) +
+`, filepath.Join(dir, "worktree-list"), s.unmerged, s.stops) +
 			"case \"$*\" in 'rev-parse --verify --quiet " + rebasedAway + "^{commit}') exit 1 ;; esac\n" +
 			"[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\n" +
 			`case " $* " in *' diff '*) for a; do last=$a; done; cat "` + filepath.Dir(listed) + `/pull-request-${last##*/pr/}.diff" 2>/dev/null ;; esac` + "\nexit 0\n",
@@ -1056,10 +1077,11 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtO
 
 // A merge GitHub refuses reads the pull request again, and where it now conflicts opens the
 // fix menu under gh's words, naming the files git finds conflicting before anything is checked
-// out. n merges the base into a worktree of its own and hands it to nvim. A path left unmerged
-// offers the configured fix, which opens behind the board and marks the row while its window
-// is open. With nothing left unmerged, enter commits the merge and pushes it to the head branch.
-func TestARefusedMergeOpensTheFixMenuOnItsConflictsWhichResolveInAWorktreeAndPush(t *testing.T) {
+// out. n rebases the head onto the base in a worktree of its own and hands each stop to nvim.
+// A path left unmerged offers the configured fix, which opens behind the board and marks the
+// row while its window is open. With nothing left unmerged, prs goes on with the rebase,
+// opening nvim at its next stop, and once it finishes enter force-pushes it with a lease.
+func TestARefusedMergeOpensTheFixMenuOnItsConflictsWhichRebaseInAWorktreeAndPush(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
 	s.github.readsAs(13, "CLEAN")
@@ -1078,16 +1100,15 @@ func TestARefusedMergeOpensTheFixMenuOnItsConflictsWhichResolveInAWorktreeAndPus
 		t.Error("the menu should name the conflicting files from git merge-tree, against the base")
 	}
 
-	worktree := filepath.Join(s.worktrees, "widget", "pr-13-merge")
-	if err := os.WriteFile(s.unmerged, []byte("cache/cache.go\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	worktree := filepath.Join(s.worktrees, "widget", "pr-13-rebase")
+	writeFile(t, s.unmerged, "cache/cache.go\n")
 	term.Press("n")
-	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-merge:")
-	if !s.ran(t, "git", "cwd="+s.checkout, "worktree", "add", "--quiet", "--detach", worktree) ||
-		!s.ran(t, "git", "cwd="+worktree, "merge", "--quiet", "--no-ff", "--no-commit", "-m", "Merge branch 'add-cache' into cache-metrics", "origin/add-cache") ||
+	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-rebase:")
+	if !s.ran(t, "git", "cwd="+s.checkout, "fetch", "--quiet", "origin", "+refs/heads/cache-metrics:refs/remotes/origin/cache-metrics") ||
+		!s.ran(t, "git", "cwd="+s.checkout, "worktree", "add", "--quiet", "--detach", worktree, "refs/remotes/origin/cache-metrics") ||
+		!s.ran(t, "git", "cwd="+worktree, "rebase", "--quiet", "origin/add-cache") ||
 		!s.ran(t, "nvim", "cwd="+worktree, "-c") {
-		t.Error("n should merge the base into a detached worktree, then open nvim there")
+		t.Error("n should rebase the head branch onto the base in a detached worktree, then open nvim there")
 	}
 
 	term.Press("c")
@@ -1097,36 +1118,43 @@ func TestARefusedMergeOpensTheFixMenuOnItsConflictsWhichResolveInAWorktreeAndPus
 		t.Error("c should open the configured fix behind the board, handed the worktree")
 	}
 
-	if err := os.Remove(s.unmerged); err != nil {
-		t.Fatal(err)
-	}
+	// The stop is resolved, and the rebase stops once more, on a path nvim then leaves unmerged.
+	writeFile(t, s.stops, "")
+	removeFile(t, s.unmerged)
 	term.Press("f")
-	term.WaitFor("A merge of origin/add-cache into it waits in ~/worktrees/widget/pr-13-merge.")
+	term.WaitFor("A rebase of it onto origin/add-cache stopped in ~/worktrees/widget/pr-13-rebase.")
 	term.Press("n")
-	term.WaitFor("commit it and push it to cache-metrics? [Y/n]")
-	term.Press("enter")
-	term.WaitFor("pushed 1a2b3c4 to cache-metrics")
-	if !s.ran(t, "git", "cwd="+worktree, "push", "--quiet", "origin", "HEAD:refs/heads/cache-metrics") || fileExists(worktree) {
-		t.Error("enter should push the merge to the head branch, then remove the worktree")
+	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-rebase:")
+	term.WaitFor("cache/stats.go")
+	if recorded, _ := os.ReadFile(s.recorded); strings.Count(string(recorded), "nvim\ncwd="+worktree+"\n") != 3 || !s.ran(t, "git", "cwd="+worktree, "rebase", "--continue") {
+		t.Error("nvim exiting with nothing unmerged should go on with the rebase, then open nvim at its next stop")
 	}
 
-	// A merge left waiting, once the pull request reads ready, is still offered for removal.
-	if err := os.WriteFile(s.unmerged, []byte("cache/cache.go\n"), 0o644); err != nil {
-		t.Fatal(err)
+	removeFile(t, s.unmerged)
+	term.Press("n")
+	term.WaitFor("1 commit rebased onto origin/add-cache in ~/worktrees/widget/pr-13-rebase:")
+	term.WaitFor("force-push it to cache-metrics, with a lease on the head it started from? [Y/n]")
+	term.Press("enter")
+	term.WaitFor("pushed 1a2b3c4 to cache-metrics, rebasing acme/widget #13 onto origin/add-cache")
+	if !s.ran(t, "git", "cwd="+worktree, "push", "--quiet", "--force-with-lease=refs/heads/cache-metrics:"+fetchedHead, "origin", "HEAD:refs/heads/cache-metrics") || fileExists(worktree) {
+		t.Error("enter should force-push the rebase with a lease on the head it started from, then remove the worktree")
 	}
+
+	// A rebase left stopped, once the pull request reads ready, is still offered for removal.
+	writeFile(t, s.unmerged, "cache/cache.go\n")
 	term.Press("f")
 	term.WaitFor("n c x chooses  esc cancels")
 	term.Press("n")
-	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-merge:")
+	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-rebase:")
 	term.Press("esc")
 	s.github.readsAs(13, "CLEAN")
 	term.Press("f")
-	term.WaitFor("A merge of origin/add-cache into it waits in ~/worktrees/widget/pr-13-merge.")
+	term.WaitFor("A rebase of it onto origin/add-cache stopped in ~/worktrees/widget/pr-13-rebase.")
 	term.WaitFor("a chooses  esc cancels")
 	term.Press("a")
-	term.WaitFor("aborted the merge of origin/add-cache into acme/widget #13 and removed ~/worktrees/widget/pr-13-merge")
-	if !s.ran(t, "git", "cwd="+worktree, "merge", "--abort") || fileExists(worktree) {
-		t.Error("a should abort the merge left waiting, then remove the worktree")
+	term.WaitFor("aborted the rebase of acme/widget #13 onto origin/add-cache and removed ~/worktrees/widget/pr-13-rebase")
+	if !s.ran(t, "git", "cwd="+worktree, "rebase", "--abort") || fileExists(worktree) {
+		t.Error("a should abort the rebase left stopped, then remove the worktree")
 	}
 	term.Press("q")
 	if code := term.WaitExit(); code != 0 {
@@ -1148,9 +1176,9 @@ func TestTheFixMenuUpdatesABranchReadiesADraftAndReadsOrRerunsFailingChecks(t *t
 	term.WaitFor("Its branch is behind main")
 	term.WaitFor("u c chooses  esc cancels")
 	term.Press("u")
-	term.WaitFor("updated the branch of acme/widget #12 with main on GitHub")
-	if !s.ran(t, "pr", "update-branch", "12", "--repo", "acme/widget") {
-		t.Error("u should update the branch through gh")
+	term.WaitFor("rebased the branch of acme/widget #12 onto main on GitHub")
+	if !s.ran(t, "pr", "update-branch", "12", "--repo", "acme/widget", "--rebase") {
+		t.Error("u should rebase the branch through gh")
 	}
 
 	term.Press("j", "f")

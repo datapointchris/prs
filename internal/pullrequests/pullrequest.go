@@ -229,7 +229,9 @@ func lastLineOf(path string) string {
 // run runs a client with stdin closed and returns its stdout, and failureLine of its stderr on
 // a failure. git and ssh ask on the terminal itself rather than on stdin, so the client runs
 // in a session of its own, with no terminal to open, and git's prompt is turned off as well.
-// At the timeout its whole process group is killed, ssh included.
+// git's editor is true, so a commit git words itself, as a rebase going on does, keeps the
+// message it has rather than wait on an editor nobody can see. At the timeout its whole
+// process group is killed, ssh included.
 func run(ctx context.Context, dir string, name string, args ...string) ([]byte, string, error) {
 	return runFor(ctx, readTimeout, dir, name, args...)
 }
@@ -240,7 +242,7 @@ func runFor(ctx context.Context, within time.Duration, dir string, name string, 
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = pipesGrace

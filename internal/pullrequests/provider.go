@@ -55,7 +55,7 @@ type Provider struct {
 	Close   func(PullRequest) (argv []string, inCheckout bool)
 	Comment func(pr PullRequest, path string) (argv []string, inCheckout bool)
 	// UpdateBranch, Ready, Rerun and FailedLog are the fix menu's commands, and run with no
-	// terminal as Merge does. UpdateBranch merges the base into the head branch on the host,
+	// terminal as Merge does. UpdateBranch rebases the head branch onto the base on the host,
 	// and Ready takes a draft out of draft. Rerun runs a run's failed jobs again, and FailedLog
 	// prints what they logged, for a run CheckRun reads from a check's URL, empty for a check
 	// that is not one.
@@ -108,7 +108,7 @@ var Providers = []Provider{
 			return []string{"gh", "pr", "comment", strconv.Itoa(pr.Number), "--repo", pr.Slug, "--body-file", path}, false
 		},
 		UpdateBranch: func(pr PullRequest) ([]string, bool) {
-			return []string{"gh", "pr", "update-branch", strconv.Itoa(pr.Number), "--repo", pr.Slug}, false
+			return []string{"gh", "pr", "update-branch", strconv.Itoa(pr.Number), "--repo", pr.Slug, "--rebase"}, false
 		},
 		Ready: func(pr PullRequest) ([]string, bool) {
 			return []string{"gh", "pr", "ready", strconv.Itoa(pr.Number), "--repo", pr.Slug}, false
