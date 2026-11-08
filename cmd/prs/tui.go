@@ -30,12 +30,13 @@ const (
 )
 
 // tuiTab is one tab prs tui draws: its name, which --view takes, the flags beside --view,
-// --once and --json that its printed frame reads, where to go for the rest, and how it opens
-// on the board.
+// --once and --json that its printed frame reads, where to go for the rest, why the config
+// leaves it out, and how it opens on the board. A nil absent is a tab every config draws.
 type tuiTab struct {
 	name      string
 	prints    []string
 	elsewhere string
+	absent    func(cfg config.Config) string
 	open      func(b *board.Board, cfg config.Config) openedTab
 }
 
@@ -53,6 +54,38 @@ type openedTab struct {
 var tuiTabs = []tuiTab{
 	{name: board.View, prints: []string{"since", "pr"}, open: boardTab},
 	{name: board.SummaryView, elsewhere: "prs summary --since and --until set the window it counts", open: summaryTab},
+	{name: board.RecapsView, absent: recapsAbsent, open: recapsTab},
+}
+
+// recapsAbsent says why the config draws no Recaps tab: it names no list command, or a
+// program its commands need is not on PATH, as on a machine that has none of them.
+func recapsAbsent(cfg config.Config) string {
+	if !cfg.Recaps.Named() {
+		return "the config names no recaps commands"
+	}
+	if missing := cfg.Recaps.Missing(); len(missing) > 0 {
+		return "the recaps commands need " + strings.Join(missing, ", ") + ", which PATH does not hold"
+	}
+	return ""
+}
+
+func recapsTab(b *board.Board, cfg config.Config) openedTab {
+	r := b.OpenRecaps(cfg.Recaps)
+	return openedTab{
+		board:    r,
+		snapshot: func(time.Time) any { return r.Snapshot() },
+		missed: func() error {
+			if faults := r.Faults(); len(faults) > 0 {
+				return errors.New(strings.Join(faults, "; "))
+			}
+			return nil
+		},
+	}
+}
+
+// drawnTabs are the tabs the config draws, in tuiTabs' order.
+func drawnTabs(cfg config.Config) []tuiTab {
+	return slices.DeleteFunc(slices.Clone(tuiTabs), func(tab tuiTab) bool { return tab.absent != nil && tab.absent(cfg) != "" })
 }
 
 func tuiTabNames() []string {
@@ -179,6 +212,14 @@ opened, merged and closed over a window, %[1]s at first, which w and W step thro
 %[2]s. It charts the merges per day, the open pull requests and the times to merge.
 prs summary --help says what each count is and where they are kept.
 
+The recaps tab shows where the config names recaps commands and PATH holds what they run.
+It lists the windows the list command prints, newest first, and the side panel shows the
+recap the show command prints for the one under the cursor, which enter opens full screen.
+w writes a recap with the write command, a model call, after asking. Enter writes the
+cursor's window, or type another's kind and label, such as one the list does not hold yet.
+The write runs while the list stays usable, and the list reads again once it ends. prs
+config path says what the three commands take.
+
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
 so an agent reads what a person reads. Neither reads a pull request's own detail, so both
 leave out what the open board fills in from it: the Claude review round, the commits
@@ -187,8 +228,10 @@ the open pull requests under pull_requests and the recently closed under recentl
 Either exits 1 after printing when a read failed, or when the open pull requests' read
 left some out. A recently closed read past its page keeps the newest, and says so on the
 first line. With --view summary, the frame is the Summary tab's and the snapshot is what
-prs summary --json prints for %[1]s. --since and --pr are the board's, so --view summary
-refuses them with --once or --json. With no terminal and neither flag it refuses.`, board.DefaultSummaryWindow, strings.Join(board.SummaryWindows, ", ")),
+prs summary --json prints for %[1]s. With --view recaps, the snapshot holds each window the
+list names and the recap of its first, which the frame shows, and either exits 1 where the
+list or that recap could not be read. --since and --pr are the board's, so the other tabs
+refuse them with --once or --json. With no terminal and neither flag it refuses.`, board.DefaultSummaryWindow, strings.Join(board.SummaryWindows, ", ")),
 		Example: `  prs tui
   prs tui --pr 'acme/widget#12'
   prs tui --pr https://github.com/acme/widget/pull/12
@@ -233,6 +276,11 @@ refuses them with --once or --json. With no terminal and neither flag it refuses
 			if err != nil {
 				return err
 			}
+			if chosen.absent != nil {
+				if why := chosen.absent(cfg); why != "" {
+					return fmt.Errorf("--view %s opens a tab prs does not draw here, because %s", chosen.name, why)
+				}
+			}
 			b.ReadClosed(window, cfg.ClosedRefreshEvery)
 			if ref != nil {
 				if err := b.OpenOn(cmd.Context(), *ref); err != nil {
@@ -255,7 +303,7 @@ refuses them with --once or --json. With no terminal and neither flag it refuses
 						_ = close()
 					}
 				}()
-				for _, tab := range tuiTabs {
+				for _, tab := range drawnTabs(cfg) {
 					opened := tab.open(b, cfg)
 					if opened.close != nil {
 						closers = append(closers, opened.close)

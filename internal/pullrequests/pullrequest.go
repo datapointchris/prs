@@ -158,14 +158,20 @@ const readTimeout = 2 * time.Minute
 // once the client itself has ended.
 const pipesGrace = 5 * time.Second
 
-// ErrNoAnswer is a client killed at its timeout. A client that changes a pull request may
-// have changed it by then.
-var ErrNoAnswer = fmt.Errorf("no answer in %s", readTimeout)
+// ErrNoAnswer is a client killed at its timeout, which the error wrapping it names. A client
+// that changes a pull request may have changed it by then.
+var ErrNoAnswer = errors.New("no answer")
 
 // Run runs a client a key uses as a read runs one, and returns its stdout. It fails with the
 // first line the client said, or with ErrNoAnswer.
 func Run(ctx context.Context, dir string, argv ...string) ([]byte, error) {
-	out, said, err := run(ctx, dir, argv[0], argv[1:]...)
+	return RunWithin(ctx, readTimeout, dir, argv...)
+}
+
+// RunWithin is Run killing the client at timeout rather than a read's, for a command that does
+// more than read, such as one waiting on a model call.
+func RunWithin(ctx context.Context, timeout time.Duration, dir string, argv ...string) ([]byte, error) {
+	out, said, err := runWithin(ctx, timeout, dir, argv[0], argv[1:]...)
 	switch {
 	case errors.Is(err, ErrNoAnswer), err != nil && said == "":
 		return out, err
@@ -178,9 +184,14 @@ func Run(ctx context.Context, dir string, argv ...string) ([]byte, error) {
 // run runs a client with stdin closed and returns its stdout, and stderr's first line on
 // a failure. git and ssh ask on the terminal itself rather than on stdin, so the client runs
 // in a session of its own, with no terminal to open, and git's prompt is turned off as well.
-// At the timeout its whole process group is killed, ssh included.
+// At a read's timeout its whole process group is killed, ssh included.
 func run(ctx context.Context, dir string, name string, args ...string) ([]byte, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, readTimeout)
+	return runWithin(ctx, readTimeout, dir, name, args...)
+}
+
+// runWithin is run killing the client's process group at timeout.
+func runWithin(ctx context.Context, timeout time.Duration, dir string, name string, args ...string) ([]byte, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
@@ -192,7 +203,8 @@ func run(ctx context.Context, dir string, name string, args ...string) ([]byte, 
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return out, ErrNoAnswer.Error(), ErrNoAnswer
+		noAnswer := fmt.Errorf("%w in %s", ErrNoAnswer, timeout)
+		return out, noAnswer.Error(), noAnswer
 	}
 	if err != nil {
 		said := strings.TrimSpace(stderr.String())

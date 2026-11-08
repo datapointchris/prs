@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:prs:recaps:v1",
+  "title": "The windows a recap is written for, and the recap read for each",
+  "description": "What `prs tui --view recaps --json` prints: each window the config's recaps list command printed, in its order, newest first, with the recap its show command printed. prs reads nothing of the commands' output but each window's kind and label, so a recap is the markdown as printed. A printed tab reads only the first window's recap, which its frame shows. Every field is always present but fault.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["view", "windows", "sources"],
+  "properties": {
+    "view": {"const": "recaps"},
+    "windows": {
+      "description": "Each window the list printed, once, in its order. A line that was not a kind and a label is left out, and the list's source notes how many.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "recap"],
+        "properties": {
+          "kind": {"description": "The window's kind as the list printed it, such as day or week.", "type": "string", "minLength": 1},
+          "label": {"description": "The window's label as the list printed it, such as 2026-11-06 or 2026-W45.", "type": "string", "minLength": 1},
+          "recap": {"description": "The recap's markdown as show printed it, and null where it was not read.", "type": ["string", "null"]},
+          "fault": {"description": "Why the newest read of the recap failed, where it did.", "type": "string"}
+        }
+      }
+    },
+    "sources": {
+      "description": "How each read stands: the list, then the recaps it names.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "every"],
+        "properties": {
+          "name": {"type": "string"},
+          "every": {"type": "string"},
+          "read_at": {"type": "string", "format": "date-time"},
+          "took": {"type": "string"},
+          "tried_at": {"type": "string", "format": "date-time"},
+          "fault": {"type": "string"},
+          "note": {"type": "string"},
+          "reading": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

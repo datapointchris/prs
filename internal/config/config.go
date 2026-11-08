@@ -62,6 +62,85 @@ type Config struct {
 	DiffSectionFrom     string
 	// WindowActions are the keys the file adds, each opening a tmux window on a pull request.
 	WindowActions []WindowAction
+	// Recaps are the commands the Recaps tab runs, and empty where the file names none.
+	Recaps Recaps
+}
+
+// Recaps are the commands the Recaps tab runs, each an argv run with no shell. List prints the
+// windows a recap is written for, newest first, one a line as its kind and its label, and is
+// left as written, so a list run through sh may hold braces. Show prints one window's recap as
+// markdown, and Write writes it, which is a model call. Show and Write take the names
+// RecapPlaceholders lists. Write may be left out, and the tab then has no key that writes.
+type Recaps struct {
+	// Needs are the programs the commands run, which an argv starting sh hides. A machine
+	// missing one shows no Recaps tab.
+	Needs []string `yaml:"needs"`
+	List  []string `yaml:"list"`
+	Show  []string `yaml:"show"`
+	Write []string `yaml:"write"`
+}
+
+// Named says the file names the Recaps tab's commands.
+func (r Recaps) Named() bool { return len(r.List) > 0 }
+
+// Missing is the programs the commands need, Needs and each argv's first, that are not on
+// PATH. prs shows the Recaps tab only where none is.
+func (r Recaps) Missing() []string {
+	var programs []string
+	for _, argv := range [][]string{r.List, r.Show, r.Write} {
+		if len(argv) > 0 && !slices.Contains(programs, argv[0]) {
+			programs = append(programs, argv[0])
+		}
+	}
+	for _, program := range r.Needs {
+		if !slices.Contains(programs, program) {
+			programs = append(programs, program)
+		}
+	}
+	return MissingPrograms(programs)
+}
+
+// recapPlaceholders fills each name a Show or Write may hold, from the window's kind and label.
+var recapPlaceholders = map[string]func(kind, label string) string{
+	"{kind}":  func(kind, _ string) string { return kind },
+	"{label}": func(_, label string) string { return label },
+}
+
+// RecapPlaceholders are the names FillRecap fills, sorted.
+func RecapPlaceholders() []string { return slices.Sorted(maps.Keys(recapPlaceholders)) }
+
+// FillRecap is a Show or Write argv with a window's kind and label in each placeholder.
+func FillRecap(argv []string, kind, label string) []string {
+	var pairs []string
+	for name, value := range recapPlaceholders {
+		pairs = append(pairs, name, value(kind, label))
+	}
+	replacer := strings.NewReplacer(pairs...)
+	filled := make([]string, len(argv))
+	for i, arg := range argv {
+		filled[i] = replacer.Replace(arg)
+	}
+	return filled
+}
+
+func (r Recaps) check() error {
+	if !r.Named() {
+		if len(r.Show) > 0 || len(r.Write) > 0 || len(r.Needs) > 0 {
+			return errors.New("list is empty, and the tab needs it to know which windows there are")
+		}
+		return nil
+	}
+	if len(r.Show) == 0 {
+		return errors.New("show is empty, and the tab needs it to show a window's recap")
+	}
+	for key, argv := range map[string][]string{"show": r.Show, "write": r.Write} {
+		for _, name := range placeholder.FindAllString(strings.Join(argv, " "), -1) {
+			if _, ok := recapPlaceholders[name]; !ok {
+				return fmt.Errorf("%s names %s, and only %s are filled in", key, name, strings.Join(RecapPlaceholders(), ", "))
+			}
+		}
+	}
+	return nil
 }
 
 // DefaultRefreshEvery is how often the board reads each provider while it is open, where the
@@ -107,6 +186,7 @@ type file struct {
 	ClosedRefreshEverySeconds yaml.Node      `yaml:"closed_refresh_every_seconds"`
 	DiffSectionMaxLines       yaml.Node      `yaml:"diff_section_max_lines"`
 	WindowActions             []WindowAction `yaml:"window_actions"`
+	Recaps                    Recaps         `yaml:"recaps"`
 }
 
 // Fields are what a window action's Window and Command can name of a pull request.
@@ -238,6 +318,10 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("%s: window_actions: two actions take the key %q", path, key)
 	}
 	cfg.WindowActions = doc.WindowActions
+	if err := doc.Recaps.check(); err != nil {
+		return cfg, fmt.Errorf("%s: recaps: %w", path, err)
+	}
+	cfg.Recaps = doc.Recaps
 	return cfg, nil
 }
 

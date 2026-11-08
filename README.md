@@ -345,6 +345,42 @@ line at the top lists the windows and lights the one counted.
   whichever tab shows. Bitbucket's count among the open only, because bbkt says no time a
   pull request closed.
 
+## The recaps tab
+
+A recap is a markdown account of what landed over a window of time, such as a day or a
+week, which a program of your own writes and keeps. The recaps tab lists the windows that
+program has written a recap for and shows each one, from three commands the config names:
+
+```yaml
+recaps:
+  needs: [recap]
+  list: [recap, list]
+  show: [recap, show, "--{kind}", "{label}"]
+  write: [recap, write, "--{kind}", "{label}"]
+```
+
+- **`list` prints the windows, newest first, one a line as its kind and its label**, such
+  as `day 2026-11-06` or `week 2026-W45`. prs reads nothing else any command prints, and
+  leaves out a line that is not two words, saying so at the top.
+- **`show` prints one window's recap as markdown**, which the side panel shows beside the
+  list and enter opens full screen, where `[` and `]` jump between headings and `/`
+  searches it. prs reads every listed window's recap in the background once the list
+  lands, the cursor's first, so `/` on the list matches a recap's text.
+- **`write` writes one window's recap, which is a model call, and may be left out.** `w`
+  asks first, naming that, and enter writes the cursor's window. Typing another window's
+  kind and label writes that one, such as a day the list does not hold yet. The write runs
+  while the list stays usable, named on the footer, and the list runs again once it ends,
+  so a window written for the first time joins it.
+- **Each is an argv run with no shell**, so a command that pipes runs through
+  `sh -c`, with `set -o pipefail` so a failure ahead of the pipe is not read as an empty
+  list. `{kind}` and `{label}` in `show` and `write` take the window's.
+- **`needs` names the programs the commands run beyond each one's first**, which `sh -c`
+  hides. A machine missing one draws no recaps tab, as a config naming no `list` does, so
+  one config serves machines with and without the program.
+- **The list runs when the tab first shows, every ten minutes while it shows, on `R`, and
+  once a write ends.** A recap is read once, and again where `R` or a timer reads the list
+  while the cursor is on it, or once a write of it ends.
+
 ## Reading it from a program
 
 `prs list` reads each provider once and prints the board's open rows as a table, one line
@@ -366,6 +402,11 @@ listing does. `prs tui --once` prints one frame at `COLUMNS` by `LINES`.
 now by default, and `prs summary --json` prints them as one object in the shape
 [`cmd/prs/summary.schema.json`](cmd/prs/summary.schema.json) gives, with the series each
 chart draws. `prs tui --view summary` takes `--once` and `--json` the same way.
+
+`prs tui --view recaps --json` prints each window the list names, with the recap of the
+first, which `--once` draws beside the list, in the shape
+[`cmd/prs/recaps.schema.json`](cmd/prs/recaps.schema.json) gives. Either exits 1 where the
+list or that recap could not be read, or the list printed a line that is not a window.
 
 Each of these exits 1 after printing when a read failed or left open pull requests out,
 because a failed read and a repo with no open pull requests otherwise print the same rows.
