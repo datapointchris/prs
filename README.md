@@ -186,8 +186,9 @@ both once nvim exits.
 
 `m` merges and `x` closes without merging. Each names the pull request and asks first:
 enter alone merges, and enter alone leaves it open rather than closing it. A second press
-while one runs is refused. On GitHub a merge after `d` pins the head the diff showed, so it
-fails where the branch moved since. `c` opens your editor on an empty file and posts what
+while one runs is refused. On GitHub every merge pins a head: the one `d` fetched, or else
+the one the Diff section showed, or else the one the list showed, so it fails where the
+branch moved since. `c` opens your editor on an empty file and posts what
 was written when it exits. Merging, closing, commenting and `o`, which opens the page in
 the browser, each run while the list stays usable, named on the footer until they end. A
 row merged or closed here moves to `recently closed` at once, reading `merged` or `closed`.
@@ -198,19 +199,19 @@ returns it to its group. A failure says the client's own reason on the footer. B
 client has no verb to close a pull request, so `x` refuses there.
 
 `space` marks a row for `m` to merge with the others marked, and a second press takes the
-mark off. It marks only a row whose checks pass and whose merge state GitHub reads as
-`CLEAN`, and names why on the footer where it refuses one. prs reads no merge state from
-Bitbucket, so a Bitbucket row is never marked. On a group's header `space` folds the group,
+mark off. It marks only a row whose checks pass and whose state reads `ready`, which is
+GitHub's `CLEAN` or `HAS_HOOKS`, and names why on the footer where it refuses one. prs
+reads no merge state from Bitbucket, so a Bitbucket row is never marked. On a group's header `space` folds the group,
 and on a row open in place it closes the row.
 
 With rows marked, `m` asks once. The question lists every pull request it will merge, then
-each marked or refused one it leaves out, with why. Enter alone merges them, one at a time,
-in the order the board draws them. Each is read again just before its merge, because
-merging one can leave the next on the same repo behind or conflicting. One that no longer
-reads `CLEAN` with its checks passing is left, and the rest go on. Each merge pins the head
-`d` fetched, or else the one the question listed, so a commit pushed since is not merged
-unseen. When the batch ends, the footer names what merged and what was left and why, and
-the open listings are read again.
+each marked or refused one it leaves out, with why. A stacked one names the branch it
+merges into. Enter alone merges them, one at a time, in the order the board draws them. Each
+is read again just before its merge, because merging one can leave the next on the same
+repo behind or conflicting. One that no longer reads `ready` with its checks passing is
+left, and the rest go on. So is one whose base is a branch the batch already merged, which
+would otherwise land on that branch rather than where it went. When the batch ends, the
+footer names what merged and what was left and why, and the open listings are read again.
 
 `y` copies the branch.
 

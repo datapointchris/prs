@@ -635,7 +635,7 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtO
 	term.Press("enter")
 	term.WaitFor("merging acme/widget #12")
 	term.Press("m")
-	term.WaitFor("merging acme/widget #12 is still under way; merge it once that ends")
+	term.WaitFor("prs will not merge acme/widget #12, because merging acme/widget #12 is still under way")
 	term.WaitFor("merged acme/widget #12")
 	term.WaitFor("recently closed · 3")
 	term.WaitForPattern("merged .*Cache the widget lookups")
@@ -744,7 +744,7 @@ func TestOneQuestionMergesEveryMarkedGreenPullRequestInTurnEachAfterItsOwnRead(t
 	term.Press("g", "]", "j", "space")
 	term.WaitFor("marked acme/widget #21, and m merges the 1 marked")
 	term.Press("j", "space", "j", "space", "j", "space")
-	term.WaitFor("acme/widget #24 cannot be marked, because its checks are failing, and GitHub reads its merge state as unstable, not clean")
+	term.WaitFor("acme/widget #24 cannot be marked, because its checks are failing, and GitHub reads its merge state as unstable, not ready")
 	term.Press("j", "space")
 	term.WaitFor("marked acme/widget #25, and m merges the 4 marked")
 	if n := strings.Count(term.Frame().Text(), "◆"); n != 4 {
@@ -765,7 +765,7 @@ func TestOneQuestionMergesEveryMarkedGreenPullRequestInTurnEachAfterItsOwnRead(t
 		t.Fatal(err)
 	}
 	term.Press("enter")
-	term.WaitFor("merged 3 of 4: acme/widget #21, acme/widget #23, acme/widget #25. Left acme/widget #22: GitHub reads its merge state as behind, not clean")
+	term.WaitFor("merged 3 of 4: acme/widget #21, acme/widget #23, acme/widget #25. Left acme/widget #22: GitHub reads its merge state as behind, not ready")
 
 	recorded, _ := os.ReadFile(s.recorded)
 	var events []string
@@ -833,7 +833,7 @@ func TestTuiOpensOnTheNamedPullRequestWithItsDocumentAndQExits0(t *testing.T) {
 	term.Press("space")
 	term.WaitFor("people · 3")
 	term.Press("m")
-	term.WaitFor("acme/widget #7 is merged already, so there is nothing to merge")
+	term.WaitFor("prs will not merge acme/widget #7, because it is merged already")
 	term.Press("q")
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
@@ -975,7 +975,7 @@ func TestTheBoardDrawsTheLastListingOfTheSameReposAtOnceThenRereadsOnItsTimerAnd
 	term.WaitFor("Expire the widget cache")
 	term.WaitForPattern("gone .*Count cache hits")
 	term.Press("m")
-	term.WaitFor("acme/widget #13 is in no listing since the last read, so prs will not merge it")
+	term.WaitFor("prs will not merge acme/widget #13, because no read lists it any more")
 	term.Press("k")
 	term.WaitGone("Count cache hits")
 	term.Press("q")

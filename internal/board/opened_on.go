@@ -96,7 +96,7 @@ func (b *Board) startAt() string {
 // it is merged or closed, by its own read, a listing or a key here, so a jump to one lands
 // on it however long ago it closed. Its title is its state.
 func (b *Board) apart(pr pullrequests.PullRequest, parents map[[2]string]int, now time.Time) gotermboard.Group {
-	b.shown[pr.Key()], b.drawnIn[pr.Key()] = pr, recentlyClosed
+	b.drew(pr, recentlyClosed)
 	return gotermboard.Group{
 		Key: "opened-on", Title: gotermboard.Line{gotermboard.C(string(b.stateOf(pr)), gotermboard.Bold)},
 		Count: 1, Counted: true, Gap: true,

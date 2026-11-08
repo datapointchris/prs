@@ -73,8 +73,15 @@ One whose repo is not cloned here gets a section saying so.
 
 A letter acts on the pull request under the cursor, and ? lists every key. d hands the
 terminal to its diff in nvim, and :qa comes back to the list. m merges and x closes,
-each after asking, and its row moves to recently closed once it has. c posts what your
-editor wrote. Each runs while the list stays usable, named on the footer until it ends.
+each after asking, and its row moves to recently closed once it has, while the cursor
+moves on to the next open row in its group. c posts what your editor wrote. Each runs
+while the list stays usable, named on the footer until it ends.
+
+space marks a row whose checks pass and whose merge state GitHub reads as ready, and
+names why it refuses any other. With rows marked, m merges the marked rows rather than
+the cursor's. It asks once, listing each one and each it leaves out with why, then
+merges them one at a time, reading each again just before and leaving one no longer
+ready.
 The config can add keys of its own, each a command in a tmux window. esc backs out one
 level, and q quits.
 

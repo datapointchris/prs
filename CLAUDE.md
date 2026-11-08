@@ -81,14 +81,19 @@ is the shape of the threads file `d` hands nvim, held the same way.
   reflex merge lands work that was landing anyway and a reflex close discards a branch
   nobody read. A pull request with a change under way refuses another. m on marked rows
   asks once, listing every title it merges and each it leaves out with why.
-- **space marks only a row whose checks pass and whose merge state is CLEAN**, so a batch
-  holds only what would merge on its own. A host with no merge state, as Bitbucket's
+- **space marks only a row whose checks pass and whose merge state is ready**, so a batch
+  holds only what would merge on its own. `mergeMeanings` decides which states are ready,
+  for the row's word and the mark alike. A host with no merge state, as Bitbucket's
   listing carries none, is never marked.
 - **A batch merges one pull request at a time, reading each again just before**, because
-  a merge can leave the next on the same repo behind or conflicting. One no longer CLEAN
-  with passing checks is left and named, and the rest go on. Each merge pins the head `d`
-  fetched, or else the one the question listed, so a commit pushed since is not merged
-  unseen.
+  a merge can leave the next on the same repo behind, conflicting, or based on a branch
+  the batch just merged. One no longer ready with passing checks, or based on such a
+  branch, is left and named, and the rest go on.
+- **Every merge pins a head, through `pinFor`**: the one `d` fetched, or else the one the
+  Diff section was read at, or else the one the board's record holds, so a commit pushed
+  since the screen showed it is not merged unseen.
+- **Whether a key may change a pull request is `refusal`'s alone**, which `writable` and
+  `mergeable` both ask, so a single key and a batch never disagree.
 - **A key that waits on the network runs in the background**, through `work` in
   `work.go`, so the list stays usable and the footer names it until it ends. Every client
   it runs, git included, goes through `pullrequests.Run`, which a read's client shares.
@@ -140,9 +145,8 @@ is the shape of the threads file `d` hands nvim, held the same way.
   so `board.Refused` refuses one, reading the table's keys from `gotermboard.TableKeys()`
   and adding esc.
 - **prs binds space, so the table's fold and close reach it through the model.**
-  `m.Toggle` folds a group's header, and `m.CloseInPlace` closes a row open in place,
-  before space marks. A row `--pr` opens starts open on a narrow screen, and only space
-  closes it.
+  `m.Toggle` folds a group's header. A row `--pr` opens can start open in place, and the
+  table's space is what closes it, so prs's space calls `m.CloseInPlace` before it marks.
 - **The side panel and the Reader draw one document, `MarkdownDocument`.** A row sets
   `Document` and no `Panel`, so from `PanelFrom` columns gotermboard's panel draws the
   `Document` under the row's `ReaderTitle`. Such a row then starts folded beside the panel

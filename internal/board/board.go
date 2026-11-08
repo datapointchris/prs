@@ -133,9 +133,8 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 // listingSource reads a provider's listing with read every interval, from its last good
 // one, under name. Each open listing that lands has its rows' details read, once ReadDetails
 // is called, and every listing is kept under name for the next start, once KeepListings is.
-// A recently closed listing reads no details, and handing its rows to Prefetch would drop the
-// details the open listing read, because Prefetch drops the provider's details of every pull
-// request it is not handed.
+// Only an open listing is handed to Prefetch, because Prefetch takes a provider's whole open
+// listing as the set of details to keep.
 func (b *Board) listingSource(provider pullrequests.Provider, name string, every time.Duration, open bool,
 	read func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error),
 ) *gotermboard.Source[pullrequests.Listing] {
@@ -383,6 +382,13 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 func (b *Board) listed(key string) bool {
 	_, ok := b.shown[key]
 	return ok
+}
+
+// drew records that the frame drew the pull request's row in section, after every row drawn
+// before it.
+func (b *Board) drew(pr pullrequests.PullRequest, in section) {
+	b.shown[pr.Key()], b.drawnIn[pr.Key()] = pr, in
+	b.drawnOrder = append(b.drawnOrder, pr.Key())
 }
 
 // listedOpen says the last frame holds the pull request keyed key, and it waits on someone.
