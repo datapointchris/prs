@@ -9,6 +9,8 @@ import (
 )
 
 // Provider is everything prs does differently by host, so a host is added in one place.
+// Every field after Head is a verb a host's client may lack, and is nil there. The key for
+// a nil verb says the host cannot do it.
 type Provider struct {
 	Name string
 	// Read lists the open pull requests on the repos it hosts. last is the previous good
@@ -20,8 +22,15 @@ type Provider struct {
 	// runs in the checkout.
 	Browse func(PullRequest) (argv []string, inCheckout bool)
 	// Page is a shell command paging the pull request with its comments, and the programs
-	// it runs. Nil where the host has no such page.
+	// it runs.
 	Page func(PullRequest) (command string, needs []string)
+	// Merge, Close and Comment are the commands that change the pull request, and whether
+	// each runs in the checkout. Each runs with no terminal, so none may prompt. Where head
+	// is not empty and the client can pin a commit, Merge refuses a head other than head.
+	// Comment posts the file at path.
+	Merge   func(pr PullRequest, head string) (argv []string, inCheckout bool)
+	Close   func(PullRequest) (argv []string, inCheckout bool)
+	Comment func(pr PullRequest, path string) (argv []string, inCheckout bool)
 }
 
 // Providers is a Provider for each name registry.Providers holds.
@@ -40,6 +49,21 @@ var Providers = []Provider{
 			return fmt.Sprintf("GH_FORCE_TTY=$(tput cols) gh pr view %d --repo %s --comments | less -R", pr.Number, pr.Slug),
 				[]string{"gh", "tput", "less"}
 		},
+		// --merge names the method, so gh asks nothing. A pull request lands as a merge
+		// commit, and the repo's own setting deletes the remote branch.
+		Merge: func(pr PullRequest, head string) ([]string, bool) {
+			argv := []string{"gh", "pr", "merge", strconv.Itoa(pr.Number), "--repo", pr.Slug, "--merge"}
+			if head != "" {
+				argv = append(argv, "--match-head-commit", head)
+			}
+			return argv, false
+		},
+		Close: func(pr PullRequest) ([]string, bool) {
+			return []string{"gh", "pr", "close", strconv.Itoa(pr.Number), "--repo", pr.Slug}, false
+		},
+		Comment: func(pr PullRequest, path string) ([]string, bool) {
+			return []string{"gh", "pr", "comment", strconv.Itoa(pr.Number), "--repo", pr.Slug, "--body-file", path}, false
+		},
 	},
 	{
 		Name: registry.Bitbucket,
@@ -49,6 +73,14 @@ var Providers = []Provider{
 		// bbkt finds the repo from the directory it runs in.
 		Browse: func(pr PullRequest) ([]string, bool) {
 			return []string{"bbkt", "pr", "open", strconv.Itoa(pr.Number)}, true
+		},
+		// bbkt refuses to merge without a terminal unless --yes says prs already asked. It
+		// cannot pin the head.
+		Merge: func(pr PullRequest, _ string) ([]string, bool) {
+			return []string{"bbkt", "pr", "merge", strconv.Itoa(pr.Number), "--yes"}, true
+		},
+		Comment: func(pr PullRequest, path string) ([]string, bool) {
+			return []string{"bbkt", "pr", "comment", "create", strconv.Itoa(pr.Number), "--body-file", path}, true
 		},
 	},
 }

@@ -7,6 +7,9 @@ package pullrequests
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -69,16 +72,38 @@ func (l Listing) Note() string { return strings.Join(l.Notes, "; ") }
 // readTimeout bounds one client call, so a hung network never holds a read forever.
 const readTimeout = 2 * time.Minute
 
+// ErrNoAnswer is a client killed at its timeout. A client that changes a pull request may
+// have changed it by then.
+var ErrNoAnswer = fmt.Errorf("no answer in %s", readTimeout)
+
+// Run runs a client a key uses as a read runs one, and returns its stdout. It fails with the
+// first line the client said, or with ErrNoAnswer.
+func Run(ctx context.Context, dir string, argv ...string) ([]byte, error) {
+	out, said, err := run(ctx, dir, argv[0], argv[1:]...)
+	switch {
+	case errors.Is(err, ErrNoAnswer), err != nil && said == "":
+		return out, err
+	case err != nil:
+		return out, errors.New(said)
+	}
+	return out, nil
+}
+
 // run runs a client with stdin closed and returns its stdout, and stderr's first line on
-// a failure.
+// a failure. git asks for credentials on the terminal itself rather than on stdin, so its
+// prompt is turned off too.
 func run(ctx context.Context, dir string, name string, args ...string) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return out, ErrNoAnswer.Error(), ErrNoAnswer
+	}
 	if err != nil {
 		said := strings.TrimSpace(stderr.String())
 		if said == "" {
