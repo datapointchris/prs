@@ -63,8 +63,16 @@ type Board struct {
 	// diffed is the head commit d last fetched for a pull request, by key, which its merge
 	// pins.
 	diffed map[string]string
-	// documents is each shown pull request's MarkdownDocument and its inputs, by key.
+	// documents is each shown pull request's MarkdownDocument and its inputs, by key, and
+	// rounds its review rounds and the detail read they came from.
 	documents map[string]documentMemo
+	rounds    map[string]roundsMemo
+	// reviewActions are the window actions that run a review round, and roundWindows which of
+	// their windows are open, nil until ReadDetails is called inside tmux.
+	reviewActions []config.WindowAction
+	roundWindows  *roundWindows
+	// claudeShown says the frame being built draws the review round's column.
+	claudeShown bool
 	// working is every command a key started that has not ended, oldest first.
 	working   []underWay
 	workCount int
@@ -109,6 +117,7 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 		closedHere: map[string]closeMadeHere{},
 		diffed:     map[string]string{},
 		documents:  map[string]documentMemo{},
+		rounds:     map[string]roundsMemo{},
 		details:    pullrequests.NewDetails(),
 		scopes:     map[string]pullrequests.Scope{},
 	}
@@ -125,6 +134,11 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 			func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error) {
 				return provider.Read(ctx, scope, last)
 			}))
+	}
+	for _, window := range windows {
+		if window.RunsReviewRound {
+			b.reviewActions = append(b.reviewActions, window)
+		}
 	}
 	b.actions = b.keyTable(windows)
 	return b, nil
@@ -178,9 +192,13 @@ func (b *Board) ReadClosed(since pullrequests.Since, every time.Duration) {
 }
 
 // ReadDetails has each listing that lands read its rows' details in the background, for the
-// document's sections that detail fills. A board printed once leaves it off, since nothing
-// waits for them.
-func (b *Board) ReadDetails() { b.readDetails = true }
+// document's sections that detail fills and each row's review round. Inside tmux it also has
+// the board read which windows are open, where a window action runs a review round. A board
+// printed once leaves it off, since nothing waits for them.
+func (b *Board) ReadDetails() {
+	b.readDetails = true
+	b.roundWindows = watchRoundWindows(b.reviewActions)
+}
 
 // ReadDiffs has each listing that lands read its rows' diffs in the background, for the
 // document's Diff section, which shows one whole up to maxLines changed lines. A diff is
@@ -225,6 +243,9 @@ func (b *Board) Sources() []gotermboard.Refresher {
 	}
 	if b.openedOn != nil {
 		refreshers = append(refreshers, b.openedOn.source)
+	}
+	if b.roundWindows != nil {
+		refreshers = append(refreshers, b.roundWindows.source)
 	}
 	return refreshers
 }
@@ -356,6 +377,7 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 	}
 	prs := b.records(now, extra...)
 	parents := stackParents(prs)
+	b.claudeShown = b.withClaude(prs)
 	rows := ordered(b.hold(placedBy(prs)))
 	clear(b.shown)
 	clear(b.drawnIn)
@@ -370,9 +392,10 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 	maps.DeleteFunc(b.documents, func(key string, _ documentMemo) bool { return !b.listed(key) })
 	maps.DeleteFunc(b.marked, func(key string, _ bool) bool { return !b.listedOpen(key) })
 	maps.DeleteFunc(b.refused, func(key string, _ bool) bool { return !b.listedOpen(key) })
+	maps.DeleteFunc(b.rounds, func(key string, _ roundsMemo) bool { return !b.listed(key) })
 	return gotermboard.Frame{
 		Strip:   b.StripAt(now),
-		Columns: columns,
+		Columns: frameColumns(b.claudeShown),
 		Groups:  groups,
 		StartAt: b.startAt(),
 	}

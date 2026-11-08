@@ -213,7 +213,7 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview(target.Range()))
 			nvim.Dir = target.Checkout
 			files := diffFilesAt(stem)
-			unwritten := files.write(pr, b.detailOf(pr), "origin/"+target.Base, got.Head, time.Now())
+			unwritten := files.write(pr, b.detailOf(pr), b.reviewOf(pr).window, "origin/"+target.Base, got.Head, time.Now())
 			if unwritten == nil {
 				nvim.Env = append(os.Environ(), files.env()...)
 			}
@@ -652,6 +652,9 @@ func (b *Board) windowAction(window config.WindowAction) func(pullrequests.PullR
 		name := config.Fill(window.Window, fields)
 		if err := openWindow(name, config.Fill(window.Command, fields), checkout, window.Needs...); err != nil {
 			return "", err
+		}
+		if window.RunsReviewRound {
+			b.roundWindows.openedHere(name)
 		}
 		return "opened " + name + " in a tmux window", nil
 	}

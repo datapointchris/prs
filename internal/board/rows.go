@@ -20,6 +20,7 @@ const (
 	stateGlyph   = "" // oct-git-merge
 	checksGlyph  = "" // fa-check-circle
 	reviewGlyph  = "" // fa-eye
+	claudeGlyph  = "" // oct-comment-discussion
 	ageGlyph     = "" // fa-clock-o
 	filesGlyph   = "" // fa-file
 	addedGlyph   = "" // oct-diff-added
@@ -141,9 +142,10 @@ func stateMeaning(pr pullrequests.PullRequest, state rowState) meaning {
 func words(enum string) string { return strings.ToLower(strings.ReplaceAll(enum, "_", " ")) }
 
 // columns carry the state, the checks, the review, the age and the sizes, then the repo and
-// the number, then the title wrapping under itself. The three diff counts each right-align in
-// a column of their own, so the signs stack. The branch and the checkout are read when acting
-// rather than when scanning, so they sit dim under the row, where f shows them.
+// the number, then the title wrapping under itself, and frameColumns adds the review round's.
+// The three diff counts each right-align in a column of their own, so the signs stack. The
+// branch and the checkout are read when acting rather than when scanning, so they sit dim
+// under the row, where f shows them.
 var columns = []gotermboard.Column{
 	{Title: "STATE"},
 	{Title: "CHECKS"},
@@ -185,7 +187,11 @@ func parentOf(pr pullrequests.PullRequest, parents map[[2]string]int) int {
 func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now time.Time) gotermboard.Row {
 	state := b.stateOf(pr)
 	s := stateMeaning(pr, state)
-	cells := []gotermboard.Cell{gotermboard.C(stateGlyph+"  "+s.word, s.code), checksCell(pr), reviewCell(pr), ageCell(pr, state, now)}
+	cells := []gotermboard.Cell{gotermboard.C(stateGlyph+"  "+s.word, s.code), checksCell(pr), reviewCell(pr)}
+	if b.claudeShown {
+		cells = append(cells, claudeCell(b.reviewOf(pr)))
+	}
+	cells = append(cells, ageCell(pr, state, now))
 	cells = append(cells, diffCells(pr)...)
 	cells = append(cells, repoCell(pr), gotermboard.C(fmt.Sprintf("%s #%d", numberGlyph, pr.Number), gotermboard.Yellow))
 	return gotermboard.Row{
@@ -353,8 +359,9 @@ type documentMemo struct {
 	markdown string
 }
 
-// documentFrom is every input of a MarkdownDocument. A listing read makes new rows, and a
-// minute passing moves each age the document writes.
+// documentFrom is every input of a MarkdownDocument. A listing read makes new rows, a review
+// round's window opening or closing moves the Review section, and a minute passing moves each
+// age the document writes.
 type documentFrom struct {
 	pr            pullrequests.PullRequest
 	readsDetail   bool
@@ -362,6 +369,7 @@ type documentFrom struct {
 	held, reading bool
 	fault         string
 	diff          diffFrom
+	roundWindow   string
 	minute        time.Time
 }
 
@@ -376,9 +384,9 @@ type diffFrom struct {
 // markdownOf is the pull request's MarkdownDocument at now, built again only where its
 // inputs moved since the last frame drew it.
 func (b *Board) markdownOf(pr pullrequests.PullRequest, now time.Time) string {
-	detail, diff := b.detailOf(pr), b.diffOf(pr)
+	detail, diff, window := b.detailOf(pr), b.diffOf(pr), b.reviewOf(pr).window
 	from := documentFrom{
-		pr: pr, minute: now.Truncate(time.Minute),
+		pr: pr, minute: now.Truncate(time.Minute), roundWindow: window,
 		diff: diffFrom{readAt: diff.Diff.ReadAt, held: diff.Held, reading: diff.Reading, fault: diff.Fault, cannot: diff.Cannot},
 	}
 	if detail != nil {
@@ -387,7 +395,7 @@ func (b *Board) markdownOf(pr pullrequests.PullRequest, now time.Time) string {
 	if memo, ok := b.documents[pr.Key()]; ok && memo.from == from {
 		return memo.markdown
 	}
-	markdown := MarkdownDocument(pr, detail, &diff, now)
+	markdown := MarkdownDocument(pr, detail, &diff, window, now)
 	b.documents[pr.Key()] = documentMemo{from: from, markdown: markdown}
 	return markdown
 }

@@ -37,6 +37,7 @@ exists. The file is YAML:
       providers: [github]
       window: "review {repo} #{number}"
       command: claude '/review-pr {number}'
+      runs_review_round: true
 
 repos_registry names the repo registry, a JSON file of repos, each with a name, an owner,
 a path, a status and optionally a provider. PRS_REPOS_REGISTRY names it ahead of the
@@ -62,7 +63,9 @@ that opens it.
 Each window action is a key that runs its command in a new tmux window in the pull
 request's checkout. needs are the programs it runs, and a machine missing one is not
 offered the key. {number}, {repo} and {slug} are filled in. Quote a value holding " #",
-which YAML otherwise reads as a comment.`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds()),
+which YAML otherwise reads as a comment. runs_review_round marks a command that runs a
+Claude review round, so the row reads claude running while its window is open, until a
+round finishes after the key opened it.`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds()),
 			pullrequests.ReposPerSearch, config.DefaultDiffSectionMaxLines),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -124,6 +127,9 @@ which YAML otherwise reads as a comment.`, int(config.DefaultRefreshEvery.Second
 					state = pal.Paint(gotermstyle.CodeRed, "refused, "+err.Error())
 				} else if missing := action.Missing(); len(missing) > 0 {
 					state = pal.Paint(gotermstyle.CodeYellow, "not offered, missing "+strings.Join(missing, ", "))
+				}
+				if action.RunsReviewRound {
+					state += ", runs review rounds"
 				}
 				_, _ = fmt.Fprintf(out, "%s  %s  %s\n", pal.Bold(fmt.Sprintf("key %-4s", action.Key)), action.Label, state)
 			}

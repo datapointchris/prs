@@ -128,6 +128,11 @@ field it filters on drops a repo silently, and every list it prints still looks 
   after. A Bitbucket row reads `open`, because prs reads no merge state from Bitbucket. `checks
   passing`, `review required` and `review 2 posted` follow it. Each reads under every
   theme and under `NO_COLOR`, and the colors are the terminal's own 16.
+- **A Claude review round reads on its row.** Where one reviewed the pull request, a
+  `CLAUDE` cell after the review gives the newest round: its findings by section once the
+  round comment posts, as `claude 2 correctness · 1 design`, `claude running` while its
+  reviews post, or `claude reviewed` where the newest review is of a version prs does not
+  read. The column shows only while a row fills it.
 - **A pull request whose base is another open one's branch names that one**, as `↑ #12`
   after its title. A pull request an app opened names the app.
 - **The branch and the checkout are under the row**, dim, where `f` shows them.
@@ -138,6 +143,10 @@ field it filters on drops a repo silently, and every list it prints still looks 
 A pull request's document is markdown, under a line naming its repo, author and branches:
 
 - **Description** is its body, drawn as soon as the list lands.
+- **Review** is the newest Claude review round, where one reviewed it: whether it runs or
+  when it finished, its synthesis, then every reviewer's findings under a heading for their
+  section, read from each review's JSON block rather than its markdown. A line follows for
+  each earlier round. A review whose marker names a version prs does not read shows whole.
 - **Checks** is each check on its head commit and its state, those not passing first.
 - **Files** is each changed path with its lines added and removed, and says how many more
   the read left out.
@@ -146,11 +155,13 @@ A pull request's document is markdown, under a line naming its repo, author and 
   config gets its size and the key that opens it instead. `prs config path` prints its
   default.
 - **Comments** names who is still asked to review, then the conversation oldest first with
-  each submitted review in it, then each review thread, unresolved first.
+  each submitted review in it, then each review thread, unresolved first. A review round's
+  post the Review section shows is left out of the conversation.
 
-Checks, Files and Comments fill in once the pull request's own read lands, and say they
-are reading until then. Bitbucket's client reads no more than its listing, so a Bitbucket
-pull request's document has no Checks, Files or Comments.
+Review, Checks, Files and Comments fill in once the pull request's own read lands. Checks,
+Files and Comments say they are reading until then. Bitbucket's client reads no more than
+its listing, so a Bitbucket pull request's document has no Review, Checks, Files or
+Comments.
 
 Each listed pull request's diff, recently closed ones included, is read once its list
 lands, a few at a time. It is read
@@ -228,11 +239,17 @@ window_actions:
     providers: [github]
     window: "review {repo} #{number}"
     command: "claude '/review-pr {number}'"
+    runs_review_round: true
 ```
 
 `needs` are the programs the command runs. A machine missing one is not offered the key,
 because tmux would open the window and the command would die in it. `{number}`, `{repo}`
 and `{slug}` are filled in. Quote a value holding ` #`, which YAML reads as a comment.
+
+`runs_review_round` marks a command that runs a Claude review round. Its row then reads
+`claude running` while the window is open, which prs asks tmux every few seconds, until a
+round finishes after the key opened it. A session that ran a round keeps its window
+afterwards, so a window prs did not open reads running only where no round has finished.
 
 ## Opening on one pull request
 

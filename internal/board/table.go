@@ -17,6 +17,8 @@ const columnGap = "  "
 func (b *Board) Table(now time.Time) []gotermboard.Line {
 	prs := b.records(now)
 	parents := stackParents(prs)
+	b.claudeShown = b.withClaude(prs)
+	columns := frameColumns(b.claudeShown)
 	lines := []gotermboard.Line{gotermboard.ReadStatus(b.statuses(), now)}
 	if len(prs) == 0 {
 		return append(lines, gotermboard.Line{gotermboard.C(b.emptyReason(), dim)})
