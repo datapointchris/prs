@@ -28,7 +28,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       comments(last: 50) { totalCount nodes { author { login } body createdAt url } }
       reviewThreads(last: 50) {
         totalCount
-        nodes { path line isResolved isOutdated comments(first: 30) { totalCount nodes { author { login } body createdAt url } } }
+        nodes { path line diffSide isResolved isOutdated comments(first: 30) { totalCount nodes { author { login } body createdAt url } } }
       }
       files(first: 20) { totalCount nodes { path additions deletions changeType } }
       history: commits(last: 100) {
@@ -96,6 +96,7 @@ type githubDetailNode struct {
 		Nodes      []struct {
 			Path       string         `json:"path"`
 			Line       *int           `json:"line"`
+			DiffSide   string         `json:"diffSide"`
 			IsResolved bool           `json:"isResolved"`
 			IsOutdated bool           `json:"isOutdated"`
 			Comments   githubComments `json:"comments"`
@@ -223,7 +224,7 @@ func githubDetail(node githubDetailNode) Detail {
 	}
 	for _, thread := range node.ReviewThreads.Nodes {
 		detail.Threads = append(detail.Threads, Thread{
-			Path: thread.Path, Line: thread.Line, Resolved: thread.IsResolved, Outdated: thread.IsOutdated,
+			Path: thread.Path, Line: thread.Line, Side: thread.DiffSide, Resolved: thread.IsResolved, Outdated: thread.IsOutdated,
 			Comments: githubCommentList(thread.Comments), CommentCount: thread.Comments.TotalCount,
 		})
 	}

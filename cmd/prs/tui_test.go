@@ -39,7 +39,9 @@ const standInToken = "stand-in-token"
 //
 // The stand-in gh holds no login, takes a second to merge, so the work shows under way, and
 // refuses to merge #13 in gh's own words. The stand-in git names fetchedHead as any ref's
-// commit, and the stand-in tmux names prs's window prs.
+// commit, and the stand-in tmux names prs's window prs. The stand-in nvim also records the
+// variables naming the pull request's files, and copies each to handed.md and
+// handed.threads.json, since prs removes them once nvim exits.
 type standIn struct {
 	env      map[string]string
 	config   string
@@ -47,6 +49,7 @@ type standIn struct {
 	ledger   string
 	tmp      string
 	recorded string
+	handed   string
 	github   *gitHub
 }
 
@@ -190,7 +193,7 @@ func newStandIn(t *testing.T) standIn {
 	}
 	s := standIn{
 		config: filepath.Join(dir, "config", "prs", "config.yml"), checkout: filepath.Join(dir, "widget"), ledger: filepath.Join(dir, "ledger"),
-		tmp: filepath.Join(dir, "tmp"), recorded: filepath.Join(dir, "recorded"), github: &gitHub{},
+		tmp: filepath.Join(dir, "tmp"), recorded: filepath.Join(dir, "recorded"), handed: filepath.Join(dir, "handed"), github: &gitHub{},
 	}
 	bin := filepath.Join(dir, "bin")
 	for _, d := range []string{bin, s.checkout, s.ledger, s.tmp, filepath.Join(dir, "config", "prs")} {
@@ -227,7 +230,9 @@ esac
 		"tmux":   "#!/bin/sh\n" + record + "case \"$*\" in *automatic-rename}*) printf 'prs\\t0\\n' ;; esac\n",
 		"claude": "#!/bin/sh\n" + record,
 		"git":    "#!/bin/sh\n" + record + "[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\nexit 0\n",
-		"nvim":   "#!/bin/sh\n" + record,
+		"nvim": "#!/bin/sh\n" + record + fmt.Sprintf(`printf '%%s\n' "PRS_DIFF_DOCUMENT=$PRS_DIFF_DOCUMENT" "PRS_DIFF_THREADS=$PRS_DIFF_THREADS" >> %q
+cp "$PRS_DIFF_DOCUMENT" %q; cp "$PRS_DIFF_THREADS" %q; exit 0
+`, s.recorded, s.handed+".md", s.handed+".threads.json"),
 		"editor": "#!/bin/sh\n" + record + "printf 'Looks good to me.\\n' > \"$1\"\n",
 	}
 	for name, script := range scripts {
@@ -316,7 +321,7 @@ func TestTheSnapshotReadsBothProvidersSortsPeopleFirstAndFindsAParentByRepoAndBr
 		t.Fatal(err)
 	}
 	for _, key := range []string{"pull_requests", "recently_closed"} {
-		if err := listSchema(t).Validate(decoded(t, string(rows[key]))); err != nil {
+		if err := schemaIn(t, "list.schema.json").Validate(decoded(t, string(rows[key]))); err != nil {
 			t.Errorf("prs tui --json's %s break list.schema.json: %v", key, err)
 		}
 	}
@@ -352,20 +357,20 @@ func TestTheSnapshotReadsBothProvidersSortsPeopleFirstAndFindsAParentByRepoAndBr
 	}
 }
 
-// listSchema is cmd/prs/list.schema.json, compiled to check dates as dates.
-func listSchema(t *testing.T) *jsonschema.Schema {
+// schemaIn is the schema in the named file under cmd/prs, compiled to check dates as dates.
+func schemaIn(t *testing.T, file string) *jsonschema.Schema {
 	t.Helper()
-	raw, err := os.Open("list.schema.json")
+	raw, err := os.Open(file)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = raw.Close() }()
 	compiler := jsonschema.NewCompiler()
 	compiler.AssertFormat()
-	if err := compiler.AddResource("list.schema.json", decodedFrom(t, raw)); err != nil {
+	if err := compiler.AddResource(file, decodedFrom(t, raw)); err != nil {
 		t.Fatal(err)
 	}
-	schema, err := compiler.Compile("list.schema.json")
+	schema, err := compiler.Compile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +401,7 @@ func TestListPrintsRowsTheSchemaHoldsAndNamesAProviderItCouldNotRead(t *testing.
 	if code != 0 {
 		t.Fatalf("prs list --json exited %d: %s", code, said)
 	}
-	if err := listSchema(t).Validate(decoded(t, out)); err != nil {
+	if err := schemaIn(t, "list.schema.json").Validate(decoded(t, out)); err != nil {
 		t.Errorf("prs list --json breaks list.schema.json: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, `"merge_state_status": "BEHIND"`) || !strings.Contains(out, `"merge_state_status": null`) {
@@ -544,10 +549,26 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtO
 	if !s.ran(t, "git", "cwd="+s.checkout, "fetch", "--quiet", "--force", "origin", "pull/13/head:refs/remotes/origin/pr/13") {
 		t.Error("d should fetch the head into its own ref in the checkout")
 	}
-	socket := filepath.Join(s.tmp, "prs-diff-widget-13.sock")
+	stem := filepath.Join(s.tmp, "prs-diff-widget-13")
 	open := "if exists(':DiffviewOpen') == 2 | execute 'DiffviewOpen origin/add-cache...refs/remotes/origin/pr/13' | else | cquit 3 | endif"
-	if !s.ran(t, "nvim", "cwd="+s.checkout, "--listen", socket, "-c", open) {
+	if !s.ran(t, "nvim", "cwd="+s.checkout, "--listen", stem+".sock", "-c", open) {
 		t.Error("d should diff three-dot against the base the listing reports, in the checkout")
+	}
+	// An nvim config shows the pull request beside the diff from the files these name.
+	if !s.ran(t, "PRS_DIFF_DOCUMENT="+stem+".md", "PRS_DIFF_THREADS="+stem+".threads.json") {
+		t.Error("d should name the pull request's document and threads, beside the socket, in nvim's environment")
+	}
+	document, _ := os.ReadFile(s.handed + ".md")
+	if !strings.HasPrefix(string(document), "# Count cache hits\n\n") || !strings.Contains(string(document), "Counts the hits the cache in #12 takes.") {
+		t.Errorf("nvim should be handed the title over the pull request's document:\n%s", document)
+	}
+	threads, _ := os.ReadFile(s.handed + ".threads.json")
+	if err := schemaIn(t, "diff-threads.schema.json").Validate(decoded(t, string(threads))); err != nil {
+		t.Errorf("the threads file breaks diff-threads.schema.json: %v\n%s", err, threads)
+	}
+	if !strings.Contains(string(threads), `"base": "origin/add-cache"`) || !strings.Contains(string(threads), `"line": 14,
+      "side": "RIGHT"`) {
+		t.Errorf("the threads file should name the diff's base and each thread's line and side:\n%s", threads)
 	}
 	// A program split into the window reads the pull request off its name.
 	if !s.ran(t, "rename-window", "-t", "%1", "diff widget #13") || !s.ran(t, "rename-window", "-t", "%1", "prs") {

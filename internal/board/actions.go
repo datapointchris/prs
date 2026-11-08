@@ -108,7 +108,10 @@ func (b *Board) onCursor(act func(pullrequests.PullRequest) (string, error)) fun
 //
 // nvim listens on a socket named for the pull request, so another program can ask it what
 // is under the cursor. Inside tmux the window is named diff <repo> #<n> while nvim has it,
-// so a program split into the window finds that socket from the name.
+// so a program split into the window finds that socket from the name. Beside the socket it
+// writes the pull request's document and its review threads, and starts nvim with
+// PRS_DIFF_DOCUMENT and PRS_DIFF_THREADS naming them, so an nvim config can show them
+// beside the diff.
 func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 	refuse := func(err error) tea.Cmd {
 		m.Say(err.Error())
@@ -163,25 +166,37 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 		},
 		done: func(*gotermboard.Model) tea.Cmd {
 			b.diffed[pr.Key()] = fetched
-			socket := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d.sock", pr.Repo, pr.Number))
+			stem := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d", pr.Repo, pr.Number))
+			socket := stem + ".sock"
 			_ = os.Remove(socket)
 			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview("origin/"+base+"..."+ref))
 			nvim.Dir = checkout
+			files := diffFilesAt(stem)
+			unwritten := files.write(pr, b.detailOf(pr), "origin/"+base, fetched, time.Now())
+			if unwritten == nil {
+				nvim.Env = append(os.Environ(), files.env()...)
+			}
 			restore := nameWindow(fmt.Sprintf("diff %s #%d", pr.Repo, pr.Number))
 			return handOver(nvim, func(m *gotermboard.Model, err error) tea.Cmd {
 				restore()
+				files.remove()
 				var exit *exec.ExitError
+				var said string
 				switch {
 				case errors.As(err, &exit) && exit.ExitCode() == noDiffview:
-					m.Say("nvim has no :DiffviewOpen, and the diff needs the diffview.nvim plugin")
+					said = "nvim has no :DiffviewOpen, and the diff needs the diffview.nvim plugin"
 				case err != nil:
-					m.Say(fmt.Sprintf("nvim ended the diff of #%d with %v", pr.Number, err))
+					said = fmt.Sprintf("nvim ended the diff of #%d with %v", pr.Number, err)
 				case baseFailed != "":
-					m.Say(fmt.Sprintf("closed the diff of %s #%d, which ran against the origin/%s fetched earlier, because fetching it again failed: %s",
-						pr.Repo, pr.Number, base, baseFailed))
+					said = fmt.Sprintf("closed the diff of %s #%d, which ran against the origin/%s fetched earlier, because fetching it again failed: %s",
+						pr.Repo, pr.Number, base, baseFailed)
 				default:
-					m.Say(fmt.Sprintf("closed the diff of %s #%d", pr.Repo, pr.Number))
+					said = fmt.Sprintf("closed the diff of %s #%d", pr.Repo, pr.Number)
 				}
+				if unwritten != nil {
+					said += fmt.Sprintf(". nvim had no pull request to show beside it, because writing it failed: %v", unwritten)
+				}
+				m.Say(said)
 				return nil
 			})
 		},

@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:prs:diff-threads:v1",
+  "title": "The review threads of the pull request whose diff d opened",
+  "description": "The file PRS_DIFF_THREADS names in the nvim d starts. It sits beside the diff's socket and is removed once nvim exits. Every field is always present.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug", "number", "title", "url", "base", "head", "threads_read", "threads"],
+  "properties": {
+    "slug": {"description": "owner/name of the repository. A Bitbucket owner is the project key.", "type": "string"},
+    "number": {"type": "integer", "minimum": 1},
+    "title": {"type": "string"},
+    "url": {"type": "string"},
+    "base": {"description": "The revision the diff runs from, as origin/<base branch>. The diff is three-dot, so its left side is where the branch left this.", "type": "string"},
+    "head": {"description": "The commit d fetched for the pull request's head, which is the diff's right side.", "type": "string"},
+    "threads_read": {"description": "False where prs held no detail read for the pull request when the diff opened, such as one on a host whose detail it does not read, so an empty threads list says nothing.", "type": "boolean"},
+    "threads": {
+      "description": "Each review thread the detail read holds, in the provider's order.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "line", "side", "resolved", "outdated", "comments", "comment_count"],
+        "properties": {
+          "path": {"description": "The file's path from the repository's root.", "type": "string"},
+          "line": {"description": "The line the thread is on, counted in the copy of the file side names, and null where that line is gone from the diff.", "type": ["integer", "null"], "minimum": 1},
+          "side": {"description": "LEFT where line counts in the base's copy of the file, and RIGHT where it counts in the head's.", "enum": ["LEFT", "RIGHT"]},
+          "resolved": {"type": "boolean"},
+          "outdated": {"description": "True where the lines it was left on changed since.", "type": "boolean"},
+          "comments": {
+            "description": "The thread's comments, oldest first, as many as the detail read asks for.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["author", "body", "created_at", "url"],
+              "properties": {
+                "author": {"description": "The login that wrote it, and empty for a deleted account.", "type": "string"},
+                "body": {"description": "The comment as markdown.", "type": "string"},
+                "created_at": {"type": "string", "format": "date-time"},
+                "url": {"type": "string"}
+              }
+            }
+          },
+          "comment_count": {"description": "How many comments the thread holds, which can pass the number listed.", "type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}
