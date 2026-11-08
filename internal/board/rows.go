@@ -375,7 +375,7 @@ func titleLine(pr pullrequests.PullRequest, parent int, state rowState) gotermbo
 	if parent != 0 {
 		line = append(line, titleGap, stackCell(parent))
 	}
-	if isBot(pr) {
+	if pr.IsBot() {
 		line = append(line, titleGap, botCell(pr))
 	}
 	return line
@@ -404,8 +404,6 @@ func botCell(pr pullrequests.PullRequest) gotermboard.Cell {
 	return gotermboard.C(botGlyph+"  bot "+pr.Author, gotermboard.Magenta)
 }
 
-func isBot(pr pullrequests.PullRequest) bool { return pr.IsBot() }
-
 // fieldGap is the space between two fields of a second line, wider than a field's own glyph
 // and words are apart, so each reads as a field.
 var fieldGap = gotermboard.C("   ", "")
@@ -430,7 +428,7 @@ func (b *Board) secondLine(at rowAt, parent int) gotermboard.Line {
 	if since := sinceReviewCell(b.detailOf(pr)); since.Text != "" {
 		line = append(line, fieldGap, since)
 	}
-	if isBot(pr) {
+	if pr.IsBot() {
 		line = append(line, fieldGap, botCell(pr))
 	}
 	return line
