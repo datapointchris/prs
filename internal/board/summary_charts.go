@@ -27,9 +27,13 @@ const (
 )
 
 // summaryCharts draws the merges over the window, the open pull requests over it and the
-// times to merge, in width by height.
-func summaryCharts(n summary.Numbers, width, height int) []gotermboard.Line {
+// times to merge, in width by height. end is when the window ends, as "now" or "at" an
+// instant.
+func summaryCharts(n summary.Numbers, end string, width, height int) []gotermboard.Line {
 	room := int(float64(height) * summaryChartsShare)
+	openOver := func(n summary.Numbers, width, height int) []gotermboard.Line {
+		return openOverLines(n, end, width, height)
+	}
 	var out []gotermboard.Line
 	if width >= summaryPairedFrom {
 		lines := max((room-2)/2, summaryLeastLines)
@@ -37,11 +41,11 @@ func summaryCharts(n summary.Numbers, width, height int) []gotermboard.Line {
 		right := width - left - summaryChartGap
 		out = append(out, fittedTo(mergedOverLines(n, width, lines), width)...)
 		out = append(out, gotermboard.Line{})
-		out = append(out, chart.Beside(summaryChartGap, fittedTo(openOverLines(n, left, lines), left), fittedTo(timeToMergeLines(n, right, lines), right))...)
+		out = append(out, chart.Beside(summaryChartGap, fittedTo(openOver(n, left, lines), left), fittedTo(timeToMergeLines(n, right, lines), right))...)
 		return append(out, gotermboard.Line{})
 	}
 	lines := max((room-3)/3, summaryLeastLines)
-	for _, draw := range []func(summary.Numbers, int, int) []gotermboard.Line{mergedOverLines, openOverLines, timeToMergeLines} {
+	for _, draw := range []func(summary.Numbers, int, int) []gotermboard.Line{mergedOverLines, openOver, timeToMergeLines} {
 		out = append(append(out, fittedTo(draw(n, width, lines), width)...), gotermboard.Line{})
 	}
 	return out
@@ -71,8 +75,8 @@ func mergedOverLines(n summary.Numbers, width, height int) []gotermboard.Line {
 }
 
 // openOverLines is the open pull requests across the window as a sparkline, under the count
-// now and the most and fewest open at once.
-func openOverLines(n summary.Numbers, width, height int) []gotermboard.Line {
+// at its end and the most and fewest open at once.
+func openOverLines(n summary.Numbers, end string, width, height int) []gotermboard.Line {
 	values := make([]float64, 0, len(n.OpenOver))
 	most, fewest := 0, -1
 	for _, at := range n.OpenOver {
@@ -82,7 +86,7 @@ func openOverLines(n summary.Numbers, width, height int) []gotermboard.Line {
 			fewest = at.Open.All
 		}
 	}
-	title := chartTitle("OPEN", fmt.Sprintf("%d now, %d at most, %d at fewest", n.Open.All, most, max(fewest, 0)))
+	title := chartTitle("OPEN", fmt.Sprintf("%d %s, %d at most, %d at fewest", n.Open.All, end, most, max(fewest, 0)))
 	spark := chart.Sparkline{Values: values, Code: peopleCode, Max: float64(most), Fill: true}
 	return append([]gotermboard.Line{title}, spark.Lines(width, height-1)...)
 }

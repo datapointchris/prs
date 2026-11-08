@@ -348,11 +348,12 @@ var summaryColumns = []gotermboard.Column{{Title: ""}, {Title: "ALL", Right: tru
 // Frame is gotermboard.Board's: the strip, the charts, then the counts and each repo's merges.
 func (s *Summary) Frame(now time.Time, _ string) gotermboard.Frame {
 	n := s.Numbers(now)
+	end := endText(n.Until, now)
 	return gotermboard.Frame{
 		Strip:   s.StripAt(now),
-		Charts:  func(width, height int) []gotermboard.Line { return summaryCharts(n, width, height) },
+		Charts:  func(width, height int) []gotermboard.Line { return summaryCharts(n, end, width, height) },
 		Columns: summaryColumns,
-		Groups:  []gotermboard.Group{countsGroup(n), reposGroup(n)},
+		Groups:  []gotermboard.Group{countsGroup(n, end), reposGroup(n)},
 	}
 }
 
@@ -365,7 +366,7 @@ func (s *Summary) Table(now time.Time) []gotermboard.Line {
 	for i, column := range summaryColumns {
 		header[i] = gotermboard.C(column.Title, gotermboard.Bold)
 	}
-	for _, group := range []gotermboard.Group{countsGroup(n), reposGroup(n)} {
+	for _, group := range []gotermboard.Group{countsGroup(n, endText(n.Until, now)), reposGroup(n)} {
 		title := append(gotermboard.Line{}, group.Title...)
 		if group.Counted {
 			title = append(title, gotermboard.C(fmt.Sprintf(" · %d", group.Count), ""))
@@ -407,8 +408,9 @@ func aligned(rows [][]gotermboard.Cell) []gotermboard.Line {
 	return out
 }
 
-// countsGroup is the window's counts, a row each.
-func countsGroup(n summary.Numbers) gotermboard.Group {
+// countsGroup is the window's counts, a row each. end is when the window ends, as "now" or
+// "at" an instant.
+func countsGroup(n summary.Numbers, end string) gotermboard.Group {
 	counted := func(key, label string, k summary.Kinds, detail string) gotermboard.Row {
 		return gotermboard.Row{
 			Key:    "counts/" + key,
@@ -427,7 +429,7 @@ func countsGroup(n summary.Numbers) gotermboard.Group {
 	return gotermboard.Group{
 		Key: "counts", Title: gotermboard.Line{gotermboard.C("COUNTS", gotermboard.Bold)}, Still: true,
 		Rows: []gotermboard.Row{
-			counted("open", "open now", n.Open, "The pull requests open at the window's end, on every host the board reads."),
+			counted("open", "open "+end, n.Open, "The pull requests open at the window's end, on every host the board reads."),
 			counted("opened", "opened", n.Opened, "The pull requests opened within the window, whether open or closed now."),
 			counted("merged", "merged", n.Merged, "The pull requests merged within the window, split by who opened them."),
 			counted("closed", "closed unmerged", n.ClosedUnmerged, "The pull requests closed within the window without merging."),
@@ -505,6 +507,14 @@ func untilText(until, now time.Time) string {
 		return "now"
 	}
 	return stamp(until)
+}
+
+// endText is a count's moment at the window's end: now, or at the instant --until names.
+func endText(until, now time.Time) string {
+	if until.Equal(now) {
+		return "now"
+	}
+	return "at " + stamp(until)
 }
 
 func day(at time.Time) string { return at.Local().Format("Jan 2") }
