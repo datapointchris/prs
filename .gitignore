@@ -1,0 +1,3 @@
+# What go build ./cmd/prs and goreleaser leave in the checkout.
+/prs
+/dist/
