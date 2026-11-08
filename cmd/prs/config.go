@@ -73,22 +73,22 @@ which YAML otherwise reads as a comment.`,
 				file += pal.Paint(gotermstyle.CodeYellow, "  not there")
 			}
 			_, _ = fmt.Fprintf(out, "%s  %s\n", pal.Bold("config  "), file)
-			switch {
-			case cfg.Registry != "":
-				registry := cfg.Registry
-				if _, err := os.Stat(registry); err != nil {
-					registry += pal.Paint(gotermstyle.CodeRed, "  not there")
-				}
-				_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("registry"), registry, cfg.ReposFrom)
-			case len(cfg.Owners) > 0:
+			switch cfg.ReposFrom {
+			case config.FromOwners:
 				_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("owners  "), strings.Join(cfg.Owners, ", "), cfg.ReposFrom)
-			default:
+			case config.FromViewer:
 				where, err := config.DefaultRegistry()
 				if err != nil {
 					return err
 				}
 				_, _ = fmt.Fprintf(out, "%s  your own on GitHub, because no registry is at %s and the config names no owners\n",
 					pal.Bold("repos   "), where)
+			default:
+				registry := cfg.Registry
+				if _, err := os.Stat(registry); err != nil {
+					registry += pal.Paint(gotermstyle.CodeRed, "  not there")
+				}
+				_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("registry"), registry, cfg.ReposFrom)
 			}
 			for _, action := range cfg.WindowActions {
 				state := pal.Paint(gotermstyle.CodeGreen, "offered")

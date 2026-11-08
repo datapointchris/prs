@@ -14,7 +14,7 @@ const columnGap = "  "
 // Table is what `prs list` prints: how each read stands, then the board's rows as a table
 // with a header, each row's title last and unwrapped, for output nobody scrolls.
 func (b *Board) Table(now time.Time) []gotermboard.Line {
-	prs := b.PullRequests(now)
+	prs := b.pullRequests(now)
 	parents := stackParents(prs)
 	lines := []gotermboard.Line{gotermboard.ReadStatus(b.statuses(), now)}
 	if len(prs) == 0 {

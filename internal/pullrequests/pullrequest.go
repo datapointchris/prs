@@ -70,8 +70,11 @@ type PullRequest struct {
 	HeadOID          *string `json:"head_oid"`
 }
 
-// Key names a pull request across reads, when its position and every field can change.
-func (pr PullRequest) Key() string { return pr.Slug + "#" + strconv.Itoa(pr.Number) }
+// Key names a pull request across reads, when its position and every field can change. It
+// carries the provider, because a GitHub repo and a Bitbucket one can share owner/name.
+func (pr PullRequest) Key() string {
+	return pr.Provider + ":" + pr.Slug + "#" + strconv.Itoa(pr.Number)
+}
 
 // Listing is what one provider's read found: its pull requests, and what it could not
 // cover while still reading.

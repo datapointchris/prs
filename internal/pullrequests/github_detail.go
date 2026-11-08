@@ -170,13 +170,19 @@ func ReadGitHubPullRequest(ctx context.Context, slug string, number int) (PullRe
 		return PullRequest{}, Detail{}, githubFault(host, err)
 	}
 	if data.Repository == nil || data.Repository.PullRequest == nil {
-		return PullRequest{}, Detail{}, fmt.Errorf("GitHub has no pull request %s#%d: %w", slug, number, err)
+		if refused != nil {
+			return PullRequest{}, Detail{}, fmt.Errorf("GitHub has no pull request %s#%d: %w", slug, number, refused)
+		}
+		return PullRequest{}, Detail{}, fmt.Errorf("GitHub shows this token no pull request %s#%d", slug, number)
 	}
 	node := data.Repository.PullRequest
 	if node.Number == nil {
 		return PullRequest{}, Detail{}, fmt.Errorf("GitHub's answer for %s#%d holds no pull request", slug, number)
 	}
-	return githubPullRequest(node.githubNode), githubDetail(*node), nil
+	pr := githubPullRequest(node.githubNode)
+	detail := githubDetail(*node)
+	detail.ChecksRollup = pr.Checks
+	return pr, detail, nil
 }
 
 // readGitHubDetail is Provider.Detail for GitHub.

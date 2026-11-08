@@ -66,7 +66,8 @@ func rootCommand() *cobra.Command {
 		Short: "Every open pull request across a registry's repos, on one terminal board",
 		Long: `prs reads every open pull request on the repos a registry names, whoever opened
 it, and acts on one with a key. prs tui opens the board, and prs list prints it once.
-prs config show names the registry, or the owners read in its place.`,
+prs config show names the registry, the owners read in its place, or with neither your
+own repos on GitHub.`,
 		Example: `  prs tui
   prs list
   prs list --json | jq -r '.[].url'

@@ -17,9 +17,9 @@ no credentials of its own.
    go install github.com/datapointchris/prs/cmd/prs@latest
    ```
 
-2. **Log `gh` in**, if it is not already. prs reads GitHub with gh's token, the way gh
-   finds it: `GH_TOKEN`, then gh's own config, then the system keyring. `GH_HOST` points
-   both at a GitHub Enterprise host.
+2. **Log `gh` in**, if it is not already. prs reads GitHub with the token gh would use
+   for the same host, so a working `gh auth login` or a `GH_TOKEN` is all it needs.
+   `GH_HOST` points both at a GitHub Enterprise host.
 
    ```bash
    gh auth login
@@ -56,9 +56,9 @@ repos_registry: ~/repos.json
 owners: [acme, octo]
 ```
 
-`owners` reads each owner whole, so a large organization's search can fill its page of 100
-with repos you never touch, or fail outright. A registry names each repo instead, and a
-search names 20 of them at a time.
+`owners` reads each owner whole, so a large organization's search can fill its one page
+with repos you never touch, or fail outright. A registry names each repo instead, so each
+search asks only for those repos.
 
 ### The registry
 
@@ -87,15 +87,16 @@ field it filters on drops a repo silently, and every list it prints still looks 
 
 ## How the board reads
 
-- **The rows are every open pull request on a repo the registry names, whoever opened
-  it**, oldest first, because a backlog is a gauge and age is what it measures. One GitHub
-  request asks for the registry's repos by name, and `bbkt` lists each Bitbucket repo in
-  its checkout, several repos at once.
+- **The rows are every open pull request on a repo prs reads, whoever opened it**, oldest
+  first, because a backlog is a gauge and age is what it measures. One GitHub request asks
+  for the registry's repos by name, and `bbkt` lists each Bitbucket repo in its checkout,
+  several repos at once.
 - **Each GitHub row's reviews, checks and conversation are read after the list lands**,
-  four pull requests at a time, so the list never waits on them. The description shows
+  a few pull requests at a time, so the list never waits on them. The description shows
   each review and the commit it was against, who is still asked, each check not passing,
-  and how many comments, threads, files and commits there are. A pull request is read
-  again only once its head commit or its update time moves.
+  and how many comments, threads, files and commits there are. A pull request's detail is
+  read again when its head commit, its update time or its checks state moves, or when its
+  last read failed.
 - **Each provider is read again every minute while the board is open.** The line at the
   top says how old the newest read is, and names a read that failed. A failed read keeps
   the last good rows, and so does one Bitbucket repo that failed while the rest read.
@@ -156,16 +157,17 @@ and `{slug}` are filled in. Quote a value holding ` #`, which YAML reads as a co
 `prs list` reads each provider once and prints the board's rows as a table, under a line
 naming any provider it could not read. `prs list --json` prints them as a JSON array, one
 object per pull request, in the shape [`cmd/prs/list.schema.json`](cmd/prs/list.schema.json)
-gives. Beside the row's columns it carries each pull request's state, its merge state and
-its head commit.
+gives. Beside the row's columns it carries each pull request's state, its merge state, its
+head commit and the open pull request it is stacked on.
 
-`prs tui --json` prints the board's snapshot instead: the same rows with the open pull
-request each is stacked on, and how each read stands. `prs tui --once` prints one frame at
-`COLUMNS` by `LINES`.
+`prs tui --json` prints the board's snapshot instead: the same rows under
+`pull_requests`, and how each read stands. `prs tui --once` prints one frame at `COLUMNS`
+by `LINES`.
 
-Each of these exits 1 after printing when a provider could not be read, because a failed
-read and a repo with no open pull requests otherwise print the same rows. The other
-provider's rows still print.
+Each of these exits 1 after printing when a read failed or left pull requests out,
+because a failed read and a repo with no open pull requests otherwise print the same rows.
+A refused search, a Bitbucket repo that failed or is not checked out, and a search past
+its page each leave pull requests out. The rest of the rows still print.
 
 ```bash
 prs list --json | jq -r '.[] | select(.merge_state_status == "BEHIND") | .url'

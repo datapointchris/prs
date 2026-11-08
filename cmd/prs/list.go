@@ -20,18 +20,21 @@ func listCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "Print every open pull request once, as a table or as JSON",
-		Long: `list reads each provider once and prints every open pull request on the repos the
-registry names, oldest first: a line saying how each read went, then a table of the
-board's columns.
+		Long: `list reads each provider once and prints every open pull request on the repos prs
+reads, which prs config show names, oldest first: a line saying how each read went, then
+a table of the board's columns.
 
---json prints the rows as a JSON array instead, one object per pull request.
-cmd/prs/list.schema.json in prs's repository is that shape. additions, deletions and
-changed_files are null, never 0, from a provider whose listing does not count them, and
-so are the merge fields and head_oid where it does not carry them.
+--json prints the rows as a JSON array instead, one object per pull request, and [] where
+there are none. cmd/prs/list.schema.json in prs's repository is that shape, and each
+pull request in prs tui --json takes it too. additions, deletions and changed_files are
+null, never 0, from a provider whose listing does not count them, and so are the merge
+fields and head_oid where it does not carry them.
 
-A provider that could not be read is named on the first line, or on stderr with --json,
-and the other provider's rows still print. Either form then exits 1, because a failed
-read and a repo with no open pull requests otherwise print the same rows.`,
+A provider that could not be read, or that left pull requests out, is named on the first
+line, or on stderr with --json, and the rest of the rows still print. A refused search, a
+Bitbucket repo that failed or is not checked out, and a search past its page each leave
+pull requests out. Either form then exits 1, because a failed read and a repo with no
+open pull requests otherwise print the same rows.`,
 		Example: `  prs list
   prs list --json | jq -r '.[].url'
   prs list --json | jq '.[] | select(.merge_state_status == "BEHIND") | .slug'`,
@@ -44,16 +47,16 @@ read and a repo with no open pull requests otherwise print the same rows.`,
 			gotermboard.RefreshAll(cmd.Context(), b.Sources()...)
 			now := time.Now()
 			out := cmd.OutOrStdout()
-			faults := b.Faults()
+			gaps := b.Gaps()
 			if asJSON {
 				encoder := json.NewEncoder(out)
 				encoder.SetIndent("", "  ")
 				encoder.SetEscapeHTML(false)
-				if err := encoder.Encode(b.PullRequests(now)); err != nil {
+				if err := encoder.Encode(b.Rows(now)); err != nil {
 					return err
 				}
-				if len(faults) > 0 {
-					return fmt.Errorf("could not read %s", strings.Join(faults, "; "))
+				if len(gaps) > 0 {
+					return fmt.Errorf("could not read every open pull request: %s", strings.Join(gaps, "; "))
 				}
 				return nil
 			}
@@ -71,7 +74,7 @@ read and a repo with no open pull requests otherwise print the same rows.`,
 					return err
 				}
 			}
-			if len(faults) > 0 {
+			if len(gaps) > 0 {
 				return fmt.Errorf("%w: the first line names what could not be read", goclikit.ErrReported)
 			}
 			return nil

@@ -303,9 +303,9 @@ func forgetGitHubClient() {
 	githubClients.client = nil
 }
 
-// githubToken is the token GH_TOKEN, GITHUB_TOKEN or gh's hosts.yml holds, else the one gh
-// keeps in the system keyring. gh runs as every client here does, with stdin closed and a
-// timeout, which go-gh's own lookup does not give it.
+// githubToken is the token gh would use for host: the one go-gh finds in the environment or
+// gh's config, else the one gh keeps in the system keyring. gh runs as every client here
+// does, with stdin closed and a timeout, which go-gh's own lookup does not give it.
 func githubToken(ctx context.Context, host string) (string, error) {
 	if token, _ := auth.TokenFromEnvOrConfig(host); token != "" {
 		return token, nil

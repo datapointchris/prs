@@ -10,10 +10,12 @@ import (
 // commit, its conversation, its files, its commits and its head's checks. Each list holds
 // as many as its query asks for, and each count is the whole.
 type Detail struct {
-	// HeadOID and UpdatedAt are the pull request's as this read found them. A listing
-	// whose row differs in either reads it again.
+	// HeadOID, UpdatedAt and ChecksRollup are the pull request's as this read found them. A
+	// listing whose row differs in any reads it again. A check finishing moves neither the
+	// head nor the update time, so the rollup is what reads checks again once they finish.
 	HeadOID        string    `json:"head_oid"`
 	UpdatedAt      time.Time `json:"updated_at"`
+	ChecksRollup   string    `json:"checks_rollup"`
 	ReadAt         time.Time `json:"read_at"`
 	ReviewRequests []string  `json:"review_requests"`
 	Reviews        []Review  `json:"reviews"`
@@ -90,8 +92,8 @@ const detailsAtOnce = 4
 
 // Details holds each pull request's Detail in memory, by Key, read in the background
 // after a listing lands, so moving the cursor never waits on the network. An entry is read
-// again only when its row's head commit or update time moves, so an unchanged pull request
-// is asked for once.
+// again when its row's head commit, update time or checks rollup moves, or when its last
+// read failed, so a pull request that reads cleanly and stays unchanged is asked for once.
 type Details struct {
 	mu      sync.Mutex
 	entries map[string]*detailEntry
@@ -186,10 +188,10 @@ func (d *Details) claim(provider string, prs []PullRequest) []PullRequest {
 	return due
 }
 
-// current says the detail was read at the row's head commit and update time.
+// current says the detail was read at the row's head commit, update time and checks rollup.
 func current(detail Detail, pr PullRequest) bool {
 	return pr.HeadOID != nil && pr.UpdatedAt != nil &&
-		detail.HeadOID == *pr.HeadOID && detail.UpdatedAt.Equal(*pr.UpdatedAt)
+		detail.HeadOID == *pr.HeadOID && detail.UpdatedAt.Equal(*pr.UpdatedAt) && detail.ChecksRollup == pr.Checks
 }
 
 func (d *Details) store(pr PullRequest, detail Detail, err error) {

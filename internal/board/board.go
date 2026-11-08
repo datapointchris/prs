@@ -25,8 +25,10 @@ const View = "pull-requests"
 const readEvery = time.Minute
 
 // Repos is what the board reads: the repos the registry at Registry names, or with no
-// registry, Owners whole.
+// registry, Owners whole. From is the config layer that chose, one of config's From
+// constants.
 type Repos struct {
+	From     string
 	Registry string
 	Repos    []registry.Repo
 	Owners   []string
@@ -35,6 +37,7 @@ type Repos struct {
 // Board is the open pull requests of the repos a registry names, read from each provider
 // that hosts one.
 type Board struct {
+	from     string
 	registry string
 	owners   []string
 	sources  []*gotermboard.Source[pullrequests.Listing]
@@ -65,6 +68,7 @@ func New(repos Repos, windows []config.WindowAction) (*Board, error) {
 		}
 	}
 	b := &Board{
+		from:     repos.From,
 		registry: repos.Registry,
 		owners:   repos.Owners,
 		repos:    repos.Repos,
@@ -113,13 +117,36 @@ func (b *Board) Sources() []gotermboard.Refresher {
 // Groupings is gotermboard.Board's. The board has one.
 func (b *Board) Groupings() []string { return nil }
 
-// PullRequests is every provider's last good read, oldest first.
-func (b *Board) PullRequests(now time.Time) []pullrequests.PullRequest {
+// pullRequests is every provider's last good read, oldest first.
+func (b *Board) pullRequests(now time.Time) []pullrequests.PullRequest {
 	var prs []pullrequests.PullRequest
 	for _, source := range b.sources {
 		prs = append(prs, source.Value().PullRequests...)
 	}
 	return pullrequests.Finish(prs, b.repos, now)
+}
+
+// Row is one pull request as both --json outputs print it, with the open pull request it
+// is stacked on where there is one. cmd/prs/list.schema.json is its shape.
+type Row struct {
+	pullrequests.PullRequest
+	StackedOn *int `json:"stacked_on"`
+}
+
+// Rows is every pull request the board holds, oldest first, and empty rather than nil, so
+// no rows print as [].
+func (b *Board) Rows(now time.Time) []Row {
+	prs := b.pullRequests(now)
+	parents := stackParents(prs)
+	rows := make([]Row, 0, len(prs))
+	for _, pr := range prs {
+		row := Row{PullRequest: pr}
+		if parent := parentOf(pr, parents); parent != 0 {
+			row.StackedOn = &parent
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func (b *Board) statuses() []gotermboard.Status {
@@ -130,15 +157,19 @@ func (b *Board) statuses() []gotermboard.Status {
 	return statuses
 }
 
-// Faults names each provider whose newest read failed, with why.
-func (b *Board) Faults() []string {
-	var faults []string
+// Gaps names each provider whose newest read failed, or read and noted pull requests it
+// left out, with why. A note leaves rows out as a failure does, so both count.
+func (b *Board) Gaps() []string {
+	var gaps []string
 	for _, status := range b.statuses() {
-		if status.Fault != "" {
-			faults = append(faults, status.Name+": "+status.Fault)
+		switch {
+		case status.Fault != "":
+			gaps = append(gaps, status.Name+": "+status.Fault)
+		case status.Note != "":
+			gaps = append(gaps, status.Name+": "+status.Note)
 		}
 	}
-	return faults
+	return gaps
 }
 
 // unread says no provider has answered yet.
@@ -151,9 +182,19 @@ func (b *Board) unread() bool {
 	return len(b.sources) > 0
 }
 
+// failed says every provider was tried and none could be read.
+func (b *Board) failed() bool {
+	for _, status := range b.statuses() {
+		if status.Fault == "" || !status.ReadAt.IsZero() {
+			return false
+		}
+	}
+	return len(b.sources) > 0
+}
+
 // Frame is gotermboard.Board's: one group of every open pull request, oldest first.
 func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
-	prs := b.PullRequests(now)
+	prs := b.pullRequests(now)
 	parents := stackParents(prs)
 	clear(b.shown)
 	group := gotermboard.Group{
@@ -186,10 +227,16 @@ func (b *Board) emptyReason() string {
 	switch {
 	case len(b.sources) == 0:
 		return "The registry names no active repo."
+	case b.failed():
+		return "No provider could be read, and the line above says why."
 	case b.unread():
 		return "Reading the open pull requests."
-	case b.registry == "":
+	}
+	switch b.from {
+	case config.FromOwners:
 		return "No open pull requests on the owners' repos."
+	case config.FromViewer:
+		return "No open pull requests on your own repos."
 	}
 	return "No open pull requests on the registry's repos."
 }
@@ -201,27 +248,11 @@ type Snapshot struct {
 	View         string               `json:"view"`
 	Registry     string               `json:"registry"`
 	Owners       []string             `json:"owners,omitempty"`
-	PullRequests []SnapshotRow        `json:"pull_requests"`
+	PullRequests []Row                `json:"pull_requests"`
 	Sources      []gotermboard.Status `json:"sources"`
-}
-
-// SnapshotRow is one pull request, and the open one it is stacked on where there is one.
-type SnapshotRow struct {
-	pullrequests.PullRequest
-	StackedOn *int `json:"stacked_on"`
 }
 
 // Snapshot reads what the board holds now.
 func (b *Board) Snapshot(now time.Time) Snapshot {
-	prs := b.PullRequests(now)
-	parents := stackParents(prs)
-	snap := Snapshot{View: View, Registry: b.registry, Owners: b.owners, PullRequests: []SnapshotRow{}, Sources: b.statuses()}
-	for _, pr := range prs {
-		row := SnapshotRow{PullRequest: pr}
-		if parent := parentOf(pr, parents); parent != 0 {
-			row.StackedOn = &parent
-		}
-		snap.PullRequests = append(snap.PullRequests, row)
-	}
-	return snap
+	return Snapshot{View: View, Registry: b.registry, Owners: b.owners, PullRequests: b.Rows(now), Sources: b.statuses()}
 }

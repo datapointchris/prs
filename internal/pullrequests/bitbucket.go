@@ -42,7 +42,7 @@ func ReadBitbucket(ctx context.Context, scope Scope, last Listing) (Listing, err
 	)
 	for _, repo := range repos {
 		if info, err := os.Stat(repo.Path); err != nil || !info.IsDir() {
-			absent = append(absent, repo.Name)
+			absent = append(absent, repo.Slug)
 			continue
 		}
 		present = append(present, repo)

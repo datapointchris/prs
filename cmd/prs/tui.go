@@ -35,8 +35,8 @@ func tuiCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "Open the board of every open pull request",
-		Long: `The board lists every open pull request on the repos the registry names, oldest
-first, and reads each provider again while it is open. Each row gives its checks and
+		Long: `The board lists every open pull request on the repos prs reads, which prs config
+show names, oldest first, and reads each provider again while it is open. Each row gives its checks and
 review in words, its age, its diff, its repo and number, and its title. f shows its
 branch and checkout under it.
 
@@ -50,7 +50,8 @@ backs out one level, and q quits.
 
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
 so an agent reads what a person reads. Either exits 1 after printing when a provider
-could not be read. With no terminal and neither flag it refuses.`,
+could not be read or left pull requests out. With no terminal and neither flag it
+refuses.`,
 		Example: `  prs tui
   COLUMNS=160 LINES=50 prs tui --once > frame.txt
   prs tui --json | jq '.pull_requests[] | {slug, number, checks}'`,
@@ -95,8 +96,8 @@ could not be read. With no terminal and neither flag it refuses.`,
 			}
 			// A failed read and a repo with no open pull requests print the same rows, so
 			// the exit status is what tells a script the two apart.
-			if faults := b.Faults(); len(faults) > 0 {
-				return fmt.Errorf("could not read %s", strings.Join(faults, "; "))
+			if gaps := b.Gaps(); len(gaps) > 0 {
+				return fmt.Errorf("could not read every open pull request: %s", strings.Join(gaps, "; "))
 			}
 			return nil
 		},
@@ -114,14 +115,16 @@ func loadBoard() (*board.Board, error) {
 	if err != nil {
 		return nil, err
 	}
-	repos := board.Repos{Registry: cfg.Registry, Owners: cfg.Owners}
-	switch {
-	case cfg.Registry != "":
+	repos := board.Repos{From: cfg.ReposFrom, Registry: cfg.Registry}
+	switch cfg.ReposFrom {
+	case config.FromOwners:
+		repos.Owners = cfg.Owners
+	case config.FromViewer:
+		repos.Owners = []string{pullrequests.ViewerOwner}
+	default:
 		if repos.Repos, err = registry.Load(cfg.Registry); err != nil {
 			return nil, err
 		}
-	case len(cfg.Owners) == 0:
-		repos.Owners = []string{pullrequests.ViewerOwner}
 	}
 	b, err := board.New(repos, cfg.WindowActions)
 	if err != nil {

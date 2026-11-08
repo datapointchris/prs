@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "urn:prs:list:v1",
   "title": "Every open pull request on the repos prs reads",
-  "description": "What `prs list --json` prints: one object per open pull request, oldest first. Every field is always present. A field the provider's listing does not carry is null rather than a zero, so a pull request nobody counted never reads as one that changed nothing.",
+  "description": "What `prs list --json` prints, and `pull_requests` in `prs tui --json`: one object per open pull request, oldest first, and [] where there are none. Every field is always present. A field the provider's listing does not carry is null rather than a zero, so a pull request nobody counted never reads as one that changed nothing.",
   "type": "array",
   "items": {
     "type": "object",
@@ -11,7 +11,7 @@
       "provider", "repo", "slug", "number", "title", "author", "bot", "body", "url", "branch", "base",
       "draft", "created_at", "additions", "deletions", "changed_files", "review", "reviews", "checks",
       "age_days", "path", "state", "merged_at", "closed_at", "updated_at", "mergeable",
-      "merge_state_status", "in_merge_queue", "head_oid"
+      "merge_state_status", "in_merge_queue", "head_oid", "stacked_on"
     ],
     "properties": {
       "provider": {"description": "Who hosts it. Every action but the local diff dispatches on it.", "enum": ["github", "bitbucket"]},
@@ -42,7 +42,8 @@
       "mergeable": {"description": "GitHub's MERGEABLE, CONFLICTING or UNKNOWN, which reads UNKNOWN until GitHub has computed it, and null where the listing does not carry it.", "type": ["string", "null"]},
       "merge_state_status": {"description": "GitHub's merge state, such as CLEAN, BEHIND, BLOCKED, DIRTY or UNKNOWN, and null where the listing does not carry it.", "type": ["string", "null"]},
       "in_merge_queue": {"description": "Null where the listing does not carry it.", "type": ["boolean", "null"]},
-      "head_oid": {"description": "The head commit's full hash, and null where the listing does not carry it.", "type": ["string", "null"]}
+      "head_oid": {"description": "The head commit's full hash, and null where the listing does not carry it.", "type": ["string", "null"]},
+      "stacked_on": {"description": "The number of the open pull request in the same repository whose branch this one merges into, and null where it merges into no open one's.", "type": ["integer", "null"], "minimum": 1}
     }
   }
 }

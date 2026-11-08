@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -212,6 +213,15 @@ func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.
 	if err := json.Unmarshal([]byte(out), &snap); err != nil {
 		t.Fatal(err)
 	}
+	var rows struct {
+		PullRequests json.RawMessage `json:"pull_requests"`
+	}
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := listSchema(t).Validate(decoded(t, string(rows.PullRequests))); err != nil {
+		t.Errorf("prs tui --json's pull_requests break list.schema.json: %v", err)
+	}
 	var got []string
 	for _, row := range snap.PullRequests {
 		stacked := 0
@@ -236,6 +246,40 @@ func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.
 	}
 }
 
+// listSchema is cmd/prs/list.schema.json, compiled to check dates as dates.
+func listSchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	raw, err := os.Open("list.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	compiler := jsonschema.NewCompiler()
+	compiler.AssertFormat()
+	if err := compiler.AddResource("list.schema.json", decodedFrom(t, raw)); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile("list.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return schema
+}
+
+func decoded(t *testing.T, document string) any {
+	t.Helper()
+	return decodedFrom(t, strings.NewReader(document))
+}
+
+func decodedFrom(t *testing.T, r io.Reader) any {
+	t.Helper()
+	value, err := jsonschema.UnmarshalJSON(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
 // The schema is what a program reading --json is pointed at, so the rows must fit it. A
 // provider that cannot be read must say so on the table's first line without taking the
 // other provider's rows with it.
@@ -245,29 +289,7 @@ func TestListPrintsRowsTheSchemaHoldsAndNamesAProviderItCouldNotRead(t *testing.
 	if code != 0 {
 		t.Fatalf("prs list --json exited %d: %s", code, said)
 	}
-	raw, err := os.Open("list.schema.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = raw.Close() }()
-	document, err := jsonschema.UnmarshalJSON(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	compiler := jsonschema.NewCompiler()
-	compiler.AssertFormat()
-	if err := compiler.AddResource("list.schema.json", document); err != nil {
-		t.Fatal(err)
-	}
-	schema, err := compiler.Compile("list.schema.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, err := jsonschema.UnmarshalJSON(strings.NewReader(out))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.Validate(rows); err != nil {
+	if err := listSchema(t).Validate(decoded(t, out)); err != nil {
 		t.Errorf("prs list --json breaks list.schema.json: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, `"merge_state_status": "BEHIND"`) || !strings.Contains(out, `"merge_state_status": null`) {
@@ -280,6 +302,22 @@ func TestListPrintsRowsTheSchemaHoldsAndNamesAProviderItCouldNotRead(t *testing.
 	if code != 1 || !strings.Contains(first, "github unread: gh is not logged in to github.com") ||
 		!strings.Contains(rest, "ledger") || strings.Contains(rest, "widget") {
 		t.Errorf("logged out, prs list exited %d and printed:\n%s", code, out)
+	}
+}
+
+// A registry whose only repo is a Bitbucket one not checked out here reads nothing and
+// leaves that repo's pull requests out. A script reads an empty array, which jq iterates,
+// and an exit status saying the array is not the whole.
+func TestListPrintsAnEmptyArrayAndExits1WhenARepoIsLeftOut(t *testing.T) {
+	s := newStandIn(t)
+	registry := filepath.Join(t.TempDir(), "repos.json")
+	if err := os.WriteFile(registry, []byte(`{"repos": [{"name": "ledger", "owner": "FIN", "status": "active", "provider": "bitbucket"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.env["PRS_REPOS_REGISTRY"] = registry
+	out, said, code := s.run(t, "list", "--json")
+	if out != "[]\n" || code != 1 || !strings.Contains(said, "bitbucket: not checked out here, so not read: FIN/ledger") {
+		t.Errorf("prs list --json exited %d and printed %q, saying %q", code, out, said)
 	}
 }
 
