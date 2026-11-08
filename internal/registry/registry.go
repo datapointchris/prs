@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -16,20 +17,24 @@ const (
 	Bitbucket = "bitbucket"
 )
 
+// Providers is every provider a registry may name.
+var Providers = []string{GitHub, Bitbucket}
+
 // Repo is one active registry entry.
 type Repo struct {
-	Name  string
+	Name string
+	// Owner is the GitHub owner, or the Bitbucket project key.
 	Owner string
-	// Slug identifies the repo on its provider: owner/name on GitHub, and the name alone on
-	// Bitbucket, whose listing names no owner.
+	// Slug is owner/name, which identifies the repo on its provider. Two Bitbucket projects
+	// can each hold a repo of one name.
 	Slug     string
 	Path     string
 	Provider string
 }
 
-// document is the registry as written. status and owner are read plainly rather than
-// defaulted, because readers that defaulted a field they filter on once disagreed about
-// which repos exist while every list looked plausible.
+// document is the registry as written. status and owner are required rather than
+// defaulted, because a reader that defaults a field it filters on drops a repo silently,
+// and every list it prints still looks plausible.
 type document struct {
 	Provider string `json:"provider"`
 	Repos    []struct {
@@ -70,12 +75,14 @@ func Load(path string) ([]Repo, error) {
 		if provider == "" {
 			provider = fallback
 		}
-		repo := Repo{Name: entry.Name, Owner: *entry.Owner, Path: expand(entry.Path), Provider: provider}
-		repo.Slug = repo.Owner + "/" + repo.Name
-		if provider == Bitbucket {
-			repo.Slug = repo.Name
+		if !slices.Contains(Providers, provider) {
+			return nil, fmt.Errorf("the registry %s puts %q on %q, and prs reads %s",
+				path, entry.Name, provider, strings.Join(Providers, " and "))
 		}
-		repos = append(repos, repo)
+		repos = append(repos, Repo{
+			Name: entry.Name, Owner: *entry.Owner, Slug: *entry.Owner + "/" + entry.Name,
+			Path: expand(entry.Path), Provider: provider,
+		})
 	}
 	return repos, nil
 }

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -33,11 +35,10 @@ func tuiCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "Open the board of every open pull request",
-		Long: `One program with a tab per view. The pull-requests tab is every open pull request on
-the repos the registry names, oldest first, each read again every minute while the board
-is open. Each row says its checks and its review in words, its age, its diff and its
-title, then its branch, the pull request it is stacked on, its checkout, its number and
-the app that opened it.
+		Long: `The board lists every open pull request on the repos the registry names, oldest
+first, and reads each provider again while it is open. Each row gives its checks and
+review in words, its age, its diff, its repo and number, and its title. f shows its
+branch and checkout under it.
 
 enter opens a pull request's description, full screen where it runs past the screen.
 A letter acts on the pull request under the cursor, and ? lists every key. d opens its
@@ -45,7 +46,8 @@ diff in nvim and p its page and comments, each in a tmux window. The config can 
 keys of its own, each a command in a tmux window. esc backs out one level, and q quits.
 
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
-so an agent reads what a person reads. With no terminal and neither flag it refuses.`,
+so an agent reads what a person reads. Either exits 1 after printing when a provider
+could not be read. With no terminal and neither flag it refuses.`,
 		Example: `  prs tui
   COLUMNS=160 LINES=50 prs tui --once > frame.txt
   prs tui --json | jq '.pull_requests[] | {slug, number, checks}'`,
@@ -79,11 +81,20 @@ so an agent reads what a person reads. With no terminal and neither flag it refu
 				encoder := json.NewEncoder(cmd.OutOrStdout())
 				encoder.SetIndent("", "  ")
 				encoder.SetEscapeHTML(false)
-				return encoder.Encode(b.Snapshot(time.Now()))
+				err = encoder.Encode(b.Snapshot(time.Now()))
+			} else {
+				width, height := gotermboard.OnceSize(onceFallbackWidth, onceFallbackHeight)
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), gotermboard.Once(b, pal, width, height))
 			}
-			width, height := gotermboard.OnceSize(onceFallbackWidth, onceFallbackHeight)
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), gotermboard.Once(b, pal, width, height))
-			return err
+			if err != nil {
+				return err
+			}
+			// A failed read and a repo with no open pull requests print the same rows, so
+			// the exit status is what tells a script the two apart.
+			if faults := b.Faults(); len(faults) > 0 {
+				return fmt.Errorf("could not read %s", strings.Join(faults, "; "))
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&view, "view", "", "Open on this tab: "+board.View)
@@ -92,19 +103,23 @@ so an agent reads what a person reads. With no terminal and neither flag it refu
 	return cmd
 }
 
-// loadBoard reads the config and the registry it names.
+// loadBoard reads the config and the registry it resolves to.
 func loadBoard() (*board.Board, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Registry == "" {
-		return nil, errors.New("prs reads its repos from a registry, and the config names none: " +
-			"set registry in the file prs config path prints")
+	if _, err := os.Stat(cfg.Registry); errors.Is(err, fs.ErrNotExist) && cfg.RegistryFrom == config.FromDefault {
+		return nil, fmt.Errorf("prs reads its repos from a registry, and none is at the default %s: "+
+			"set %s, or repos_registry in %s", cfg.Registry, config.RegistryVariable, cfg.File)
 	}
 	repos, err := registry.Load(cfg.Registry)
 	if err != nil {
 		return nil, err
 	}
-	return board.New(cfg.Registry, repos, cfg.WindowActions), nil
+	b, err := board.New(cfg.Registry, repos, cfg.WindowActions)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", cfg.File, err)
+	}
+	return b, nil
 }

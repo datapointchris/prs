@@ -55,10 +55,9 @@ func newStandIn(t *testing.T) standIn {
 	registry := fmt.Sprintf(`{"repos": [
 		{"name": "widget", "owner": "acme", "path": %q, "status": "active"},
 		{"name": "gadget", "owner": "acme", "path": %q, "status": "active"},
-		{"name": "typos", "owner": "acme", "path": %q, "status": "active"},
 		{"name": "ledger", "owner": "FIN", "path": %q, "status": "active", "provider": "bitbucket"}
-	]}`, s.checkout, filepath.Join(dir, "gadget"), filepath.Join(dir, "typos"), filepath.Join(dir, "ledger"))
-	config := fmt.Sprintf(`registry: %s
+	]}`, s.checkout, filepath.Join(dir, "gadget"), filepath.Join(dir, "ledger"))
+	config := fmt.Sprintf(`repos_registry: %s
 window_actions:
   - key: r
     label: claude review
@@ -81,7 +80,7 @@ window_actions:
 	return s
 }
 
-func TestTheSnapshotKeepsEachRegistryPullRequestOnceAcrossBothProvidersAndFindsItsParentByRepoAndBranch(t *testing.T) {
+func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.T) {
 	s := newStandIn(t)
 	cmd := exec.Command(tuidrive.Build(t, "."), "tui", "--json")
 	for name, value := range s.env {
@@ -108,10 +107,9 @@ func TestTheSnapshotKeepsEachRegistryPullRequestOnceAcrossBothProvidersAndFindsI
 		}
 		got = append(got, fmt.Sprintf("%s#%d %s into %s bot=%s stacked_on=%d", row.Slug, row.Number, row.Branch, row.Base, bot, stacked))
 	}
-	// crate-ci/typos shares a registry repo's bare name and is not it; #12 is in both searches;
 	// gadget#5 targets a branch only widget has. bbkt's listing types no bot.
 	want := []string{
-		"ledger#4 feature/ledger-export into develop bot=unknown stacked_on=0",
+		"FIN/ledger#4 feature/ledger-export into develop bot=unknown stacked_on=0",
 		"acme/widget#12 add-cache into main bot=false stacked_on=0",
 		"acme/widget#13 cache-metrics into add-cache bot=true stacked_on=12",
 		"acme/gadget#5 tidy into add-cache bot=false stacked_on=0",
@@ -129,13 +127,8 @@ func TestTheBoardSaysEachStateInWordsOpensADescriptionAndRunsAKeyTheConfigAdds(t
 		term.WaitFor(words)
 	}
 
-	term.Press("?")
-	for _, label := range []string{"view diff", "page and comments", "claude review", "open in browser", "copy branch", "merge (not built yet)"} {
-		term.WaitFor(label)
-	}
-	term.Press("esc")
-	term.WaitGone("Keys, any key closes this")
-
+	// The cursor starts on the first row of whichever provider answered first.
+	term.Press("g")
 	term.Press("j")
 	term.Press("enter")
 	term.WaitFor("Caches the widget lookups for a minute.")

@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
-	"os/exec"
+	"os"
 	"strings"
 
 	"github.com/datapointchris/gotermstyle"
 	"github.com/spf13/cobra"
 
+	"github.com/datapointchris/prs/internal/board"
 	"github.com/datapointchris/prs/internal/config"
 )
 
@@ -23,7 +24,7 @@ func configCommand() *cobra.Command {
 		Long: `Print the config file's path, $XDG_CONFIG_HOME/prs/config.yml, whether or not it
 exists. The file is YAML:
 
-  registry: ~/repos.json
+  repos_registry: ~/repos.json
   window_actions:
     - key: r
       label: claude review
@@ -33,8 +34,10 @@ exists. The file is YAML:
       window: "review {repo} #{number}"
       command: claude '/review-pr {number}'
 
-registry names the repo registry, a JSON file of repos, each with a name, an owner, a
-path, a status and optionally a provider. Each window action is a key that runs its
+repos_registry names the repo registry, a JSON file of repos, each with a name, an owner,
+a path, a status and optionally a provider. PRS_REPOS_REGISTRY names it ahead of the
+file, and with neither prs reads $XDG_DATA_HOME/prs/repos.json. Each window action is a
+key that runs its
 command in a new tmux window in the pull request's checkout. needs are the programs it
 runs, and a machine missing one is not offered the key. {number}, {repo} and {slug} are
 filled in. Quote a value holding " #", which YAML otherwise reads as a comment.`,
@@ -59,25 +62,21 @@ filled in. Quote a value holding " #", which YAML otherwise reads as a comment.`
 			}
 			pal := gotermstyle.PaletteFor(cmd.OutOrStdout())
 			out := cmd.OutOrStdout()
-			source := "the config file"
+			file := cfg.File
 			if !cfg.Exists {
-				source = "nothing: the file is not there"
+				file += pal.Paint(gotermstyle.CodeYellow, "  not there")
 			}
 			registry := cfg.Registry
-			if registry == "" {
-				registry = pal.Paint(gotermstyle.CodeRed, "unset")
+			if _, err := os.Stat(registry); err != nil {
+				registry += pal.Paint(gotermstyle.CodeRed, "  not there")
 			}
-			_, _ = fmt.Fprintf(out, "%s  %s\n", pal.Bold("config  "), cfg.File)
-			_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("registry"), registry, source)
+			_, _ = fmt.Fprintf(out, "%s  %s\n", pal.Bold("config  "), file)
+			_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("registry"), registry, cfg.RegistryFrom)
 			for _, action := range cfg.WindowActions {
 				state := pal.Paint(gotermstyle.CodeGreen, "offered")
-				var missing []string
-				for _, program := range action.Needs {
-					if _, err := exec.LookPath(program); err != nil {
-						missing = append(missing, program)
-					}
-				}
-				if len(missing) > 0 {
+				if err := board.Refused(action); err != nil {
+					state = pal.Paint(gotermstyle.CodeRed, "refused, "+err.Error())
+				} else if missing := action.Missing(); len(missing) > 0 {
 					state = pal.Paint(gotermstyle.CodeYellow, "not offered, missing "+strings.Join(missing, ", "))
 				}
 				_, _ = fmt.Fprintf(out, "%s  %s  %s\n", pal.Bold(fmt.Sprintf("key %-4s", action.Key)), action.Label, state)

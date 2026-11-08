@@ -12,9 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/datapointchris/prs/internal/registry"
 )
 
-// PullRequest is one open pull request, in the fields and names pull-requests printed.
+// PullRequest is one open pull request, in the fields `prs tui --json` prints.
 type PullRequest struct {
 	// Provider says who hosts it. Every action but the local diff dispatches on it.
 	Provider string `json:"provider"`
@@ -88,11 +90,16 @@ func run(ctx context.Context, dir string, name string, args ...string) ([]byte, 
 	return out, "", nil
 }
 
-// Finish sets each pull request's age and checkout path, and sorts them oldest first,
-// because a backlog is a gauge and age is what it measures.
-func Finish(prs []PullRequest, paths map[string]string, now time.Time) []PullRequest {
+// Finish sets each pull request's age and its repo's checkout, and sorts them oldest
+// first, because a backlog is a gauge and age is what it measures. A slug matches in any
+// case, as GitHub matches owners and names.
+func Finish(prs []PullRequest, repos []registry.Repo, now time.Time) []PullRequest {
+	paths := make(map[string]string, len(repos))
+	for _, repo := range repos {
+		paths[strings.ToLower(repo.Slug)] = repo.Path
+	}
 	for i := range prs {
-		prs[i].Path = paths[prs[i].Slug]
+		prs[i].Path = paths[strings.ToLower(prs[i].Slug)]
 		if !prs[i].CreatedAt.IsZero() {
 			prs[i].AgeDays = int(now.Sub(prs[i].CreatedAt).Hours() / 24)
 		}

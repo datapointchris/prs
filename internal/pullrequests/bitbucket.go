@@ -14,44 +14,84 @@ import (
 )
 
 // ReadBitbucket lists each repo's open pull requests with bbkt, one call per repo, run in
-// the repo's checkout because that is how bbkt finds the repo. A repo not checked out here
-// is passed over, and one bbkt cannot list is named in the listing's notes.
-func ReadBitbucket(ctx context.Context, repos []registry.Repo) (Listing, error) {
+// the repo's checkout because that is how bbkt finds the repo.
+//
+// A repo bbkt cannot list keeps its rows from last, the previous good listing, with a note
+// saying so, so one repo's failure does not take the others' rows with it. A repo not
+// checked out here cannot be read, and the notes name it.
+func ReadBitbucket(ctx context.Context, repos []registry.Repo, last Listing) (Listing, error) {
 	if len(repos) == 0 {
 		return Listing{}, nil
 	}
 	if _, err := exec.LookPath("bbkt"); err != nil {
 		return Listing{}, errors.New("bbkt is not installed, and prs reads Bitbucket through it")
 	}
-	var listing Listing
+	var (
+		listing   Listing
+		absent    []string
+		tried     int
+		failed    int
+		lastFault string
+	)
 	for _, repo := range repos {
 		if info, err := os.Stat(repo.Path); err != nil || !info.IsDir() {
+			absent = append(absent, repo.Name)
 			continue
 		}
-		out, said, err := run(ctx, repo.Path, "bbkt", "pr", "list", "--json")
-		if err != nil {
-			listing.Notes = append(listing.Notes, fmt.Sprintf("bbkt could not list %s: %s", repo.Name, said))
+		tried++
+		prs, fault := readBitbucketRepo(ctx, repo)
+		if fault != "" {
+			failed++
+			lastFault = fault
+			listing.Notes = append(listing.Notes, fault+", so its rows are from the last read")
+			for _, pr := range last.PullRequests {
+				if pr.Slug == repo.Slug {
+					listing.PullRequests = append(listing.PullRequests, pr)
+				}
+			}
 			continue
 		}
-		var payload any
-		if err := json.Unmarshal(out, &payload); err != nil {
-			listing.Notes = append(listing.Notes, fmt.Sprintf("bbkt's answer for %s is not JSON", repo.Name))
-			continue
-		}
-		listing.PullRequests = append(listing.PullRequests, bitbucketPullRequests(repo.Name, payload)...)
+		listing.PullRequests = append(listing.PullRequests, prs...)
+	}
+	if tried > 0 && failed == tried {
+		return Listing{}, errors.New(lastFault)
+	}
+	if len(absent) > 0 {
+		listing.Notes = append(listing.Notes, "not checked out here, so not read: "+strings.Join(absent, ", "))
 	}
 	return listing, nil
 }
 
+// readBitbucketRepo is one repo's open pull requests, or what went wrong reading them.
+func readBitbucketRepo(ctx context.Context, repo registry.Repo) ([]PullRequest, string) {
+	out, said, err := run(ctx, repo.Path, "bbkt", "pr", "list", "--json")
+	if err != nil {
+		return nil, fmt.Sprintf("bbkt could not list %s: %s", repo.Name, said)
+	}
+	var payload any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return nil, fmt.Sprintf("bbkt's answer for %s is not JSON", repo.Name)
+	}
+	prs, ok := bitbucketPullRequests(repo, payload)
+	if !ok {
+		return nil, fmt.Sprintf("bbkt's answer for %s holds no list of pull requests", repo.Name)
+	}
+	return prs, ""
+}
+
 // bitbucketPullRequests maps bbkt's field names once, so nothing past here sees them. Each
-// field is read under every name bbkt has printed it as.
-func bitbucketPullRequests(repo string, payload any) []PullRequest {
-	rows, _ := payload.([]any)
-	if object, ok := payload.(map[string]any); ok {
-		rows, _ = object["values"].([]any)
-		if rows == nil {
-			rows, _ = object["pull_requests"].([]any)
+// field is read under every name bbkt has printed it as. It is false where the payload is
+// neither a list nor an object holding one.
+func bitbucketPullRequests(repo registry.Repo, payload any) ([]PullRequest, bool) {
+	rows, ok := payload.([]any)
+	if object, isObject := payload.(map[string]any); isObject {
+		rows, ok = object["values"].([]any)
+		if !ok {
+			rows, ok = object["pull_requests"].([]any)
 		}
+	}
+	if !ok {
+		return nil, false
 	}
 	prs := make([]PullRequest, 0, len(rows))
 	for _, entry := range rows {
@@ -62,7 +102,7 @@ func bitbucketPullRequests(repo string, payload any) []PullRequest {
 		number, _ := first(row, "id", "number").(float64)
 		draft, _ := row["draft"].(bool)
 		prs = append(prs, PullRequest{
-			Provider: registry.Bitbucket, Repo: repo, Slug: repo,
+			Provider: registry.Bitbucket, Repo: repo.Name, Slug: repo.Slug,
 			Number: int(number), Title: text(row["title"]),
 			Author: text(first(row, "author.user.name", "author.nickname")),
 			Body:   text(row["description"]),
@@ -74,7 +114,7 @@ func bitbucketPullRequests(repo string, payload any) []PullRequest {
 			// the type. The diff counts stay null too, because the listing carries none.
 		})
 	}
-	return prs
+	return prs, true
 }
 
 // first is the value at the first of these dotted paths that holds one. A number in a

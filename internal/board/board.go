@@ -4,6 +4,7 @@ package board
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/datapointchris/gotermboard"
@@ -17,8 +18,9 @@ import (
 // View is the board's one tab, the name --view takes.
 const View = "pull-requests"
 
-// readEvery is how often each provider is read while the board is open. One GitHub read
-// costs 2 of the 5,000 GraphQL points an hour, so a minute spends 120.
+// readEvery is how often each provider is read while the board is open. A GitHub read is
+// one GraphQL request, whose cost `rateLimit { cost }` on the query reports, and a read a
+// minute stays well inside GitHub's hourly allowance.
 const readEvery = time.Minute
 
 // Board is the open pull requests of the repos a registry names, read from each provider
@@ -26,8 +28,7 @@ const readEvery = time.Minute
 type Board struct {
 	registry string
 	sources  []*gotermboard.Source[pullrequests.Listing]
-	// paths is each repo's checkout, by slug.
-	paths    map[string]string
+	repos    []registry.Repo
 	renderer *markdown.Renderer
 	actions  []gotermboard.Action
 	// shown is the last frame's pull requests by key, for a key to find the cursor's.
@@ -35,37 +36,34 @@ type Board struct {
 }
 
 // New is a board over the repos read from the registry at registryPath, with the window
-// actions the config adds.
-func New(registryPath string, repos []registry.Repo, windows []config.WindowAction) *Board {
+// actions the config adds. It refuses a window action on a key the board already binds.
+func New(registryPath string, repos []registry.Repo, windows []config.WindowAction) (*Board, error) {
+	for _, window := range windows {
+		if err := Refused(window); err != nil {
+			return nil, fmt.Errorf("window action %q: %w", window.Label, err)
+		}
+	}
 	b := &Board{
 		registry: registryPath,
-		paths:    map[string]string{},
+		repos:    repos,
 		renderer: markdown.New(nil),
 		shown:    map[string]pullrequests.PullRequest{},
 	}
-	for _, repo := range repos {
-		b.paths[repo.Slug] = repo.Path
-	}
-	readers := []struct {
-		name string
-		read func(context.Context, []registry.Repo) (pullrequests.Listing, error)
-	}{
-		{registry.GitHub, pullrequests.ReadGitHub},
-		{registry.Bitbucket, pullrequests.ReadBitbucket},
-	}
-	for _, reader := range readers {
-		hosted := registry.Hosted(repos, reader.name)
+	for _, provider := range pullrequests.Providers {
+		hosted := registry.Hosted(repos, provider.Name)
 		if len(hosted) == 0 {
 			continue
 		}
-		b.sources = append(b.sources, gotermboard.NewSource(reader.name, readEvery,
+		var source *gotermboard.Source[pullrequests.Listing]
+		source = gotermboard.NewSource(provider.Name, readEvery,
 			func(ctx context.Context) (pullrequests.Listing, string, error) {
-				listing, err := reader.read(ctx, hosted)
+				listing, err := provider.Read(ctx, hosted, source.Value())
 				return listing, listing.Note(), err
-			}))
+			})
+		b.sources = append(b.sources, source)
 	}
 	b.actions = b.keyTable(windows)
-	return b
+	return b, nil
 }
 
 // Sources is gotermboard.Board's.
@@ -86,7 +84,7 @@ func (b *Board) pullRequests(now time.Time) []pullrequests.PullRequest {
 	for _, source := range b.sources {
 		prs = append(prs, source.Value().PullRequests...)
 	}
-	return pullrequests.Finish(prs, b.paths, now)
+	return pullrequests.Finish(prs, b.repos, now)
 }
 
 func (b *Board) statuses() []gotermboard.Status {
@@ -95,6 +93,17 @@ func (b *Board) statuses() []gotermboard.Status {
 		statuses[i] = source.Status()
 	}
 	return statuses
+}
+
+// Faults names each provider whose newest read failed, with why.
+func (b *Board) Faults() []string {
+	var faults []string
+	for _, status := range b.statuses() {
+		if status.Fault != "" {
+			faults = append(faults, status.Name+": "+status.Fault)
+		}
+	}
+	return faults
 }
 
 // unread says no provider has answered yet.
@@ -133,7 +142,7 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 func (b *Board) emptyReason() string {
 	switch {
 	case len(b.sources) == 0:
-		return "The registry names no active repo on GitHub or Bitbucket."
+		return "The registry names no active repo."
 	case b.unread():
 		return "Reading the open pull requests."
 	}

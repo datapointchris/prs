@@ -13,19 +13,12 @@ import (
 	"github.com/datapointchris/prs/internal/registry"
 )
 
-// githubSearch is GraphQL rather than `gh search prs`, whose fields carry no head or base
-// branch. The other way, `gh pr list` per repo, costs one request per repo.
-//
-// Two searches under aliases go in one request. owned is every open pull request on a
-// repo the registry's owners hold, whoever opened it, which is what admits a bot's or a
-// contributor's. mine is what the viewer authored. owned already covers every registry
-// repo, so mine adds a row only once owned passes its 100-node page.
-const githubSearch = `
-query($mine: String!, $owned: String!) {
-  mine: search(query: $mine, type: ISSUE, first: 100) { ...PullRequests }
-  owned: search(query: $owned, type: ISSUE, first: 100) { ...PullRequests }
-}
+// reposPerSearch is how many repos one search names. Each search has its own page of 100,
+// so a few busy repos fill their own page rather than every repo's.
+const reposPerSearch = 20
 
+// githubFields is what each search reads of a pull request.
+const githubFields = `
 fragment PullRequests on SearchResultItemConnection {
   issueCount
   nodes {
@@ -96,29 +89,36 @@ type githubNode struct {
 	} `json:"repository"`
 }
 
-// githubSearches is the query string behind each alias. GitHub ORs repeated user:
-// qualifiers, and user: matches an organization as well as a person.
-func githubSearches(repos []registry.Repo) map[string]string {
-	var owners []string
-	for _, repo := range repos {
-		if !slices.Contains(owners, repo.Owner) {
-			owners = append(owners, repo.Owner)
-		}
+// githubSearches names each search's repos with repo: qualifiers, which GitHub ORs, so
+// GitHub answers only for the registry's repos and no other repo of an owner's takes a
+// place on the page.
+func githubSearches(repos []registry.Repo) []string {
+	slugs := make([]string, len(repos))
+	for i, repo := range repos {
+		slugs[i] = "repo:" + repo.Slug
 	}
-	slices.Sort(owners)
-	qualifiers := make([]string, len(owners))
-	for i, owner := range owners {
-		qualifiers[i] = "user:" + owner
+	slices.Sort(slugs)
+	var searches []string
+	for chunk := range slices.Chunk(slugs, reposPerSearch) {
+		searches = append(searches, "is:pr is:open "+strings.Join(chunk, " "))
 	}
-	return map[string]string{
-		"mine":  "author:@me is:pr is:open",
-		"owned": "is:pr is:open " + strings.Join(qualifiers, " "),
-	}
+	return searches
 }
 
-// ReadGitHub is every open pull request on the registry owners' repos, plus every one the
-// viewer authored, kept to the repos the registry names.
-func ReadGitHub(ctx context.Context, repos []registry.Repo) (Listing, error) {
+// githubQuery is one GraphQL request holding a search per alias, s0 onward. GraphQL rather
+// than `gh search prs`, whose fields carry no head or base branch, and one request rather
+// than `gh pr list`'s one per repo.
+func githubQuery(searches int) string {
+	var variables, aliases strings.Builder
+	for i := range searches {
+		fmt.Fprintf(&variables, "$s%d: String!, ", i)
+		fmt.Fprintf(&aliases, "  s%d: search(query: $s%d, type: ISSUE, first: 100) { ...PullRequests }\n", i, i)
+	}
+	return fmt.Sprintf("query(%s) {\n%s}\n%s", strings.TrimSuffix(variables.String(), ", "), aliases.String(), githubFields)
+}
+
+// ReadGitHub is every open pull request on the registry's GitHub repos, in one request.
+func ReadGitHub(ctx context.Context, repos []registry.Repo, _ Listing) (Listing, error) {
 	if len(repos) == 0 {
 		return Listing{}, nil
 	}
@@ -126,49 +126,41 @@ func ReadGitHub(ctx context.Context, repos []registry.Repo) (Listing, error) {
 		return Listing{}, errors.New("gh is not installed, and prs reads GitHub through it")
 	}
 	searches := githubSearches(repos)
-	args := []string{"api", "graphql", "-f", "query=" + githubSearch}
-	for _, alias := range []string{"mine", "owned"} {
-		args = append(args, "-f", alias+"="+searches[alias])
+	args := []string{"api", "graphql", "-f", "query=" + githubQuery(len(searches))}
+	for i, search := range searches {
+		args = append(args, "-f", fmt.Sprintf("s%d=%s", i, search))
 	}
 	out, said, err := run(ctx, "", "gh", args...)
 	if err != nil {
-		return Listing{}, fmt.Errorf("gh could not list pull requests (check gh auth status): %s", said)
+		// gh says auth when its login is the cause. Otherwise the cause is GitHub's answer,
+		// and a hint at the login would send the reader the wrong way.
+		if strings.Contains(strings.ToLower(said), "auth") || strings.Contains(said, "401") {
+			return Listing{}, fmt.Errorf("gh is not logged in to GitHub (gh auth status says more): %s", said)
+		}
+		return Listing{}, fmt.Errorf("gh could not list pull requests: %s", said)
 	}
 	var answer githubAnswer
 	if err := json.Unmarshal(out, &answer); err != nil {
 		return Listing{}, fmt.Errorf("reading gh's answer: %w", err)
 	}
-	return githubListing(answer, searches, repos), nil
+	return githubListing(answer, len(searches)), nil
 }
 
-// githubListing keeps each node the registry names, once.
-//
-// The filter matches owner/name against nameWithOwner, never the basename. mine covers all
-// of GitHub, so a pull request the viewer authored upstream in a project sharing a name
-// with a registry repo would otherwise pass, and take that repo's checkout.
-func githubListing(answer githubAnswer, searches map[string]string, repos []registry.Repo) Listing {
+// githubListing is every pull request the searches found, and a note for each search whose
+// matches ran past its page.
+func githubListing(answer githubAnswer, searches int) Listing {
 	var listing Listing
-	var nodes []githubNode
-	for _, alias := range []string{"mine", "owned"} {
-		connection := answer.Data[alias]
+	for i := range searches {
+		connection := answer.Data[fmt.Sprintf("s%d", i)]
 		if connection.IssueCount > len(connection.Nodes) {
-			listing.Notes = append(listing.Notes, fmt.Sprintf("%q matched %d and only the first %d are listed",
-				searches[alias], connection.IssueCount, len(connection.Nodes)))
+			listing.Notes = append(listing.Notes, fmt.Sprintf("%d of %d open pull requests on one set of repos are listed",
+				len(connection.Nodes), connection.IssueCount))
 		}
-		nodes = append(nodes, connection.Nodes...)
-	}
-	wanted := map[string]bool{}
-	for _, repo := range repos {
-		wanted[repo.Slug] = true
-	}
-	// A pull request opened on the viewer's own repo matches both searches.
-	listed := map[string]bool{}
-	for _, node := range nodes {
-		if node.Number == nil || !wanted[node.Repository.NameWithOwner] || listed[node.URL] {
-			continue
+		for _, node := range connection.Nodes {
+			if node.Number != nil {
+				listing.PullRequests = append(listing.PullRequests, githubPullRequest(node))
+			}
 		}
-		listed[node.URL] = true
-		listing.PullRequests = append(listing.PullRequests, githubPullRequest(node))
 	}
 	return listing
 }

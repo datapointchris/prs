@@ -17,7 +17,6 @@ import (
 
 	"github.com/datapointchris/prs/internal/config"
 	"github.com/datapointchris/prs/internal/pullrequests"
-	"github.com/datapointchris/prs/internal/registry"
 )
 
 // commandTimeout bounds a client a key runs while the board waits, such as gh opening the
@@ -27,6 +26,29 @@ const commandTimeout = 30 * time.Second
 // Actions is gotermboard.Keyed's. The board's keys sit ahead of the table's, so the footer
 // and the ? overlay list them first.
 func (b *Board) Actions() []gotermboard.Action { return b.actions }
+
+// tableKeys are the keys gotermboard's own table binds, with tab and shift+tab, which cycle
+// tabs, and esc, which backs out of whatever is open. gotermboard does not export its
+// table, so this list follows it by hand.
+var tableKeys = []string{
+	"j", "down", "k", "up", "]", "[", "g", "home", "G", "end", "ctrl+d", "pgdown", "ctrl+u", "pgup",
+	"enter", "space", "?", "q", "ctrl+c", "J", "K", "v", "f", "p", "/", "R",
+	"tab", "shift+tab", "esc",
+}
+
+// Refused says why a window action cannot have its key, and is nil where the key is free.
+// A board's key sits ahead of the table's, so a window action on a bound key would take it.
+func Refused(window config.WindowAction) error {
+	for _, action := range new(Board).keyTable(nil) {
+		if slices.Contains(action.Keys, window.Key) {
+			return fmt.Errorf("key %q is prs's own, for %s", window.Key, action.Label)
+		}
+	}
+	if slices.Contains(tableKeys, window.Key) {
+		return fmt.Errorf("key %q is one the board's table binds", window.Key)
+	}
+	return nil
+}
 
 // keyTable is every key prs adds, in the order ? lists them: reading first, then the window
 // actions the config adds, then what changes a pull request, so merge is listed last.
@@ -43,7 +65,7 @@ func (b *Board) keyTable(windows []config.WindowAction) []gotermboard.Action {
 		{Keys: []string{"p"}, Label: "page and comments: GitHub's page and every comment, in a pager in a tmux window", Run: b.onCursor(b.page)},
 	}
 	for _, window := range windows {
-		if missing := missingPrograms(window.Needs); len(missing) > 0 {
+		if len(window.Missing()) > 0 {
 			continue
 		}
 		label := window.Label
@@ -117,6 +139,10 @@ func (b *Board) onCursor(act func(pullrequests.PullRequest) (string, error)) fun
 // nvim listens on a socket named for the window, so another program in the window can ask
 // it what is under the cursor.
 func (b *Board) diff(pr pullrequests.PullRequest) (string, error) {
+	provider, err := pullrequests.ProviderOf(pr.Provider)
+	if err != nil {
+		return "", err
+	}
 	checkout, err := checkoutOf(pr)
 	if err != nil {
 		return "", err
@@ -129,11 +155,7 @@ func (b *Board) diff(pr pullrequests.PullRequest) (string, error) {
 		return "", fmt.Errorf("could not work out what #%d is based on", pr.Number)
 	}
 	ref := "refs/remotes/origin/pr/" + strconv.Itoa(pr.Number)
-	// Bitbucket serves no pull request refs, so its head is the source branch on origin.
-	head := fmt.Sprintf("pull/%d/head", pr.Number)
-	if pr.Provider == registry.Bitbucket {
-		head = pr.Branch
-	}
+	head := provider.Head(pr)
 	if head == "" {
 		return "", fmt.Errorf("#%d in %s names no source branch to fetch", pr.Number, pr.Repo)
 	}
@@ -155,16 +177,19 @@ func (b *Board) diff(pr pullrequests.PullRequest) (string, error) {
 	return "opened " + name + " in a tmux window", nil
 }
 
-// page is GitHub's own rendering of the pull request and its comments, which the listing
-// does not carry. GH_FORCE_TTY makes gh render the page into a pager rather than print
-// key: value lines.
+// page is the provider's own rendering of the pull request and its comments, which the
+// listing does not carry, in a pager.
 func (b *Board) page(pr pullrequests.PullRequest) (string, error) {
-	if pr.Provider != registry.GitHub {
-		return "", fmt.Errorf("the page is GitHub's, and #%d is on %s", pr.Number, pr.Provider)
+	provider, err := pullrequests.ProviderOf(pr.Provider)
+	if err != nil {
+		return "", err
+	}
+	if provider.Page == nil {
+		return "", fmt.Errorf("prs has no page for a pull request on %s; o opens it in the browser", pr.Provider)
 	}
 	name := fmt.Sprintf("page %s #%d", pr.Repo, pr.Number)
-	command := fmt.Sprintf("GH_FORCE_TTY=$(tput cols) gh pr view %d --repo %s --comments | less -R", pr.Number, quote(pr.Slug))
-	if err := openWindow(name, command, "", "gh", "less"); err != nil {
+	command, needs := provider.Page(pr)
+	if err := openWindow(name, command, "", needs...); err != nil {
 		return "", err
 	}
 	return "opened " + name + " in a tmux window", nil
@@ -181,30 +206,29 @@ func (b *Board) windowAction(window config.WindowAction) func(pullrequests.PullR
 		if err != nil {
 			return "", err
 		}
-		name := config.Fill(window.Window, pr.Number, pr.Repo, pr.Slug)
-		if err := openWindow(name, config.Fill(window.Command, pr.Number, pr.Repo, pr.Slug), checkout, window.Needs...); err != nil {
+		fields := config.Fields{Number: pr.Number, Repo: pr.Repo, Slug: pr.Slug}
+		name := config.Fill(window.Window, fields)
+		if err := openWindow(name, config.Fill(window.Command, fields), checkout, window.Needs...); err != nil {
 			return "", err
 		}
 		return "opened " + name + " in a tmux window", nil
 	}
 }
 
-// browse hands the pull request's page to the browser. bbkt finds the repo from the
-// directory it runs in, so a Bitbucket pull request needs its checkout.
+// browse hands the pull request's page to the browser, through the provider's client.
 func (b *Board) browse(pr pullrequests.PullRequest) (string, error) {
-	var cmd *exec.Cmd
+	provider, err := pullrequests.ProviderOf(pr.Provider)
+	if err != nil {
+		return "", err
+	}
+	argv, inCheckout := provider.Browse(pr)
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	switch pr.Provider {
-	case registry.GitHub:
-		cmd = exec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(pr.Number), "--repo", pr.Slug, "--web")
-	default:
-		checkout, err := checkoutOf(pr)
-		if err != nil {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if inCheckout {
+		if cmd.Dir, err = checkoutOf(pr); err != nil {
 			return "", err
 		}
-		cmd = exec.CommandContext(ctx, "bbkt", "pr", "open", strconv.Itoa(pr.Number))
-		cmd.Dir = checkout
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("%s could not open #%d: %s", cmd.Args[0], pr.Number, lastLine(out, err))
@@ -244,7 +268,7 @@ func openWindow(name, command, dir string, needs ...string) error {
 	if os.Getenv("TMUX") == "" {
 		return errors.New("this opens a tmux window, and prs is not running inside tmux")
 	}
-	if missing := missingPrograms(append([]string{"tmux"}, needs...)); len(missing) > 0 {
+	if missing := config.MissingPrograms(append([]string{"tmux"}, needs...)); len(missing) > 0 {
 		return fmt.Errorf("not installed here: %s, and the window would open and die without it", strings.Join(missing, ", "))
 	}
 	args := []string{"new-window", "-n", name}
@@ -257,16 +281,6 @@ func openWindow(name, command, dir string, needs ...string) error {
 		return fmt.Errorf("tmux could not open %s: %s", name, lastLine(out, err))
 	}
 	return nil
-}
-
-func missingPrograms(programs []string) []string {
-	var missing []string
-	for _, program := range programs {
-		if _, err := exec.LookPath(program); err != nil {
-			missing = append(missing, program)
-		}
-	}
-	return missing
 }
 
 // checkoutOf is the pull request's checkout on this disk, which the diff, a window action
