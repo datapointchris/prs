@@ -30,8 +30,40 @@ const (
 // synthesisLabel is the reviewer label of the review that names the causes findings share.
 const synthesisLabel = "synthesis"
 
+// Section is one finding section: the name a finding gives it, the heading a review writes
+// over it, and whether a finding in it is a defect the pull request should not merge with.
+type Section struct {
+	Name     string
+	Heading  string
+	Blocking bool
+}
+
 // Sections are the finding sections in the order a review writes them.
-var Sections = []string{"correctness", "design", "prose"}
+var Sections = []Section{
+	{Name: "correctness", Heading: "Correctness", Blocking: true},
+	{Name: "design", Heading: "Design and architecture"},
+	{Name: "prose", Heading: "Prose"},
+}
+
+// SectionOf is the section named name and its place in Sections. A name Sections does not
+// hold is headed by itself and placed after them all.
+func SectionOf(name string) (Section, int) {
+	if at := slices.IndexFunc(Sections, func(s Section) bool { return s.Name == name }); at >= 0 {
+		return Sections[at], at
+	}
+	heading := strings.TrimSpace(strings.ReplaceAll(name, "_", " "))
+	if heading == "" {
+		heading = "No section"
+	}
+	return Section{Name: name, Heading: strings.ToUpper(heading[:1]) + heading[1:]}, len(Sections)
+}
+
+// The round record's statuses this package tells apart. A reviewer whose status is neither
+// did not run, or ran and could not post.
+const (
+	ran     = "ran"
+	skipped = "skipped"
+)
 
 // Rounds is every review round a pull request carries.
 type Rounds struct {
@@ -41,6 +73,10 @@ type Rounds struct {
 	Earlier []Round
 	// Whole are the posts no round could take, oldest first, each shown as it was written.
 	Whole []Post
+	// CommentsCut says the detail read holds only the newest of the pull request's comments,
+	// so a round comment older than those is not read, and a round lacking one may have
+	// finished.
+	CommentsCut bool
 }
 
 // Round is one round's posts.
@@ -108,17 +144,20 @@ type Duplicate struct {
 type Finish struct {
 	At  time.Time
 	URL string
-	// Absent is each reviewer its round record names as not having run.
-	Absent []Absent
+	// Reviewers is what became of each reviewer its round record names, in the record's order.
+	Reviewers []Outcome
 	// Unread is why its round record could not be read, where it could not.
 	Unread string
 	Body   string
 }
 
-// Absent is a reviewer that did not run, and why, in the round record's words.
-type Absent struct {
-	Label string
-	Why   string
+// Outcome is what became of one reviewer in a round, in the round record's words. Status is
+// ran, skipped, not run or not posted, and Why says why where it did not run, or the status
+// where the record gives no reason.
+type Outcome struct {
+	Label  string
+	Status string
+	Why    string
 }
 
 // Post is a review or comment carrying a round's marker that no round could take.
@@ -133,16 +172,20 @@ type Post struct {
 	Body     string
 	// Why is why no round took it.
 	Why string
+	// Outsider says its author is neither an app on the repo nor someone who can write to it,
+	// so the post says nothing about the pull request's rounds.
+	Outsider bool
 }
 
 // Count is how many findings a round's reviewers raised in one section.
 type Count struct {
-	Section  string
+	Section  Section
 	Findings int
 }
 
 // Read is every round the pull request's reviews and comments carry. A post with no marker
-// is not a round's, and is left out.
+// is not a round's, and is left out. A marked post by an outsider is kept whole, because
+// anyone who can comment can open a post with a round's marker.
 func Read(detail pullrequests.Detail) Rounds {
 	numbered := map[int]*Round{}
 	var whole []Post
@@ -159,6 +202,9 @@ func Read(detail pullrequests.Detail) Rounds {
 		}
 		post := Post{Marker: m.name + " " + m.version, Reviewer: m.pairs["reviewer"], Author: review.Author, At: review.SubmittedAt, URL: review.URL, Body: review.Body}
 		number, why := m.placed(reviewMarker)
+		if outsider := outsiderWhy(review.Author, review.AuthorType, review.AuthorAssociation); outsider != "" {
+			post.Outsider, why = true, outsider
+		}
 		if why != "" {
 			post.Why = why
 			whole = append(whole, post)
@@ -179,9 +225,14 @@ func Read(detail pullrequests.Detail) Rounds {
 			continue
 		}
 		at := comment.CreatedAt
+		post := Post{Marker: m.name + " " + m.version, Reviewer: m.pairs["reviewer"], Author: comment.Author, At: &at, URL: comment.URL, Body: comment.Body}
 		number, why := m.placed(roundMarker)
+		if outsider := outsiderWhy(comment.Author, comment.AuthorType, comment.AuthorAssociation); outsider != "" {
+			post.Outsider, why = true, outsider
+		}
 		if why != "" {
-			whole = append(whole, Post{Marker: m.name + " " + m.version, Reviewer: m.pairs["reviewer"], Author: comment.Author, At: &at, URL: comment.URL, Body: comment.Body, Why: why})
+			post.Why = why
+			whole = append(whole, post)
 			continue
 		}
 		round := place(number)
@@ -190,7 +241,7 @@ func Read(detail pullrequests.Detail) Rounds {
 			round.Head = m.pairs["head"]
 		}
 	}
-	var rounds Rounds
+	rounds := Rounds{CommentsCut: detail.CommentCount > len(detail.Comments)}
 	for _, number := range slices.Backward(slices.Sorted(maps.Keys(numbered))) {
 		round := numbered[number]
 		if round.Head == "" {
@@ -216,17 +267,67 @@ func (r Round) Counts() []Count {
 			by[finding.Section]++
 		}
 	}
-	var counts []Count
-	for _, section := range Sections {
-		if by[section] > 0 {
-			counts = append(counts, Count{Section: section, Findings: by[section]})
-		}
-		delete(by, section)
+	counts := make([]Count, 0, len(by))
+	for _, name := range slices.Sorted(maps.Keys(by)) {
+		section, _ := SectionOf(name)
+		counts = append(counts, Count{Section: section, Findings: by[name]})
 	}
-	for _, section := range slices.Sorted(maps.Keys(by)) {
-		counts = append(counts, Count{Section: section, Findings: by[section]})
-	}
+	slices.SortStableFunc(counts, func(a, b Count) int {
+		_, at := SectionOf(a.Section.Name)
+		_, bt := SectionOf(b.Section.Name)
+		return at - bt
+	})
 	return counts
+}
+
+// Skipped is each reviewer the round comment names as skipped on purpose, and Missed each it
+// names as not having run or not having posted. Both are empty before the round comment posts.
+func (r Round) Skipped() []Outcome {
+	return r.outcomes(func(status string) bool { return status == skipped })
+}
+
+func (r Round) Missed() []Outcome {
+	return r.outcomes(func(status string) bool { return status != ran && status != skipped })
+}
+
+func (r Round) outcomes(kept func(status string) bool) []Outcome {
+	if r.Finish == nil {
+		return nil
+	}
+	var outcomes []Outcome
+	for _, outcome := range r.Finish.Reviewers {
+		if kept(outcome.Status) {
+			outcomes = append(outcomes, outcome)
+		}
+	}
+	return outcomes
+}
+
+// NoneRan says the round comment names the round's reviewers and none of them ran.
+func (r Round) NoneRan() bool {
+	return r.Finish != nil && len(r.Finish.Reviewers) > 0 &&
+		!slices.ContainsFunc(r.Finish.Reviewers, func(outcome Outcome) bool { return outcome.Status == ran })
+}
+
+// Unread is each review whose findings block could not be read.
+func (r Round) Unread() []Review {
+	return slices.DeleteFunc(slices.Clone(r.Reviews), func(review Review) bool { return review.Unread == "" })
+}
+
+// Bodies is the body of each of the round's posts: its reviews, its synthesis and its round
+// comment.
+func (r Round) Bodies() []string {
+	var bodies []string
+	for _, review := range r.Reviews {
+		bodies = append(bodies, review.Body)
+	}
+	if r.Synthesis != nil {
+		bodies = append(bodies, r.Synthesis.Body)
+	}
+	if r.Finish != nil {
+		bodies = append(bodies, r.Finish.Body)
+	}
+	return bodies
 }
 
 // PostedAt is when the round's newest post landed, and zero where none says when.
@@ -259,17 +360,17 @@ func (rs Rounds) FinishedAt() *time.Time {
 	return &rs.Newest.Finish.At
 }
 
-// WholeIsNewest says a post no round could take landed after every post of the newest round,
-// so the newest review on the pull request is one this package cannot count.
+// WholeIsNewest says a post no round could take, by someone other than an outsider, landed
+// after every post of the newest round, so the newest review on the pull request is one this
+// package cannot count.
 func (rs Rounds) WholeIsNewest() bool {
-	if len(rs.Whole) == 0 {
-		return false
+	for _, post := range slices.Backward(rs.Whole) {
+		if post.Outsider {
+			continue
+		}
+		return rs.Newest == nil || post.At == nil || post.At.After(rs.Newest.PostedAt())
 	}
-	if rs.Newest == nil {
-		return true
-	}
-	last := rs.Whole[len(rs.Whole)-1].At
-	return last == nil || last.After(rs.Newest.PostedAt())
+	return false
 }
 
 // marker is a post's opening line, `<!-- <name> <version> key=value … -->`, its pairs by key.
@@ -367,46 +468,52 @@ func finishOf(comment pullrequests.Comment) *Finish {
 		return f
 	}
 	for _, reviewer := range record.Reviewers {
-		if reviewer.Status != "ran" {
-			why := reviewer.Why
-			if why == "" {
-				why = reviewer.Status
-			}
-			f.Absent = append(f.Absent, Absent{Label: reviewer.Label, Why: why})
+		why := reviewer.Why
+		if why == "" {
+			why = reviewer.Status
 		}
+		f.Reviewers = append(f.Reviewers, Outcome{Label: reviewer.Label, Status: reviewer.Status, Why: why})
 	}
 	return f
 }
 
-// jsonBlock decodes the JSON fence in the post's last collapsed block, which every post of a
-// round closes with. A fence opens with three or more backticks and json, and closes on a line
-// of the same backticks, so a body quoting a shorter fence stays inside it.
-func jsonBlock(body string, into any) error {
-	at := strings.LastIndex(body, "<details>")
-	if at < 0 {
-		return errors.New("it has no collapsed block")
+// outsiderWhy is why a marked post's author cannot be one a round's posts come from, and
+// empty where it can. A round posts as an app installed on the repo, which GitHub names a
+// Bot, or as someone who can write to the repo.
+func outsiderWhy(author, authorType, association string) string {
+	if authorType == "Bot" || slices.Contains([]string{"OWNER", "MEMBER", "COLLABORATOR"}, association) {
+		return ""
 	}
-	var fence string
-	var held []string
-	for line := range strings.Lines(body[at:]) {
+	if author == "" {
+		author = "a deleted account"
+	}
+	return author + " is neither an app on the repo nor someone who can write to it"
+}
+
+// jsonBlock decodes the last json fence in the post, which sits in the collapsed block every
+// post of a round closes with. A fence opens on a line of three or more backticks and json,
+// and closes on a line of the same backticks. JSON escapes a newline inside a string, so no
+// line of the block's own text can open a fence, whatever a finding quotes.
+func jsonBlock(body string, into any) error {
+	lines := slices.Collect(strings.Lines(body))
+	opener, fence := -1, ""
+	for i, line := range lines {
 		bare := strings.TrimRight(line, " \t\r\n")
-		if fence == "" {
-			ticks := len(bare) - len(strings.TrimLeft(bare, "`"))
-			if ticks >= 3 && strings.TrimSpace(bare[ticks:]) == "json" {
-				fence = bare[:ticks]
-			}
-			continue
+		ticks := len(bare) - len(strings.TrimLeft(bare, "`"))
+		if ticks >= 3 && strings.TrimSpace(bare[ticks:]) == "json" {
+			opener, fence = i, bare[:ticks]
 		}
-		if bare == fence {
-			if err := json.Unmarshal([]byte(strings.Join(held, "")), into); err != nil {
+	}
+	if opener < 0 {
+		return errors.New("it holds no json fence")
+	}
+	for i := opener + 1; i < len(lines); i++ {
+		if strings.TrimRight(lines[i], " \t\r\n") == fence {
+			if err := json.Unmarshal([]byte(strings.Join(lines[opener+1:i], "")), into); err != nil {
 				return fmt.Errorf("its JSON block does not parse: %w", err)
 			}
 			return nil
 		}
-		held = append(held, line)
-	}
-	if fence == "" {
-		return errors.New("its collapsed block holds no json fence")
 	}
 	return errors.New("its json fence never closes")
 }

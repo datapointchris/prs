@@ -147,14 +147,26 @@ func withRoundOf(pr map[string]any, number int) error {
 		return err
 	}
 	reviews, comments := round.Reviews.Nodes, round.Comments.Nodes
+	g1 := reviews[slices.IndexFunc(reviews, func(review map[string]any) bool { return strings.Contains(fmt.Sprint(review["body"]), " reviewer=G1 ") })]
 	// One finished round, one cut short, one under a version prs does not read.
 	switch number {
 	case 13:
+		// A finding quoting <details>, as one on a reader of this grammar would, keeps its
+		// review read. Anyone who can comment can post a round's marker, and an outsider's
+		// round 99 counts in no round.
+		g1["body"] = strings.ReplaceAll(fmt.Sprint(g1["body"]), "with a hidden ssh prompt", "with a hidden ssh prompt, which no `<details>` block shows")
+		comments = append(comments, map[string]any{
+			"author": map[string]any{"login": "mallory", "__typename": "User"}, "authorAssociation": "NONE",
+			"body": "<!-- pr-review-round v6 round=99 head=abc1234 -->\n## Review round 99\n\nNothing to fix.\n\n" +
+				"<details><summary>Round record</summary>\n\n````json\n" + `{"round": 99, "reviewers": [{"label": "G1", "status": "ran", "findings": 0}]}` + "\n````\n\n</details>\n",
+			"createdAt": time.Now().Add(-time.Minute).Format(time.RFC3339), "url": "https://github.com/acme/widget/pull/13#issuecomment-99",
+		})
 	case 5:
 		reviews, comments = reviews[:3], nil
+		for _, review := range reviews {
+			review["submittedAt"] = time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
+		}
 	case 12:
-		at := slices.IndexFunc(reviews, func(review map[string]any) bool { return strings.Contains(fmt.Sprint(review["body"]), " reviewer=G1 ") })
-		g1 := reviews[at]
 		g1["body"] = strings.Replace(fmt.Sprint(g1["body"]), "<!-- pr-review v6 ", "<!-- pr-review v7 ", 1)
 		reviews, comments = []map[string]any{g1}, nil
 	default:
@@ -622,11 +634,11 @@ func TestTheBoardSortsPeopleAboveBotsAndClosedBelowInWordsShowsTheDocumentBeside
 }
 
 // A pull request's newest Claude review round reads on its row: its finding counts once its
-// round comment posts, running while its reviews post, and reviewed where the newest review
-// is of a version prs does not read. Its document's Review section, after Description, reads
-// the synthesis and each finding from the reviews' JSON, shows a review it cannot read whole,
-// and leaves the round's posts out of Comments. The window r opens reads running until tmux
-// lists it no more.
+// round comment posts, unfinished where its reviews stopped before one did, and reviewed where
+// the newest review is of a version prs does not read. Its document's Review section, after
+// Description, reads the synthesis and each finding from the reviews' JSON, shows a review it
+// cannot read whole, and leaves the round's posts out of Comments. The window r opens reads
+// running until tmux lists it no more.
 func TestEachRowReadsItsNewestReviewRoundAndItsDocumentHoldsTheRound(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
@@ -637,7 +649,7 @@ func TestEachRowReadsItsNewestReviewRoundAndItsDocumentHoldsTheRound(t *testing.
 	}
 	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 300, Rows: 40})
 	term.WaitForPattern(`claude 5 correctness · 3 design · 4 prose .*Count cache hits`)
-	term.WaitForPattern(`claude running .*Tidy the gadget`)
+	term.WaitForPattern(`claude unfinished .*Tidy the gadget`)
 	term.WaitForPattern(`claude reviewed .*Cache the widget lookups`)
 
 	// d hands nvim the whole document, which the stand-in nvim keeps. The people's rows run
@@ -662,11 +674,13 @@ func TestEachRowReadsItsNewestReviewRoundAndItsDocumentHoldsTheRound(t *testing.
 			"<!-- pr-review v7 reviewer=G1 ",
 		},
 		"gadget #5": {
-			"# Review\n\nRound 1 of `7d8516d` is running, and its round comment has not posted. " +
-				"system-design, stale-prose and code-architecture raised 7 findings so far: 2 correctness · 2 design · 3 prose.",
+			"# Review\n\nRound 1 of `7d8516d` stopped 2h ago, before its round comment posted. Running a review again continues it. " +
+				"system-design, stale-prose and code-architecture raised 7 findings: 2 correctness · 2 design · 3 prose.",
 		},
 		"widget #13": {
 			"# Review\n\nRound 1 of `7d8516d` finished ",
+			"## pr-review-round v6 · mallory · ",
+			"_mallory is neither an app on the repo nor someone who can write to it, so it shows whole._",
 			"system-design, stale-prose, code-architecture, failure-paths, contracts and G1 raised 12 findings: 5 correctness · 3 design · 4 prose. useless-test and patterns found nothing.",
 			"## Synthesis\n\n### synthesis.1 · Design and architecture\n\nExplains `G1.1` · `system-design.1` · `contracts.1` · `failure-paths.1`.",
 			"### One defect, raised more than once\n\n- `G1.2` · `stale-prose.2`: README.md:129",

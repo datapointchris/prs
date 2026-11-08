@@ -114,11 +114,24 @@ is the shape of the threads file `d` hands nvim, held the same way.
   stderr and exit 1, so a caller can show why.
 - **A review round is read from the reviews and comments the detail read already holds**,
   so it costs no read of its own. A round's posts are read from the JSON block each closes
-  with, never the markdown, and a post whose marker names a version `reviewrounds.Version`
-  is not shows whole rather than read wrong. The Review section shows the newest round and
-  each post read whole, and Comments leaves exactly those out, so no post reads twice.
+  with, never the markdown, and a post whose marker names a version other than
+  `reviewrounds.Version` shows whole rather than read wrong. The Review section shows the
+  newest round and each post read whole, and Comments leaves exactly those out, so no post
+  reads twice. `reviewShows` is that one set.
+- **A round's post counts only from an app on the repo or someone who can write to it**:
+  an author GitHub types Bot, or associates as OWNER, MEMBER or COLLABORATOR. Anyone can
+  comment with a round's marker, so anyone else's marked post shows whole and moves no cell.
+- **A round with no round comment reads running only for `roundPostsWithin` after its
+  newest post**, or while a window runs one, because a round cut short looks the same and
+  is continued by running it again. After that it reads unfinished. Where the detail read
+  holds only the newest comments, it reads its counts instead, because its round comment
+  may sit outside the read.
+- **A round record's statuses stay apart.** A skipped reviewer was skipped on purpose and
+  reads as skipped. One not run or not posted counts as a gap beside the findings, and a
+  round none ran reads `claude did not run`, never as a clean one.
 - **The CLAUDE column draws only while a row fills it**, so a board on repos no round
-  reviews never has it. `claudeAt` places it after the review's.
+  reviews never has it. `rowColumns` holds every column with the cell it draws, so a
+  column's header and its cells cannot drift apart.
 - **A window marked `runs_review_round` reads running only until a round finishes after
   prs opened it.** A session that ran a round keeps its window afterwards, so one prs did
   not open reads running only where no round has finished. tmux is asked every

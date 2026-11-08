@@ -71,8 +71,8 @@ type Board struct {
 	// their windows are open, nil until ReadDetails is called inside tmux.
 	reviewActions []config.WindowAction
 	roundWindows  *roundWindows
-	// claudeShown says the frame being built draws the review round's column.
-	claudeShown bool
+	// columns are the columns the frame being built draws.
+	columns []rowColumn
 	// working is every command a key started that has not ended, oldest first.
 	working   []underWay
 	workCount int
@@ -377,7 +377,7 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 	}
 	prs := b.records(now, extra...)
 	parents := stackParents(prs)
-	b.claudeShown = b.withClaude(prs)
+	b.columns = b.drawnColumns(prs, now)
 	rows := ordered(b.hold(placedBy(prs)))
 	clear(b.shown)
 	clear(b.drawnIn)
@@ -395,7 +395,7 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 	maps.DeleteFunc(b.rounds, func(key string, _ roundsMemo) bool { return !b.listed(key) })
 	return gotermboard.Frame{
 		Strip:   b.StripAt(now),
-		Columns: frameColumns(b.claudeShown),
+		Columns: headers(b.columns),
 		Groups:  groups,
 		StartAt: b.startAt(),
 	}

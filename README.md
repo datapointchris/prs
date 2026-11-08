@@ -129,9 +129,12 @@ field it filters on drops a repo silently, and every list it prints still looks 
   passing`, `review required` and `review 2 posted` follow it. Each reads under every
   theme and under `NO_COLOR`, and the colors are the terminal's own 16.
 - **A Claude review round reads on its row.** Where one reviewed the pull request, a
-  `CLAUDE` cell after the review gives the newest round: its findings by section once the
-  round comment posts, as `claude 2 correctness · 1 design`, `claude running` while its
-  reviews post, or `claude reviewed` where the newest review is of a version prs does not
+  `CLAUDE` cell after the review gives the newest round. Once its round comment posts, the
+  cell is its findings by section, as `claude 2 correctness · 1 design`. It adds `1 not
+  run` or `1 unread` where a reviewer did not run or its review could not be read, and
+  reads `claude did not run` where none ran. Before the round comment, it reads `claude
+  running` while the reviews post, and `claude unfinished` once they have stopped for an
+  hour. It reads `claude reviewed` where the newest review is of a version prs does not
   read. The column shows only while a row fills it.
 - **A pull request whose base is another open one's branch names that one**, as `↑ #12`
   after its title. A pull request an app opened names the app.
@@ -143,10 +146,12 @@ field it filters on drops a repo silently, and every list it prints still looks 
 A pull request's document is markdown, under a line naming its repo, author and branches:
 
 - **Description** is its body, drawn as soon as the list lands.
-- **Review** is the newest Claude review round, where one reviewed it: whether it runs or
-  when it finished, its synthesis, then every reviewer's findings under a heading for their
-  section, read from each review's JSON block rather than its markdown. A line follows for
-  each earlier round. A review whose marker names a version prs does not read shows whole.
+- **Review** is the newest Claude review round, where one reviewed it or a window is
+  running one: where it stands, its synthesis, then every reviewer's findings under a
+  heading for their section, read from each review's JSON block rather than its markdown.
+  A line follows for each earlier round. A post whose marker names a version prs does not
+  read shows whole. So does a marked post by anyone other than an app on the repo or
+  someone who can write to it, and it counts in no round, because anyone can comment.
 - **Checks** is each check on its head commit and its state, those not passing first.
 - **Files** is each changed path with its lines added and removed, and says how many more
   the read left out.
@@ -158,8 +163,9 @@ A pull request's document is markdown, under a line naming its repo, author and 
   each submitted review in it, then each review thread, unresolved first. A review round's
   post the Review section shows is left out of the conversation.
 
-Review, Checks, Files and Comments fill in once the pull request's own read lands. Checks,
-Files and Comments say they are reading until then. Bitbucket's client reads no more than
+Checks, Files and Comments fill in once the pull request's own read lands, and say they
+are reading until then. Review fills in then too, except that a window running a review
+round shows it at once. Bitbucket's client reads no more than
 its listing, so a Bitbucket pull request's document has no Review, Checks, Files or
 Comments.
 

@@ -3,6 +3,7 @@ package board
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -141,22 +142,64 @@ func stateMeaning(pr pullrequests.PullRequest, state rowState) meaning {
 // words is an enum as words, CHANGES_REQUESTED as "changes requested".
 func words(enum string) string { return strings.ToLower(strings.ReplaceAll(enum, "_", " ")) }
 
-// columns carry the state, the checks, the review, the age and the sizes, then the repo and
-// the number, then the title wrapping under itself, and frameColumns adds the review round's.
-// The three diff counts each right-align in a column of their own, so the signs stack. The
-// branch and the checkout are read when acting rather than when scanning, so they sit dim
-// under the row, where f shows them.
-var columns = []gotermboard.Column{
-	{Title: "STATE"},
-	{Title: "CHECKS"},
-	{Title: "REVIEW"},
-	{Title: "AGE", Right: true},
-	{Title: "DIFF", Right: true},
-	{Right: true},
-	{Right: true},
-	{Title: "REPO", Max: repoWidth},
-	{Title: "#", Right: true},
-	{Title: "PULL REQUEST"},
+// rowColumn is one column of the board: its header, and the cell it draws on a pull request's
+// row. The last column, the title, wraps under itself and draws no cell of its own. An optional
+// column draws only while a row fills it.
+type rowColumn struct {
+	gotermboard.Column
+	cell     func(b *Board, at rowAt) gotermboard.Cell
+	optional bool
+}
+
+// rowAt is what a row's cells read: its pull request, its row state and the time.
+type rowAt struct {
+	pr    pullrequests.PullRequest
+	state rowState
+	now   time.Time
+}
+
+// rowColumns carry the state, the checks, the review, the newest Claude review round, the age
+// and the sizes, then the repo and the number, then the title wrapping under itself. The
+// round's column is optional, so a board on repos no round reviews never has it. The three
+// diff counts each right-align in a column of their own, so the signs stack. The branch and
+// the checkout are read when acting rather than when scanning, so they sit dim under the row,
+// where f shows them.
+var rowColumns = []rowColumn{
+	{Column: gotermboard.Column{Title: "STATE"}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return stateCell(at.pr, at.state) }},
+	{Column: gotermboard.Column{Title: "CHECKS"}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return checksCell(at.pr) }},
+	{Column: gotermboard.Column{Title: "REVIEW"}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return reviewCell(at.pr) }},
+	{
+		Column:   gotermboard.Column{Title: "CLAUDE"},
+		cell:     func(b *Board, at rowAt) gotermboard.Cell { return claudeCell(b.reviewOf(at.pr, at.now)) },
+		optional: true,
+	},
+	{Column: gotermboard.Column{Title: "AGE", Right: true}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return ageCell(at.pr, at.state, at.now) }},
+	{Column: gotermboard.Column{Title: "DIFF", Right: true}, cell: diffCell(0)},
+	{Column: gotermboard.Column{Right: true}, cell: diffCell(1)},
+	{Column: gotermboard.Column{Right: true}, cell: diffCell(2)},
+	{Column: gotermboard.Column{Title: "REPO", Max: repoWidth}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return repoCell(at.pr) }},
+	{Column: gotermboard.Column{Title: "#", Right: true}, cell: func(_ *Board, at rowAt) gotermboard.Cell {
+		return gotermboard.C(fmt.Sprintf("%s #%d", numberGlyph, at.pr.Number), gotermboard.Yellow)
+	}},
+	{Column: gotermboard.Column{Title: "PULL REQUEST"}},
+}
+
+// drawnColumns is rowColumns less each optional one no row of prs fills.
+func (b *Board) drawnColumns(prs []pullrequests.PullRequest, now time.Time) []rowColumn {
+	return slices.DeleteFunc(slices.Clone(rowColumns), func(column rowColumn) bool {
+		return column.optional && !slices.ContainsFunc(prs, func(pr pullrequests.PullRequest) bool {
+			return column.cell(b, rowAt{pr: pr, state: b.stateOf(pr), now: now}).Text != ""
+		})
+	})
+}
+
+// headers is each column's header.
+func headers(columns []rowColumn) []gotermboard.Column {
+	out := make([]gotermboard.Column, len(columns))
+	for i, column := range columns {
+		out[i] = column.Column
+	}
+	return out
 }
 
 // repoWidth caps the repo column, so one long name never takes the title's room.
@@ -185,19 +228,17 @@ func parentOf(pr pullrequests.PullRequest, parents map[[2]string]int) int {
 }
 
 func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now time.Time) gotermboard.Row {
-	state := b.stateOf(pr)
-	s := stateMeaning(pr, state)
-	cells := []gotermboard.Cell{gotermboard.C(stateGlyph+"  "+s.word, s.code), checksCell(pr), reviewCell(pr)}
-	if b.claudeShown {
-		cells = append(cells, claudeCell(b.reviewOf(pr)))
+	at := rowAt{pr: pr, state: b.stateOf(pr), now: now}
+	var cells []gotermboard.Cell
+	for _, column := range b.columns {
+		if column.cell != nil {
+			cells = append(cells, column.cell(b, at))
+		}
 	}
-	cells = append(cells, ageCell(pr, state, now))
-	cells = append(cells, diffCells(pr)...)
-	cells = append(cells, repoCell(pr), gotermboard.C(fmt.Sprintf("%s #%d", numberGlyph, pr.Number), gotermboard.Yellow))
 	return gotermboard.Row{
 		Key:         pr.Key(),
 		Cells:       cells,
-		WrapLast:    titleLine(pr, parentOf(pr, parents), state),
+		WrapLast:    titleLine(pr, parentOf(pr, parents), at.state),
 		Under:       gotermboard.C(identity(pr), dim),
 		Document:    b.document(pr),
 		ReaderTitle: pr.Title,
@@ -231,6 +272,12 @@ func (b *Board) stateOf(pr pullrequests.PullRequest) rowState {
 		return closed
 	}
 	return ""
+}
+
+// stateCell is the row state where it has one, and otherwise what the pull request waits on.
+func stateCell(pr pullrequests.PullRequest, state rowState) gotermboard.Cell {
+	s := stateMeaning(pr, state)
+	return gotermboard.C(stateGlyph+"  "+s.word, s.code)
 }
 
 // checksCell is the CI state.
@@ -279,6 +326,11 @@ func diffCells(pr pullrequests.PullRequest) []gotermboard.Cell {
 		gotermboard.C(addedGlyph+" "+strconv.Itoa(*pr.Additions), gotermboard.Green),
 		gotermboard.C(removedGlyph+" "+strconv.Itoa(*pr.Deletions), gotermboard.Red),
 	}
+}
+
+// diffCell is the diffCells cell at i, one to a column.
+func diffCell(i int) func(*Board, rowAt) gotermboard.Cell {
+	return func(_ *Board, at rowAt) gotermboard.Cell { return diffCells(at.pr)[i] }
 }
 
 // repoCell is the repo's bare name, dimmed where it is not cloned here, which is the repo d
@@ -384,7 +436,7 @@ type diffFrom struct {
 // markdownOf is the pull request's MarkdownDocument at now, built again only where its
 // inputs moved since the last frame drew it.
 func (b *Board) markdownOf(pr pullrequests.PullRequest, now time.Time) string {
-	detail, diff, window := b.detailOf(pr), b.diffOf(pr), b.reviewOf(pr).window
+	detail, diff, window := b.detailOf(pr), b.diffOf(pr), b.roundWindowOf(pr)
 	from := documentFrom{
 		pr: pr, minute: now.Truncate(time.Minute), roundWindow: window,
 		diff: diffFrom{readAt: diff.Diff.ReadAt, held: diff.Held, reading: diff.Reading, fault: diff.Fault, cannot: diff.Cannot},

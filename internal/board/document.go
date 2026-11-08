@@ -315,7 +315,7 @@ func commentSection(in documentInput) string {
 	if len(detail.ReviewRequests) > 0 {
 		parts = append(parts, "Asked to review: "+strings.Join(detail.ReviewRequests, ", ")+".")
 	}
-	shown := shownInReview(in.rounds)
+	shown := reviewShowsOf(in.rounds).bodies()
 	if conversation := conversationOf(detail, shown, in.now); conversation != "" {
 		parts = append(parts, "## Conversation\n\n"+conversation)
 	}
