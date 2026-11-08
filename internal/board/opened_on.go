@@ -63,9 +63,9 @@ func (b *Board) isOpenedOn(pr pullrequests.PullRequest) bool {
 	return b.openedOn != nil && b.openedOn.key == pr.Key()
 }
 
-// inListing says a provider's last good listing holds the pull request keyed key.
+// inListing says a last good listing, open or closed, holds the pull request keyed key.
 func (b *Board) inListing(key string) bool {
-	for _, source := range b.sources {
+	for _, source := range b.listingSources() {
 		if slices.ContainsFunc(source.Value().PullRequests, func(pr pullrequests.PullRequest) bool { return pr.Key() == key }) {
 			return true
 		}
@@ -81,41 +81,16 @@ func (b *Board) startAt() string {
 	return b.openedOn.key
 }
 
-// withOpenedOn adds the pull request the board opened on to the listing's rows, where its
-// own read says it is open, no listing holds it, and no key here has merged or closed it.
-func (b *Board) withOpenedOn(prs []pullrequests.PullRequest, now time.Time) []pullrequests.PullRequest {
-	named, ok := b.named()
-	if !ok || named.Standing != pullrequests.Open || b.settled[b.openedOn.key] != "" || slices.ContainsFunc(prs, b.isOpenedOn) {
-		return prs
-	}
-	return pullrequests.Finish(append(prs, named.PullRequest), b.repos, now)
-}
-
-// apart is the group above the listing's that holds the pull request the board opened on,
-// where no listing holds it and it is merged or closed, by its own read or by a key here.
-func (b *Board) apart(prs []pullrequests.PullRequest, parents map[[2]string]int, now time.Time) (gotermboard.Group, bool) {
-	named, ok := b.named()
-	if !ok || slices.ContainsFunc(prs, b.isOpenedOn) {
-		return gotermboard.Group{}, false
-	}
-	state := b.settled[b.openedOn.key]
-	if state == "" {
-		switch named.Standing {
-		case pullrequests.Open:
-			return gotermboard.Group{}, false
-		case pullrequests.Merged:
-			state = merged
-		case pullrequests.Closed:
-			state = closed
-		}
-		b.settled[b.openedOn.key] = state
-	}
-	b.shown[b.openedOn.key] = named.PullRequest
+// apart is the group above the others that holds the pull request the board opened on once
+// it is merged or closed, by its own read, a listing or a key here, so a jump to one lands
+// on it however long ago it closed. Its title is its state.
+func (b *Board) apart(pr pullrequests.PullRequest, parents map[[2]string]int, now time.Time) gotermboard.Group {
+	b.shown[pr.Key()], b.drawnIn[pr.Key()] = pr, recentlyClosed
 	return gotermboard.Group{
-		Key: "opened-on", Title: gotermboard.Line{gotermboard.C(string(state), gotermboard.Bold)},
+		Key: "opened-on", Title: gotermboard.Line{gotermboard.C(string(b.stateOf(pr)), gotermboard.Bold)},
 		Count: 1, Counted: true, Gap: true,
-		Rows: []gotermboard.Row{b.row(named.PullRequest, parents, now)},
-	}, true
+		Rows: []gotermboard.Row{b.row(pr, parents, now)},
+	}
 }
 
 // openedOnRow is the pull request the board opened on as --json prints it, and nil where
@@ -129,7 +104,7 @@ func (b *Board) openedOnRow(rows []Row, now time.Time) *Row {
 		return &rows[at]
 	}
 	row := Row{PullRequest: named.PullRequest}
-	if parent := parentOf(row.PullRequest, stackParents(b.pullRequests(now))); parent != 0 {
+	if parent := parentOf(row.PullRequest, stackParents(b.records(now))); parent != 0 {
 		row.StackedOn = &parent
 	}
 	return &row

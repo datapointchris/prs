@@ -123,8 +123,9 @@ func (s githubSearch) covers(pr PullRequest) bool {
 
 // githubSearches names the scope's repos with repo: qualifiers, which GitHub ORs, so it
 // answers only for those repos and no other repo of an owner's takes a place on the page.
-// Each owner a scope reads whole gets a search of its own.
-func githubSearches(scope Scope) []githubSearch {
+// Each owner a scope reads whole gets a search of its own. which is the qualifiers that pick
+// open or closed pull requests.
+func githubSearches(scope Scope, which string) []githubSearch {
 	slugs := make([]string, 0, len(scope.Repos))
 	for _, repo := range scope.Repos {
 		slugs = append(slugs, strings.ToLower(repo.Slug))
@@ -137,7 +138,7 @@ func githubSearches(scope Scope) []githubSearch {
 		for i, slug := range chunk {
 			qualifiers[i] = "repo:" + slug
 		}
-		searches = append(searches, githubSearch{query: "is:pr is:open " + strings.Join(qualifiers, " "), slugs: chunk})
+		searches = append(searches, githubSearch{query: "is:pr " + which + " " + strings.Join(qualifiers, " "), slugs: chunk})
 	}
 	owners := make([]string, 0, len(scope.Owners))
 	for _, owner := range scope.Owners {
@@ -145,9 +146,17 @@ func githubSearches(scope Scope) []githubSearch {
 	}
 	slices.Sort(owners)
 	for _, owner := range slices.Compact(owners) {
-		searches = append(searches, githubSearch{query: "is:pr is:open user:" + owner, owner: owner})
+		searches = append(searches, githubSearch{query: "is:pr " + which + " user:" + owner, owner: owner})
 	}
 	return searches
+}
+
+const openQualifiers = "is:open"
+
+// closedQualifiers pick the pull requests merged or closed at or after since, newest first,
+// so a page that cannot hold them all keeps the newest.
+func closedQualifiers(since time.Time) string {
+	return "is:closed closed:>=" + since.UTC().Format(time.RFC3339) + " sort:updated-desc"
 }
 
 // githubListQuery is one GraphQL request holding a search per alias, s0 onward. GraphQL
@@ -165,14 +174,24 @@ func githubListQuery(searches int) string {
 // ReadGitHub is every open pull request in the scope, in one request. A search GitHub
 // refused while others answered keeps the rows it found in last.
 func ReadGitHub(ctx context.Context, scope Scope, last Listing) (Listing, error) {
-	if scope.Empty() {
+	return readGitHub(ctx, githubSearches(scope, openQualifiers), "open", last)
+}
+
+// ReadGitHubClosed is every pull request in the scope merged or closed at or after since, in
+// one request, as ReadGitHub reads the open ones.
+func ReadGitHubClosed(ctx context.Context, scope Scope, since time.Time, last Listing) (Listing, error) {
+	return readGitHub(ctx, githubSearches(scope, closedQualifiers(since)), "closed", last)
+}
+
+// readGitHub runs the searches in one request. kind names what they find, for a note.
+func readGitHub(ctx context.Context, searches []githubSearch, kind string, last Listing) (Listing, error) {
+	if len(searches) == 0 {
 		return Listing{}, nil
 	}
 	client, host, err := githubClient(ctx)
 	if err != nil {
 		return Listing{}, err
 	}
-	searches := githubSearches(scope)
 	variables := make(map[string]any, len(searches))
 	for i, search := range searches {
 		variables[fmt.Sprintf("s%d", i)] = search.query
@@ -185,13 +204,13 @@ func ReadGitHub(ctx context.Context, scope Scope, last Listing) (Listing, error)
 	if err != nil && !errors.As(err, &refused) {
 		return Listing{}, githubFault(host, err)
 	}
-	return githubListing(searches, data, refused, last)
+	return githubListing(searches, data, refused, kind, last)
 }
 
 // githubListing is every pull request the searches found, a note for each search whose
 // matches ran past its page, and a note for each search GitHub refused, whose rows come
 // from last. It fails only where every search was refused.
-func githubListing(searches []githubSearch, data map[string]*githubConnection, refused *api.GraphQLError, last Listing) (Listing, error) {
+func githubListing(searches []githubSearch, data map[string]*githubConnection, refused *api.GraphQLError, kind string, last Listing) (Listing, error) {
 	var listing Listing
 	var faults []string
 	for i, search := range searches {
@@ -209,8 +228,8 @@ func githubListing(searches []githubSearch, data map[string]*githubConnection, r
 			continue
 		}
 		if connection.IssueCount > len(connection.Nodes) {
-			listing.Notes = append(listing.Notes, fmt.Sprintf("%d of %d open pull requests matching %q are listed",
-				len(connection.Nodes), connection.IssueCount, search.query))
+			listing.Notes = append(listing.Notes, fmt.Sprintf("%d of %d %s pull requests matching %q are listed",
+				len(connection.Nodes), connection.IssueCount, kind, search.query))
 		}
 		for _, node := range connection.Nodes {
 			if node.Number != nil {

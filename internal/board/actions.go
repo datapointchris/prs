@@ -217,7 +217,7 @@ func (b *Board) merge(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd
 		doing: fmt.Sprintf("merging %s #%d", pr.Slug, pr.Number),
 		run:   runClient(pr, "merge", argv, inCheckout),
 		done: func(m *gotermboard.Model) tea.Cmd {
-			b.settle(m, pr, merged)
+			b.closeHere(m, pr, pullrequests.Merged)
 			m.Say(fmt.Sprintf("merged %s #%d", pr.Slug, pr.Number))
 			return nil
 		},
@@ -243,7 +243,7 @@ func (b *Board) closePR(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 		doing: fmt.Sprintf("closing %s #%d", pr.Slug, pr.Number),
 		run:   runClient(pr, "close", argv, inCheckout),
 		done: func(m *gotermboard.Model) tea.Cmd {
-			b.settle(m, pr, closed)
+			b.closeHere(m, pr, pullrequests.Closed)
 			m.Say(fmt.Sprintf("closed %s #%d without merging", pr.Slug, pr.Number))
 			return nil
 		},

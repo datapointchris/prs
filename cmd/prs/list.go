@@ -21,8 +21,10 @@ func listCommand() *cobra.Command {
 		Use:   "list",
 		Short: "Print every open pull request once, as a table or as JSON",
 		Long: `list reads each provider once and prints every open pull request on the repos prs
-reads, which prs config show names, oldest first: a line saying how each read went, then
-a table of the board's columns.
+reads, which prs config show names: a line saying how each read went, then a table of the
+board's columns. Those a person opened come first, then those an app opened, each oldest
+first, as the board's groups put them. It reads no recently closed pull requests, which
+only the board shows.
 
 --json prints the rows as a JSON array instead, one object per pull request, and [] where
 there are none. cmd/prs/list.schema.json in prs's repository is that shape, and each
@@ -40,7 +42,7 @@ open pull requests otherwise print the same rows.`,
   prs list --json | jq '.[] | select(.merge_state_status == "BEHIND") | .slug'`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			b, err := loadBoard()
+			b, _, err := loadBoard()
 			if err != nil {
 				return err
 			}

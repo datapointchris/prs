@@ -1,5 +1,6 @@
-// Package board is prs's view on gotermboard: every open pull request as a row, its
-// document beside the list or a key away, and a key per action.
+// Package board is prs's view on gotermboard: every open pull request as a row, the
+// people's above the bots', those recently closed below, each one's document beside the
+// list or a key away, and a key per action.
 package board
 
 import (
@@ -31,21 +32,27 @@ type Repos struct {
 }
 
 // Board is the open pull requests of the repos a registry names, read from each provider
-// that hosts one.
+// that hosts one, and those recently merged or closed.
 type Board struct {
 	from     string
 	registry string
 	owners   []string
-	sources  []*gotermboard.Source[pullrequests.Listing]
+	// sources read each provider's open pull requests, and closedSources those merged or
+	// closed within since, where ReadClosed is called and the provider's client can say when.
+	sources       []*gotermboard.Source[pullrequests.Listing]
+	closedSources []*gotermboard.Source[pullrequests.Listing]
+	since         *pullrequests.Since
 	// scopes is what each provider's read covers, by provider name.
 	scopes   map[string]pullrequests.Scope
 	repos    []registry.Repo
 	renderer *markdown.Renderer
 	actions  []gotermboard.Action
-	// shown is the last frame's pull requests by key, for a key to find the cursor's.
-	shown map[string]pullrequests.PullRequest
-	// settled is the state a merge or close left a pull request in, by key.
-	settled map[string]rowState
+	// shown is the last frame's pull requests by key, for a key to find the cursor's, and
+	// drawnIn the section each was drawn in.
+	shown   map[string]pullrequests.PullRequest
+	drawnIn map[string]section
+	// closedHere is each pull request a key merged or closed, as the key left it, by key.
+	closedHere map[string]pullrequests.PullRequest
 	// diffed is the head commit d last fetched for a pull request, by key, which its merge
 	// pins.
 	diffed map[string]string
@@ -64,11 +71,10 @@ type Board struct {
 	// listings keeps each provider's listing on disk once KeepListings is called, and holds
 	// the last run's, which a provider's rows come from until its first read here lands.
 	listings *listingCache
-	// cursor is the key of the row under the cursor. dropped is the pull request it was on
-	// when a read stopped listing it, which the board draws, marked gone, until the cursor
-	// leaves it.
-	cursor  string
-	dropped *pullrequests.PullRequest
+	// cursor is the key of the row under the cursor, and held that row where a read moved or
+	// dropped it.
+	cursor string
+	held   *heldRow
 }
 
 // New is a board over repos, reading each provider every interval, with the window actions
@@ -80,18 +86,19 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 		}
 	}
 	b := &Board{
-		from:      repos.From,
-		registry:  repos.Registry,
-		owners:    repos.Owners,
-		repos:     repos.Repos,
-		renderer:  markdown.New(nil),
-		every:     every,
-		shown:     map[string]pullrequests.PullRequest{},
-		settled:   map[string]rowState{},
-		diffed:    map[string]string{},
-		documents: map[string]documentMemo{},
-		details:   pullrequests.NewDetails(),
-		scopes:    map[string]pullrequests.Scope{},
+		from:       repos.From,
+		registry:   repos.Registry,
+		owners:     repos.Owners,
+		repos:      repos.Repos,
+		renderer:   markdown.New(nil),
+		every:      every,
+		shown:      map[string]pullrequests.PullRequest{},
+		drawnIn:    map[string]section{},
+		closedHere: map[string]pullrequests.PullRequest{},
+		diffed:     map[string]string{},
+		documents:  map[string]documentMemo{},
+		details:    pullrequests.NewDetails(),
+		scopes:     map[string]pullrequests.Scope{},
 	}
 	for _, provider := range pullrequests.Providers {
 		scope := pullrequests.Scope{Repos: registry.Hosted(repos.Repos, provider.Name)}
@@ -123,6 +130,34 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 	return b, nil
 }
 
+// ReadClosed has the board read, every interval, the pull requests merged or closed within
+// since, from each provider whose client can say when one closed, for the recently closed
+// group. prs list leaves it off, because it prints the open pull requests only. Their rows
+// read no detail, because the window holds many and each detail read costs GitHub a point.
+func (b *Board) ReadClosed(since pullrequests.Since, every time.Duration) {
+	b.since = &since
+	for _, provider := range pullrequests.Providers {
+		scope, ok := b.scopes[provider.Name]
+		if !ok || provider.ReadClosed == nil {
+			continue
+		}
+		name := provider.Name + " closed"
+		var source *gotermboard.Source[pullrequests.Listing]
+		source = gotermboard.NewSource(name, every,
+			func(ctx context.Context) (pullrequests.Listing, string, error) {
+				listing, err := provider.ReadClosed(ctx, scope, since.From(time.Now()), b.listing(source))
+				if err != nil {
+					return listing, "", err
+				}
+				if b.listings != nil {
+					b.listings.keep(name, listing, time.Now())
+				}
+				return listing, listing.Note(), nil
+			})
+		b.closedSources = append(b.closedSources, source)
+	}
+}
+
 // ReadDetails has each listing that lands read its rows' details in the background, for the
 // document's sections that detail fills. A board printed once leaves it off, since nothing
 // waits for them.
@@ -152,11 +187,16 @@ func (b *Board) listing(source *gotermboard.Source[pullrequests.Listing]) pullre
 	return source.Value()
 }
 
+// listingSources is every listing's source: the open ones, then the closed.
+func (b *Board) listingSources() []*gotermboard.Source[pullrequests.Listing] {
+	return slices.Concat(b.sources, b.closedSources)
+}
+
 // Sources is gotermboard.Board's.
 func (b *Board) Sources() []gotermboard.Refresher {
-	refreshers := make([]gotermboard.Refresher, len(b.sources))
-	for i, source := range b.sources {
-		refreshers[i] = source
+	var refreshers []gotermboard.Refresher
+	for _, source := range b.listingSources() {
+		refreshers = append(refreshers, source)
 	}
 	if b.openedOn != nil {
 		refreshers = append(refreshers, b.openedOn.source)
@@ -167,15 +207,6 @@ func (b *Board) Sources() []gotermboard.Refresher {
 // Groupings is gotermboard.Board's. The board has one.
 func (b *Board) Groupings() []string { return nil }
 
-// pullRequests is every provider's rows, oldest first.
-func (b *Board) pullRequests(now time.Time) []pullrequests.PullRequest {
-	var prs []pullrequests.PullRequest
-	for _, source := range b.sources {
-		prs = append(prs, b.listing(source).PullRequests...)
-	}
-	return pullrequests.Finish(prs, b.repos, now)
-}
-
 // Row is one pull request as both --json outputs print it, with the open pull request it
 // is stacked on where there is one. cmd/prs/list.schema.json is its shape.
 type Row struct {
@@ -183,15 +214,15 @@ type Row struct {
 	StackedOn *int `json:"stacked_on"`
 }
 
-// Rows is every pull request the board holds, oldest first, and empty rather than nil, so
-// no rows print as [].
+// Rows is every pull request the listings hold, in the order the board draws them, and
+// empty rather than nil, so no rows print as [].
 func (b *Board) Rows(now time.Time) []Row {
-	prs := b.pullRequests(now)
+	prs := b.records(now)
 	parents := stackParents(prs)
 	rows := make([]Row, 0, len(prs))
-	for _, pr := range prs {
-		row := Row{PullRequest: pr}
-		if parent := parentOf(pr, parents); parent != 0 {
+	for _, p := range ordered(placedBy(prs)) {
+		row := Row{PullRequest: p.pr}
+		if parent := parentOf(p.pr, parents); parent != 0 {
 			row.StackedOn = &parent
 		}
 		rows = append(rows, row)
@@ -199,20 +230,27 @@ func (b *Board) Rows(now time.Time) []Row {
 	return rows
 }
 
-// statuses is how each read stands: each listing's, then the pull request the board opened
-// on. A provider whose rows still come from the last run's listing reads as read when that
-// listing was, with that listing's notes, so the strip gives the rows' age and what they left
-// out, and names a first read that fails as failing on rows that old.
-func (b *Board) statuses() []gotermboard.Status {
-	statuses := make([]gotermboard.Status, len(b.sources))
-	for i, source := range b.sources {
-		statuses[i] = source.Status()
-		if kept, ok := b.keptFor(source); ok {
-			statuses[i].ReadAt = kept.ReadAt
-			if statuses[i].Note == "" {
-				statuses[i].Note = kept.listing().Note()
-			}
+// statusOf is how one listing's read stands. A provider whose rows still come from the last
+// run's listing reads as read when that listing was, with that listing's notes, so the strip
+// gives the rows' age and what they left out, and names a first read that fails as failing
+// on rows that old.
+func (b *Board) statusOf(source *gotermboard.Source[pullrequests.Listing]) gotermboard.Status {
+	status := source.Status()
+	if kept, ok := b.keptFor(source); ok {
+		status.ReadAt = kept.ReadAt
+		if status.Note == "" {
+			status.Note = kept.listing().Note()
 		}
+	}
+	return status
+}
+
+// statuses is how each read stands: each listing's, then the pull request the board opened
+// on.
+func (b *Board) statuses() []gotermboard.Status {
+	var statuses []gotermboard.Status
+	for _, source := range b.listingSources() {
+		statuses = append(statuses, b.statusOf(source))
 	}
 	if b.openedOn != nil {
 		statuses = append(statuses, b.openedOn.source.Status())
@@ -222,12 +260,12 @@ func (b *Board) statuses() []gotermboard.Status {
 
 // reading says a read is under way.
 func (b *Board) reading() bool {
-	return slices.ContainsFunc(b.sources, func(source *gotermboard.Source[pullrequests.Listing]) bool {
+	return slices.ContainsFunc(b.listingSources(), func(source *gotermboard.Source[pullrequests.Listing]) bool {
 		return source.Status().Reading
 	})
 }
 
-// Gaps names each provider whose newest read failed, or read and noted pull requests it
+// Gaps names each read whose newest attempt failed, or read and noted pull requests it
 // left out, with why. A note leaves rows out as a failure does, so both count.
 func (b *Board) Gaps() []string {
 	var gaps []string
@@ -242,10 +280,11 @@ func (b *Board) Gaps() []string {
 	return gaps
 }
 
-// unread says no provider has answered yet, here or in the run that kept its listing.
+// unread says no provider's open pull requests have been read yet, here or in the run that
+// kept its listing.
 func (b *Board) unread() bool {
-	for _, status := range b.statuses() {
-		if !status.ReadAt.IsZero() {
+	for _, source := range b.sources {
+		if !b.statusOf(source).ReadAt.IsZero() {
 			return false
 		}
 	}
@@ -262,29 +301,25 @@ func (b *Board) failed() bool {
 	return len(b.sources) > 0
 }
 
-// Frame is gotermboard.Board's: one group of every open pull request, oldest first, and the
-// one under the cursor where a read stopped listing it, under the merged or closed pull
-// request the board opened on, where there is one.
+// Frame is gotermboard.Board's: the people's open pull requests, then the bots', then those
+// merged or closed within the window, each a group whose header counts it and folds it. The
+// merged or closed pull request the board opened on sits in a group of its own above them.
 func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
-	prs := b.keepGone(b.withOpenedOn(b.pullRequests(now), now), now)
+	var extra []pullrequests.PullRequest
+	if named, ok := b.named(); ok {
+		extra = append(extra, named.PullRequest)
+	}
+	prs := b.records(now, extra...)
 	parents := stackParents(prs)
+	rows := ordered(b.hold(placedBy(prs)))
 	clear(b.shown)
-	group := gotermboard.Group{
-		Key: "open", Title: gotermboard.Line{gotermboard.C("open", gotermboard.Bold)},
-		Count: len(prs), Counted: true, Still: true,
+	clear(b.drawnIn)
+	var groups []gotermboard.Group
+	if at := slices.IndexFunc(rows, func(p placed) bool { return b.isOpenedOn(p.pr) && p.in == recentlyClosed }); at >= 0 {
+		groups = append(groups, b.apart(rows[at].pr, parents, now))
+		rows = slices.Delete(rows, at, at+1)
 	}
-	for _, pr := range prs {
-		b.shown[pr.Key()] = pr
-		group.Rows = append(group.Rows, b.row(pr, parents, now))
-	}
-	if len(prs) == 0 {
-		group.Below = []gotermboard.Line{{gotermboard.C(b.emptyReason(), dim)}}
-	}
-	groups := []gotermboard.Group{group}
-	if apart, ok := b.apart(prs, parents, now); ok {
-		groups = append([]gotermboard.Group{apart}, groups...)
-	}
-	maps.DeleteFunc(b.settled, func(key string, _ rowState) bool { return !b.listed(key) })
+	groups = append(groups, b.groups(rows, parents, now)...)
 	maps.DeleteFunc(b.diffed, func(key, _ string) bool { return !b.listed(key) })
 	maps.DeleteFunc(b.documents, func(key string, _ documentMemo) bool { return !b.listed(key) })
 	return gotermboard.Frame{
@@ -303,28 +338,6 @@ func (b *Board) listed(key string) bool {
 
 // CursorOn is gotermboard.CursorBoard's.
 func (b *Board) CursorOn(key string) { b.cursor = key }
-
-// keepGone adds the pull request under the cursor where prs, a read's rows, leaves it out,
-// so a refresh never takes the row from under the cursor. It stays, marked gone, until the
-// cursor leaves it or a read lists it again. The pull request the board opened on is placed
-// by a read of its own, so it is never kept this way.
-func (b *Board) keepGone(prs []pullrequests.PullRequest, now time.Time) []pullrequests.PullRequest {
-	switch {
-	case b.cursor == "" || b.openedOn != nil && b.openedOn.key == b.cursor ||
-		slices.ContainsFunc(prs, func(pr pullrequests.PullRequest) bool { return pr.Key() == b.cursor }):
-		b.dropped = nil
-	case b.dropped != nil && b.dropped.Key() == b.cursor:
-	case b.listed(b.cursor):
-		pr := b.shown[b.cursor]
-		b.dropped = &pr
-	default:
-		b.dropped = nil
-	}
-	if b.dropped == nil {
-		return prs
-	}
-	return pullrequests.Finish(append(prs, *b.dropped), b.repos, now)
-}
 
 // MoveEvery is gotermboard.MovingBoard's. The strip turns its spinner while a read runs and
 // holds still otherwise, so a read never grows the footer and takes a row's line.
