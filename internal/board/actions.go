@@ -99,8 +99,8 @@ func (b *Board) onCursor(act func(pullrequests.PullRequest) (string, error)) fun
 
 // diff fetches the pull request's head into its own ref in the background, then hands prs's
 // terminal to nvim's diff against the base it targets, run in the checkout. Quitting nvim
-// gives the terminal back to the board, with the cursor where it was, and every provider is
-// read again. It never checks the branch out, which would abort on uncommitted work and
+// gives the terminal back to the board, with the cursor where it was, and Receive reads the
+// providers again. It never checks the branch out, which would abort on uncommitted work and
 // disturb the tree where there is none. The head it fetched is the one m then pins.
 //
 // The base is the one the listing reports, because a pull request stacked on another
@@ -181,7 +181,7 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 					m.Say(fmt.Sprintf("closed the diff of %s #%d, which ran against the origin/%s fetched earlier, because fetching it again failed: %s",
 						pr.Repo, pr.Number, base, baseFailed))
 				default:
-					m.Say(fmt.Sprintf("closed the diff of %s #%d, and reading every provider again", pr.Repo, pr.Number))
+					m.Say(fmt.Sprintf("closed the diff of %s #%d", pr.Repo, pr.Number))
 				}
 				return nil
 			})
@@ -256,10 +256,10 @@ func (b *Board) closePR(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 // close already settled, and one whose merge, close or fetch is still under way, so a second
 // press never sends a second change beside the first.
 func (b *Board) writable(pr pullrequests.PullRequest, verb string) (pullrequests.Provider, error) {
-	if settled := b.settled[pr.Key()]; settled != "" {
-		return pullrequests.Provider{}, fmt.Errorf("%s #%d is %s already, so there is nothing to %s", pr.Slug, pr.Number, settled, verb)
-	}
-	if b.isGone(pr) {
+	switch state := b.stateOf(pr); state {
+	case merged, closed:
+		return pullrequests.Provider{}, fmt.Errorf("%s #%d is %s already, so there is nothing to %s", pr.Slug, pr.Number, state, verb)
+	case gone:
 		return pullrequests.Provider{}, fmt.Errorf("%s #%d is gone from the open pull requests since the last read, so prs will not %s it; o opens its page",
 			pr.Slug, pr.Number, verb)
 	}

@@ -21,11 +21,11 @@ func configCommand() *cobra.Command {
 	cmd.AddCommand(&cobra.Command{
 		Use:   "path",
 		Short: "Print the config file's path",
-		Long: `Print the config file's path, $XDG_CONFIG_HOME/prs/config.yml, whether or not it
+		Long: fmt.Sprintf(`Print the config file's path, $XDG_CONFIG_HOME/prs/config.yml, whether or not it
 exists. The file is YAML:
 
   repos_registry: ~/repos.json
-  refresh_every_seconds: 60
+  refresh_every_seconds: %[1]d
   window_actions:
     - key: r
       label: claude review
@@ -44,14 +44,15 @@ owners lists GitHub users and organizations whose every repo is read:
 
 With no registry anywhere and no owners, prs reads the repos your GitHub login owns.
 
-refresh_every_seconds is how often prs tui reads each provider again while it is open, 60
-where the file does not say, and at least 1. A GitHub read costs one of GitHub's 5,000
-hourly GraphQL points for every 20 repos it names, or every owner it reads whole.
+refresh_every_seconds is how often prs tui reads each provider again while it is open, a
+whole number of seconds, 1 or more, and %[1]d where the file does not say. Each GitHub read
+spends points from the token's hourly GraphQL allowance, so a shorter interval spends them
+faster. gh api rate_limit shows what is left.
 
 Each window action is a key that runs its command in a new tmux window in the pull
 request's checkout. needs are the programs it runs, and a machine missing one is not
 offered the key. {number}, {repo} and {slug} are filled in. Quote a value holding " #",
-which YAML otherwise reads as a comment.`,
+which YAML otherwise reads as a comment.`, int(config.DefaultRefreshEvery.Seconds())),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := config.Path()
@@ -96,7 +97,7 @@ which YAML otherwise reads as a comment.`,
 				_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("registry"), registry, cfg.ReposFrom)
 			}
 			_, _ = fmt.Fprintf(out, "%s  every %d seconds  from %s\n", pal.Bold("refresh "), int(cfg.RefreshEvery.Seconds()), cfg.RefreshFrom)
-			kept, err := config.ListingCache()
+			kept, err := config.ListingCacheDir()
 			if err != nil {
 				return err
 			}

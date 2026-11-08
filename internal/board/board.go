@@ -45,7 +45,7 @@ type Board struct {
 	// shown is the last frame's pull requests by key, for a key to find the cursor's.
 	shown map[string]pullrequests.PullRequest
 	// settled is the state a merge or close left a pull request in, by key.
-	settled map[string]settledState
+	settled map[string]rowState
 	// diffed is the head commit d last fetched for a pull request, by key, which its merge
 	// pins.
 	diffed map[string]string
@@ -62,10 +62,11 @@ type Board struct {
 	// listings keeps each provider's listing on disk once KeepListings is called, and holds
 	// the last run's, which a provider's rows come from until its first read here lands.
 	listings *listingCache
-	// cursor is the key of the row under the cursor. gone is the pull request it was on when
-	// a read stopped listing it, which the board draws, marked, until the cursor leaves it.
-	cursor string
-	gone   *pullrequests.PullRequest
+	// cursor is the key of the row under the cursor. dropped is the pull request it was on
+	// when a read stopped listing it, which the board draws, marked gone, until the cursor
+	// leaves it.
+	cursor  string
+	dropped *pullrequests.PullRequest
 }
 
 // New is a board over repos, reading each provider every interval, with the window actions
@@ -84,7 +85,7 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 		renderer: markdown.New(nil),
 		every:    every,
 		shown:    map[string]pullrequests.PullRequest{},
-		settled:  map[string]settledState{},
+		settled:  map[string]rowState{},
 		diffed:   map[string]string{},
 		details:  pullrequests.NewDetails(),
 		scopes:   map[string]pullrequests.Scope{},
@@ -123,18 +124,26 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 // the description to show. A board printed once leaves it off, since nothing waits for them.
 func (b *Board) ReadDetails() { b.readDetails = true }
 
-// KeepListings has the board draw the listings the last run kept at path until each
-// provider's first read lands, and keep each listing that lands there for the next run. A
+// KeepListings has the board draw the listings the last run on these repos kept in dir until
+// each provider's first read lands, and keep each listing that lands there for the next run. A
 // board printed once leaves it off, since it waits for its reads.
-func (b *Board) KeepListings(path string) { b.listings = openListingCache(path, b.scopes) }
+func (b *Board) KeepListings(dir string) { b.listings = openListingCache(dir, b.scopes) }
+
+// keptFor is the listing the last run kept for the source's provider, while it stands in for
+// a read here: until the provider's first read lands.
+func (b *Board) keptFor(source *gotermboard.Source[pullrequests.Listing]) (keptListing, bool) {
+	status := source.Status()
+	if b.listings == nil || !status.ReadAt.IsZero() {
+		return keptListing{}, false
+	}
+	return b.listings.listing(status.Name)
+}
 
 // listing is a provider's rows now: its last good read, or before its first, the listing
 // the last run kept.
 func (b *Board) listing(source *gotermboard.Source[pullrequests.Listing]) pullrequests.Listing {
-	if status := source.Status(); status.ReadAt.IsZero() && b.listings != nil {
-		if kept, ok := b.listings.listing(status.Name); ok {
-			return kept.listing()
-		}
+	if kept, ok := b.keptFor(source); ok {
+		return kept.listing()
 	}
 	return source.Value()
 }
@@ -188,15 +197,16 @@ func (b *Board) Rows(now time.Time) []Row {
 
 // statuses is how each read stands: each listing's, then the pull request the board opened
 // on. A provider whose rows still come from the last run's listing reads as read when that
-// listing was, so the strip gives the rows' age, and names a first read that fails as failing
-// on rows that old.
+// listing was, with that listing's notes, so the strip gives the rows' age and what they left
+// out, and names a first read that fails as failing on rows that old.
 func (b *Board) statuses() []gotermboard.Status {
 	statuses := make([]gotermboard.Status, len(b.sources))
 	for i, source := range b.sources {
 		statuses[i] = source.Status()
-		if statuses[i].ReadAt.IsZero() && b.listings != nil {
-			if kept, ok := b.listings.listing(statuses[i].Name); ok {
-				statuses[i].ReadAt = kept.ReadAt
+		if kept, ok := b.keptFor(source); ok {
+			statuses[i].ReadAt = kept.ReadAt
+			if statuses[i].Note == "" {
+				statuses[i].Note = kept.listing().Note()
 			}
 		}
 	}
@@ -263,15 +273,15 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 		b.shown[pr.Key()] = pr
 		group.Rows = append(group.Rows, b.row(pr, parents, now))
 	}
+	if len(prs) == 0 {
+		group.Below = []gotermboard.Line{{gotermboard.C(b.emptyReason(), dim)}}
+	}
 	groups := []gotermboard.Group{group}
 	if apart, ok := b.apart(prs, parents, now); ok {
 		groups = append([]gotermboard.Group{apart}, groups...)
 	}
-	maps.DeleteFunc(b.settled, func(key string, _ settledState) bool { return !b.listed(key) })
+	maps.DeleteFunc(b.settled, func(key string, _ rowState) bool { return !b.listed(key) })
 	maps.DeleteFunc(b.diffed, func(key, _ string) bool { return !b.listed(key) })
-	if len(prs) == 0 {
-		group.Below = []gotermboard.Line{{gotermboard.C(b.emptyReason(), dim)}}
-	}
 	return gotermboard.Frame{
 		Strip:   b.StripAt(now),
 		Columns: columns,
@@ -297,56 +307,43 @@ func (b *Board) keepGone(prs []pullrequests.PullRequest, now time.Time) []pullre
 	switch {
 	case b.cursor == "" || b.openedOn != nil && b.openedOn.key == b.cursor ||
 		slices.ContainsFunc(prs, func(pr pullrequests.PullRequest) bool { return pr.Key() == b.cursor }):
-		b.gone = nil
-	case b.gone != nil && b.gone.Key() == b.cursor:
+		b.dropped = nil
+	case b.dropped != nil && b.dropped.Key() == b.cursor:
 	case b.listed(b.cursor):
 		pr := b.shown[b.cursor]
-		b.gone = &pr
+		b.dropped = &pr
 	default:
-		b.gone = nil
+		b.dropped = nil
 	}
-	if b.gone == nil {
+	if b.dropped == nil {
 		return prs
 	}
-	return pullrequests.Finish(append(prs, *b.gone), b.repos, now)
+	return pullrequests.Finish(append(prs, *b.dropped), b.repos, now)
 }
-
-// isGone says the pull request is the one under the cursor that a read stopped listing.
-func (b *Board) isGone(pr pullrequests.PullRequest) bool {
-	return b.gone != nil && b.gone.Key() == pr.Key()
-}
-
-// spinner is the drawings the strip turns through after the rows' age while a read runs,
-// each one cell wide, as gotermboard's footer turns through beside work under way.
-var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-// spinEvery is how long the spinner holds each drawing.
-const spinEvery = 100 * time.Millisecond
 
 // MoveEvery is gotermboard.MovingBoard's. The strip turns its spinner while a read runs and
 // holds still otherwise, so a read never grows the footer and takes a row's line.
 func (b *Board) MoveEvery() time.Duration {
 	if b.reading() {
-		return spinEvery
+		return gotermboard.SpinEvery
 	}
 	return 0
 }
 
 // StripAt is gotermboard.MovingBoard's: how each read stands, with a spinner after the
-// rows' age while a read runs, and why the listing could not be kept for the next start
-// where it could not.
+// rows' age while a read runs, and why the listing cache could not be read or written, until
+// a write succeeds.
 func (b *Board) StripAt(now time.Time) []gotermboard.Line {
 	line := gotermboard.ReadStatus(b.statuses(), now)
 	if len(line) == 0 {
 		return nil
 	}
 	if b.reading() {
-		at := now.UnixMilli() / spinEvery.Milliseconds() % int64(len(spinner))
-		line = slices.Insert(line, 1, gotermboard.C(" "+spinner[at], gotermboard.Yellow))
+		line = slices.Insert(line, 1, gotermboard.C(" "+gotermboard.SpinnerAt(now), gotermboard.Yellow))
 	}
 	if b.listings != nil {
-		if fault := b.listings.writeFault(); fault != "" {
-			line = append(line, gotermboard.C(" · ", ""), gotermboard.C("the next start cannot draw these rows at once: "+fault, gotermboard.Yellow))
+		if fault := b.listings.fault(); fault != "" {
+			line = append(line, gotermboard.C(" · ", ""), gotermboard.C(fault, gotermboard.Yellow))
 		}
 	}
 	return []gotermboard.Line{line}

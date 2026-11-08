@@ -32,9 +32,11 @@ the per-PR detail cache, and `reference.go` what `--pr` takes and how it is read
 - **A repo whose read failed keeps its last rows, and a note says so.** One repo's failure
   must not take the others' rows with it.
 - **`prs tui` draws the last listing before any read returns.** Each read that lands is
-  written to `$XDG_CACHE_HOME/prs/listings.json`, and a provider's rows come from there,
-  with their age on the strip, until its first read lands. Only the interactive board
-  reads or writes it, because `prs list`, `--once` and `--json` wait for their reads.
+  written to `$XDG_CACHE_HOME/prs/listings/<scope digest>.json`, one file for each set of
+  repos and owners, and a provider's rows come from there, with their age on the strip,
+  until its first read lands. A file is drawn only for the scope it was read for, so a
+  registry edit never shows another set's rows. Only the interactive board reads or writes
+  it, because `prs list`, `--once` and `--json` wait for their reads.
 - **A refresh never moves the row under the cursor.** A pull request a read drops stays
   under the cursor, marked gone, until the cursor leaves it, and m and x refuse it.
 - **`prs list`, `--json` and `--once` exit 1 when a read failed or left a pull request
@@ -93,13 +95,13 @@ the per-PR detail cache, and `reference.go` what `--pr` takes and how it is read
   footer after a spinner. A key's own `m.Say` shows until the next key, and the under-way
   line until the work ends.
 - **`tea.ExecProcess` holds Bubble Tea's event loop until the program exits**, so no read
-  lands while nvim or the editor has the terminal. The board reads every provider again
-  once a program it handed the terminal to exits.
-- **Work under way on the footer adds a footer line**, which takes a line from the table.
-  So a read's spinner turns on the strip, through `MovingBoard`, which redraws only the
-  strip.
-- **Bubble Tea v2 reports focus only where the View sets `ReportFocus`**, which
-  gotermboard's Tabs does not, so `reportsFocus` in `cmd/prs/tui.go` sets it.
+  lands while nvim or the editor has the terminal. The board reads the providers again
+  once a program it handed the terminal to exits, and when the terminal gains focus, except
+  a provider whose last good read is under `freshFor` old.
+- **A read's spinner turns on the strip, through `MovingBoard`**, so the footer's height
+  never changes with a read. It draws `gotermboard.SpinnerAt`, the footer's own spinner.
+- **Bubble Tea v2 reports focus only where the View sets `ReportFocus`.** `reportsFocus`
+  in `cmd/prs/tui.go` sets it on the board's View.
 
 ## Never write the breaking-change trailer in a commit message
 

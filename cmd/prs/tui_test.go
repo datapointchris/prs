@@ -596,8 +596,8 @@ func widget14Opened(t *testing.T) []byte {
 
 // A read lands on the timer and on focus with no key pressed. A pull request a read drops
 // stays under the cursor, marked gone, until the cursor leaves it. A start whose read fails
-// draws the rows the last run kept, and names why the read failed.
-func TestTheBoardDrawsTheLastListingAtOnceThenRereadsOnItsTimerAndOnFocus(t *testing.T) {
+// draws the rows the last run on the same repos kept, and names why the read failed.
+func TestTheBoardDrawsTheLastListingOfTheSameReposAtOnceThenRereadsOnItsTimerAndOnFocus(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
 	opened := widget14Opened(t)
@@ -632,4 +632,17 @@ func TestTheBoardDrawsTheLastListingAtOnceThenRereadsOnItsTimerAndOnFocus(t *tes
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
 	}
+
+	// PRS_REPOS_REGISTRY names other repos, so nothing kept is theirs, and a read that fails
+	// is not drawn as a registry with no open pull requests.
+	other := filepath.Join(t.TempDir(), "repos.json")
+	if err := os.WriteFile(other, []byte(`{"repos": [{"name": "other", "owner": "acme", "status": "active"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.env["PRS_REPOS_REGISTRY"] = other
+	s.github.fail()
+	term = tuidrive.Start(t, program)
+	term.WaitFor("No provider could be read")
+	term.Press("q")
+	term.WaitExit()
 }

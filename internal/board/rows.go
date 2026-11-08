@@ -140,7 +140,7 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 	return gotermboard.Row{
 		Key:         pr.Key(),
 		Cells:       cells,
-		WrapLast:    titleLine(pr, parentOf(pr, parents), b.settled[pr.Key()], b.isGone(pr)),
+		WrapLast:    titleLine(pr, parentOf(pr, parents), b.stateOf(pr)),
 		Under:       gotermboard.C(identity(pr), dim),
 		Document:    b.description(pr, false),
 		ReaderTitle: pr.Title,
@@ -150,17 +150,30 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 	}
 }
 
-// settledState is the state a key's merge or close left a pull request in, which is also the
-// word its row reads.
-type settledState string
+// rowState is what a row reads before its title where its pull request waits on nobody: merged
+// or closed by a key here, or gone from the listing while the cursor sat on it. It is empty for
+// an open pull request.
+type rowState string
 
 const (
-	merged settledState = "merged"
-	closed settledState = "closed"
+	merged rowState = "merged"
+	closed rowState = "closed"
+	gone   rowState = "gone"
 )
 
-// settledCodes color each settled state as GitHub does.
-var settledCodes = map[settledState]string{merged: gotermboard.Magenta, closed: gotermboard.Red}
+// rowStateCodes color merged and closed as GitHub does, and gone as a change to notice.
+var rowStateCodes = map[rowState]string{merged: gotermboard.Magenta, closed: gotermboard.Red, gone: gotermboard.Yellow}
+
+// stateOf is the pull request's row state.
+func (b *Board) stateOf(pr pullrequests.PullRequest) rowState {
+	if state := b.settled[pr.Key()]; state != "" {
+		return state
+	}
+	if b.dropped != nil && b.dropped.Key() == pr.Key() {
+		return gone
+	}
+	return ""
+}
 
 // checksCell is the CI state.
 func checksCell(pr pullrequests.PullRequest) gotermboard.Cell {
@@ -214,17 +227,15 @@ func repoCell(pr pullrequests.PullRequest) gotermboard.Cell {
 	return gotermboard.C(pathGlyph+" "+pr.Repo, gotermboard.Cyan)
 }
 
-// titleLine is the state a merge or close left it in, or gone where a read stopped listing
-// it while the cursor sat on it, then the title, the open pull request it is stacked on,
-// and the app that opened it. A pull request a person opened carries no mark, so the mark
-// sets an app's row apart. A settled or gone one dims its title, because it waits on nobody.
-func titleLine(pr pullrequests.PullRequest, parent int, settled settledState, gone bool) gotermboard.Line {
+// titleLine is the row's state where it has one, then the title, the open pull request it is
+// stacked on, and the app that opened it. A pull request a person opened carries no mark, so
+// the mark sets an app's row apart. A row with a state dims its title, because it waits on
+// nobody.
+func titleLine(pr pullrequests.PullRequest, parent int, state rowState) gotermboard.Line {
 	line := gotermboard.Line{gotermboard.C(pr.Title, "")}
 	switch {
-	case settled != "":
-		line = gotermboard.Line{gotermboard.C(string(settled), settledCodes[settled]), gotermboard.C("  "+pr.Title, dim)}
-	case gone:
-		line = gotermboard.Line{gotermboard.C("gone", gotermboard.Yellow), gotermboard.C("  "+pr.Title, dim)}
+	case state != "":
+		line = gotermboard.Line{gotermboard.C(string(state), rowStateCodes[state]), gotermboard.C("  "+pr.Title, dim)}
 	case pr.Draft:
 		line = gotermboard.Line{gotermboard.C(pr.Title+" (draft)", dim)}
 	}
