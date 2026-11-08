@@ -64,8 +64,12 @@ func rootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "prs",
 		Short: "Every open pull request across a registry's repos, on one terminal board",
-		Long: `prs lists every open pull request on the repos a registry names, whoever opened
-it, and acts on one with a key.`,
+		Long: `prs reads every open pull request on the repos a registry names, whoever opened
+it, and acts on one with a key. prs tui opens the board. The registry is the file
+prs config show names.`,
+		Example: `  prs tui
+  prs tui --json | jq '.pull_requests[].url'
+  prs config show`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       buildVersion(),
@@ -73,6 +77,6 @@ it, and acts on one with a key.`,
 	root.SetVersionTemplate("prs {{.Version}}\n")
 	// Registered here because cobra's own version flag takes -v.
 	root.Flags().Bool("version", false, "print the version")
-	root.AddCommand(goclikit.UpdateCommand(updateConfig()))
+	root.AddCommand(tuiCommand(), configCommand(), goclikit.UpdateCommand(updateConfig()))
 	return root
 }

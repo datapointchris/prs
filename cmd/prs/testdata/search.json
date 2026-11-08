@@ -1,0 +1,105 @@
+{
+  "data": {
+    "mine": {
+      "issueCount": 3,
+      "nodes": [
+        {
+          "number": 12,
+          "title": "Cache the widget lookups",
+          "author": { "__typename": "User", "login": "octo" },
+          "body": "Caches the widget lookups for a minute.",
+          "url": "https://github.com/acme/widget/pull/12",
+          "headRefName": "add-cache",
+          "baseRefName": "main",
+          "isDraft": false,
+          "createdAt": "2026-11-01T09:00:00Z",
+          "additions": 76,
+          "deletions": 941,
+          "changedFiles": 12,
+          "reviewDecision": "REVIEW_REQUIRED",
+          "reviews": { "totalCount": 0 },
+          "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+          "repository": { "name": "widget", "nameWithOwner": "acme/widget" }
+        },
+        {
+          "number": 7,
+          "title": "Fix a typo upstream",
+          "author": { "__typename": "User", "login": "octo" },
+          "body": "",
+          "url": "https://github.com/crate-ci/typos/pull/7",
+          "headRefName": "typo",
+          "baseRefName": "master",
+          "isDraft": false,
+          "createdAt": "2026-10-20T09:00:00Z",
+          "additions": 1,
+          "deletions": 1,
+          "changedFiles": 1,
+          "reviewDecision": null,
+          "reviews": { "totalCount": 0 },
+          "commits": { "nodes": [] },
+          "repository": { "name": "typos", "nameWithOwner": "crate-ci/typos" }
+        },
+        {}
+      ]
+    },
+    "owned": {
+      "issueCount": 3,
+      "nodes": [
+        {
+          "number": 12,
+          "title": "Cache the widget lookups",
+          "author": { "__typename": "User", "login": "octo" },
+          "body": "Caches the widget lookups for a minute.",
+          "url": "https://github.com/acme/widget/pull/12",
+          "headRefName": "add-cache",
+          "baseRefName": "main",
+          "isDraft": false,
+          "createdAt": "2026-11-01T09:00:00Z",
+          "additions": 76,
+          "deletions": 941,
+          "changedFiles": 12,
+          "reviewDecision": "REVIEW_REQUIRED",
+          "reviews": { "totalCount": 0 },
+          "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+          "repository": { "name": "widget", "nameWithOwner": "acme/widget" }
+        },
+        {
+          "number": 13,
+          "title": "Count cache hits",
+          "author": { "__typename": "Bot", "login": "acme-automation" },
+          "body": "Counts the hits the cache in #12 takes.",
+          "url": "https://github.com/acme/widget/pull/13",
+          "headRefName": "cache-metrics",
+          "baseRefName": "add-cache",
+          "isDraft": false,
+          "createdAt": "2026-11-03T09:00:00Z",
+          "additions": 25,
+          "deletions": 2,
+          "changedFiles": 3,
+          "reviewDecision": null,
+          "reviews": { "totalCount": 2 },
+          "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "FAILURE" } } } ] },
+          "repository": { "name": "widget", "nameWithOwner": "acme/widget" }
+        },
+        {
+          "number": 5,
+          "title": "Tidy the gadget",
+          "author": { "__typename": "User", "login": "octo" },
+          "body": "",
+          "url": "https://github.com/acme/gadget/pull/5",
+          "headRefName": "tidy",
+          "baseRefName": "add-cache",
+          "isDraft": true,
+          "createdAt": "2026-11-05T09:00:00Z",
+          "additions": 4,
+          "deletions": 4,
+          "changedFiles": 1,
+          "reviewDecision": null,
+          "reviews": { "totalCount": 0 },
+          "commits": { "nodes": [ { "commit": { "statusCheckRollup": null } } ] },
+          "repository": { "name": "gadget", "nameWithOwner": "acme/gadget" }
+        }
+      ]
+    }
+  }
+}
