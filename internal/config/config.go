@@ -49,6 +49,10 @@ type Config struct {
 	// RefreshFrom names the layer that set it.
 	RefreshEvery time.Duration
 	RefreshFrom  string
+	// ClosedRefreshEvery is how often the board reads the recently closed pull requests
+	// again, and ClosedRefreshFrom names the layer that set it.
+	ClosedRefreshEvery time.Duration
+	ClosedRefreshFrom  string
 	// WindowActions are the keys the file adds, each opening a tmux window on a pull request.
 	WindowActions []WindowAction
 }
@@ -56,6 +60,11 @@ type Config struct {
 // DefaultRefreshEvery is how often the board reads each provider while it is open, where the
 // file does not say. Each GitHub read spends points from the token's hourly GraphQL allowance.
 const DefaultRefreshEvery = time.Minute
+
+// DefaultClosedRefreshEvery is how often the board reads the recently closed pull requests,
+// where the file does not say. That read costs GitHub as much as the open one, and what it
+// finds changes only when a pull request closes, which the open read already shows.
+const DefaultClosedRefreshEvery = 5 * time.Minute
 
 // WindowAction is a key that runs a command in a new tmux window, started in the pull
 // request's checkout. It is offered only where every program it needs is on PATH.
@@ -76,10 +85,11 @@ type WindowAction struct {
 
 // file is the document as written.
 type file struct {
-	Registry            string         `yaml:"repos_registry"`
-	Owners              []string       `yaml:"owners"`
-	RefreshEverySeconds yaml.Node      `yaml:"refresh_every_seconds"`
-	WindowActions       []WindowAction `yaml:"window_actions"`
+	Registry                  string         `yaml:"repos_registry"`
+	Owners                    []string       `yaml:"owners"`
+	RefreshEverySeconds       yaml.Node      `yaml:"refresh_every_seconds"`
+	ClosedRefreshEverySeconds yaml.Node      `yaml:"closed_refresh_every_seconds"`
+	WindowActions             []WindowAction `yaml:"window_actions"`
 }
 
 // Fields are what a window action's Window and Command can name of a pull request.
@@ -181,13 +191,11 @@ func Load() (Config, error) {
 	if cfg.Registry, cfg.Owners, cfg.ReposFrom, err = repos(doc); err != nil {
 		return cfg, fmt.Errorf("%s: %w", path, err)
 	}
-	cfg.RefreshEvery, cfg.RefreshFrom = DefaultRefreshEvery, FromDefault
-	if node := doc.RefreshEverySeconds; node.Kind != 0 {
-		seconds, err := wholeSeconds(node)
-		if err != nil {
-			return cfg, fmt.Errorf("%s: %w", path, err)
-		}
-		cfg.RefreshEvery, cfg.RefreshFrom = time.Duration(seconds)*time.Second, "refresh_every_seconds in the config file"
+	if cfg.RefreshEvery, cfg.RefreshFrom, err = interval(doc.RefreshEverySeconds, "refresh_every_seconds", DefaultRefreshEvery); err != nil {
+		return cfg, fmt.Errorf("%s: %w", path, err)
+	}
+	if cfg.ClosedRefreshEvery, cfg.ClosedRefreshFrom, err = interval(doc.ClosedRefreshEverySeconds, "closed_refresh_every_seconds", DefaultClosedRefreshEvery); err != nil {
+		return cfg, fmt.Errorf("%s: %w", path, err)
 	}
 	for i, action := range doc.WindowActions {
 		if err := action.check(); err != nil {
@@ -201,14 +209,18 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// wholeSeconds reads refresh_every_seconds as written. yaml would truncate 0.5 into an int
-// without a word, so anything not tagged an integer is refused with the value it held.
-func wholeSeconds(node yaml.Node) (int, error) {
+// interval reads a key of whole seconds as written, and the layer that set it: the file, or
+// fallback where the file does not say. yaml would truncate 0.5 into an int without a word,
+// so anything not tagged an integer is refused with the value it held.
+func interval(node yaml.Node, key string, fallback time.Duration) (time.Duration, string, error) {
+	if node.Kind == 0 {
+		return fallback, FromDefault, nil
+	}
 	var seconds int
 	if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" || node.Decode(&seconds) != nil || seconds < 1 {
-		return 0, fmt.Errorf("refresh_every_seconds is %q, and it takes a whole number of seconds, 1 or more", node.Value)
+		return 0, "", fmt.Errorf("%s is %q, and it takes a whole number of seconds, 1 or more", key, node.Value)
 	}
-	return seconds, nil
+	return time.Duration(seconds) * time.Second, key + " in the config file", nil
 }
 
 // ownerName is what GitHub allows in a user or organization's login.

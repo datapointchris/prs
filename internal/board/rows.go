@@ -17,6 +17,7 @@ import (
 // color, because two glyphs are not guaranteed the same width either. Each is a
 // private-use codepoint, which draws as nothing without the font, so its name is here.
 const (
+	stateGlyph   = "" // oct-git-merge
 	checksGlyph  = "" // fa-check-circle
 	reviewGlyph  = "" // fa-eye
 	ageGlyph     = "" // fa-clock-o
@@ -90,14 +91,58 @@ func reviewMeaning(state string) meaning {
 	return meaning{word: words(state), code: gotermboard.Cyan}
 }
 
+// mergeMeanings covers GitHub's merge state on an open row: what its merge waits on. A
+// mergeable branch whose checks are not passing reads mergeable, and its checks cell says
+// why.
+var mergeMeanings = map[string]meaning{
+	"CLEAN":     {word: "ready", code: gotermboard.Green},
+	"HAS_HOOKS": {word: "ready", code: gotermboard.Green},
+	"UNSTABLE":  {word: "mergeable", code: gotermboard.Yellow},
+	"BEHIND":    {word: "behind", code: gotermboard.Cyan},
+	"BLOCKED":   {word: "blocked"},
+	"DIRTY":     {word: "conflicts", code: gotermboard.Yellow},
+	"DRAFT":     {word: "draft", code: dim},
+	"UNKNOWN":   {word: "unknown", code: dim},
+}
+
+// standingMeanings cover a row that waits on nobody. Merged and closed are GitHub's colors,
+// and gone is a change to notice.
+var standingMeanings = map[rowState]meaning{
+	merged: {word: "merged", code: gotermboard.Magenta},
+	closed: {word: "closed", code: gotermboard.Red},
+	gone:   {word: "gone", code: gotermboard.Yellow},
+}
+
+// stateMeaning is the one word for where the pull request stands: its row state once it
+// waits on nobody, and otherwise draft, conflicts, or what its merge state says. A merge state
+// not there reads as its own words, because GitHub adds states. A host that carries no merge
+// state reads open, dim, because it says no more than the group does.
+func stateMeaning(pr pullrequests.PullRequest, state rowState) meaning {
+	switch {
+	case state != "":
+		return standingMeanings[state]
+	case pr.Draft:
+		return mergeMeanings["DRAFT"]
+	case pr.Mergeable != nil && *pr.Mergeable == "CONFLICTING":
+		return mergeMeanings["DIRTY"]
+	case pr.MergeStateStatus == nil:
+		return meaning{word: "open", code: dim}
+	}
+	if m, known := mergeMeanings[*pr.MergeStateStatus]; known {
+		return m
+	}
+	return meaning{word: words(*pr.MergeStateStatus)}
+}
+
 // words is an enum as words, CHANGES_REQUESTED as "changes requested".
 func words(enum string) string { return strings.ToLower(strings.ReplaceAll(enum, "_", " ")) }
 
-// columns carry the state, the age and the sizes, then the repo and the number, then the
-// title wrapping under itself. The three diff counts each right-align in a column of their
-// own, so the signs stack. The branch and the checkout are read when acting rather than when
-// scanning, so they sit dim under the row, where f shows them.
+// columns carry the state, the checks, the review, the age and the sizes, then the repo and
+// the number, then the title wrapping under itself. The three diff counts each right-align in
+// a column of their own, so the signs stack. The branch and the checkout are read when acting
+// rather than when scanning, so they sit dim under the row, where f shows them.
 var columns = []gotermboard.Column{
+	{Title: "STATE"},
 	{Title: "CHECKS"},
 	{Title: "REVIEW"},
 	{Title: "AGE", Right: true},
@@ -112,13 +157,13 @@ var columns = []gotermboard.Column{
 // repoWidth caps the repo column, so one long name never takes the title's room.
 const repoWidth = 20
 
-// stackParents maps a head branch to its pull request, so one whose base is another's head
-// can name its parent. The key is the repo and the branch together, because branch names
-// recur across repos.
+// stackParents maps a head branch to its open pull request, so one whose base is another's
+// head can name its parent. The key is the repo and the branch together, because branch
+// names recur across repos.
 func stackParents(prs []pullrequests.PullRequest) map[[2]string]int {
 	parents := map[[2]string]int{}
 	for _, pr := range prs {
-		if pr.Branch != "" {
+		if pr.Branch != "" && sectionOf(pr) != recentlyClosed {
 			parents[[2]string{pr.Slug, pr.Branch}] = pr.Number
 		}
 	}
@@ -135,12 +180,15 @@ func parentOf(pr pullrequests.PullRequest, parents map[[2]string]int) int {
 }
 
 func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now time.Time) gotermboard.Row {
-	cells := append([]gotermboard.Cell{checksCell(pr), reviewCell(pr), ageCell(pr, now)}, diffCells(pr)...)
+	state := b.stateOf(pr)
+	s := stateMeaning(pr, state)
+	cells := []gotermboard.Cell{gotermboard.C(stateGlyph+"  "+s.word, s.code), checksCell(pr), reviewCell(pr), ageCell(pr, state, now)}
+	cells = append(cells, diffCells(pr)...)
 	cells = append(cells, repoCell(pr), gotermboard.C(fmt.Sprintf("%s #%d", numberGlyph, pr.Number), gotermboard.Yellow))
 	return gotermboard.Row{
 		Key:         pr.Key(),
 		Cells:       cells,
-		WrapLast:    titleLine(pr, parentOf(pr, parents), b.stateOf(pr)),
+		WrapLast:    titleLine(pr, parentOf(pr, parents), state),
 		Under:       gotermboard.C(identity(pr), dim),
 		Document:    b.document(pr),
 		ReaderTitle: pr.Title,
@@ -149,9 +197,9 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 	}
 }
 
-// rowState is what a row reads before its title where its pull request waits on nobody: merged
-// or closed by a key here, or gone from the listing while the cursor sat on it. It is empty for
-// an open pull request.
+// rowState is where a row's pull request stands once it waits on nobody: merged or closed by
+// its record, or gone from every listing while the cursor sat on it. It is empty for an open
+// pull request.
 type rowState string
 
 const (
@@ -160,16 +208,17 @@ const (
 	gone   rowState = "gone"
 )
 
-// rowStateCodes color merged and closed as GitHub does, and gone as a change to notice.
-var rowStateCodes = map[rowState]string{merged: gotermboard.Magenta, closed: gotermboard.Red, gone: gotermboard.Yellow}
-
-// stateOf is the pull request's row state.
+// stateOf is the pull request's row state. A state word its host's table does not name reads
+// as open, as the listing that found it does.
 func (b *Board) stateOf(pr pullrequests.PullRequest) rowState {
-	if state := b.settled[pr.Key()]; state != "" {
-		return state
-	}
-	if b.dropped != nil && b.dropped.Key() == pr.Key() {
+	if b.held != nil && b.held.gone && b.held.pr.Key() == pr.Key() {
 		return gone
+	}
+	switch standing, _ := pr.Standing(); standing {
+	case pullrequests.Merged:
+		return merged
+	case pullrequests.Closed:
+		return closed
 	}
 	return ""
 }
@@ -190,7 +239,12 @@ func reviewCell(pr pullrequests.PullRequest) gotermboard.Cell {
 	return gotermboard.C(reviewGlyph+"  review "+s.word, s.code)
 }
 
-func ageCell(pr pullrequests.PullRequest, now time.Time) gotermboard.Cell {
+// ageCell is how long the pull request has been open, colored as it gets old, or on a merged
+// or closed row, dim, how long ago it closed.
+func ageCell(pr pullrequests.PullRequest, state rowState, now time.Time) gotermboard.Cell {
+	if at := closedAt(pr); (state == merged || state == closed) && !at.IsZero() {
+		return gotermboard.Ticking(ageGlyph+"  "+gotermboard.Ago(now.Sub(at)), dim)
+	}
 	code := dim
 	switch days := now.Sub(pr.CreatedAt).Hours() / 24; {
 	case pr.CreatedAt.IsZero():
@@ -226,18 +280,15 @@ func repoCell(pr pullrequests.PullRequest) gotermboard.Cell {
 	return gotermboard.C(pathGlyph+" "+pr.Repo, gotermboard.Cyan)
 }
 
-// titleLine is the row's state where it has one, then the title, the open pull request it is
-// stacked on, and the app that opened it. A pull request a person opened carries no mark, so
-// the mark sets an app's row apart. A row with a state dims its title, because it waits on
-// nobody.
+// titleLine is the title, the open pull request it is stacked on, and the app that opened it.
+// A pull request a person opened carries no mark, so the mark sets an app's row apart. A
+// draft's title and one with a row state are dim, because neither waits on a reviewer.
 func titleLine(pr pullrequests.PullRequest, parent int, state rowState) gotermboard.Line {
-	line := gotermboard.Line{gotermboard.C(pr.Title, "")}
-	switch {
-	case state != "":
-		line = gotermboard.Line{gotermboard.C(string(state), rowStateCodes[state]), gotermboard.C("  "+pr.Title, dim)}
-	case pr.Draft:
-		line = gotermboard.Line{gotermboard.C(pr.Title+" (draft)", dim)}
+	code := ""
+	if state != "" || pr.Draft {
+		code = dim
 	}
+	line := gotermboard.Line{gotermboard.C(pr.Title, code)}
 	if parent != 0 {
 		line = append(line, gotermboard.C(fmt.Sprintf("  %s #%d", stackGlyph, parent), gotermboard.Yellow))
 	}
@@ -271,14 +322,19 @@ func orDash(text string) string {
 
 // document is the pull request's MarkdownDocument laid out at the width it is drawn at. The
 // side panel heads it with the row's ReaderTitle, and the Reader and the row each name the
-// title already. A row gone from the listing says why its detail is not read, which is the
+// title already. A row with a state whose detail was never read says why, which is the
 // board's to say rather than the pull request's.
 func (b *Board) document(pr pullrequests.PullRequest) gotermboard.Document {
 	return func(width int) []gotermboard.Line {
 		var lines []gotermboard.Line
-		if b.stateOf(pr) == gone {
+		state := b.stateOf(pr)
+		if detail := b.detailOf(pr); state != "" && detail != nil && !detail.Held {
+			why := "It is " + string(state)
+			if state == gone {
+				why = "No read lists it any more"
+			}
 			lines = append(lines, gotermboard.Line{gotermboard.C(
-				"It is gone from the open pull requests, so its "+detailSectionNames()+" are not read.", dim)}, gotermboard.Line{})
+				why+", so its "+detailSectionNames()+" are not read; o opens its page.", dim)}, gotermboard.Line{})
 		}
 		markdown := b.markdownOf(pr, time.Now())
 		return append(lines, b.renderer.Lines(markdown, min(width, gotermboard.ReadingWidth))...)
@@ -332,9 +388,9 @@ func (b *Board) detailOf(pr pullrequests.PullRequest) *pullrequests.DetailState 
 	if detail, own := b.openedOnDetail(pr); own && !state.Held {
 		state.Detail, state.Held = detail, true
 	}
-	// A listing claims its rows' reads once it lands, so a row drawn before that is due a read.
-	// A row gone from the listing is due none.
-	if !state.Held && state.Fault == "" && b.readDetails && b.stateOf(pr) != gone {
+	// A listing claims its rows' reads once it lands, so a row drawn before that is due a read,
+	// where readsDetail says its detail is read and it is not gone.
+	if !state.Held && state.Fault == "" && b.readDetails && readsDetail(pr) && b.stateOf(pr) != gone {
 		state.Reading = true
 	}
 	return &state

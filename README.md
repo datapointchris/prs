@@ -1,8 +1,9 @@
 # prs
 
 Every open pull request across the repos you work on, on one terminal board that keeps
-itself current: each one's checks and review in words, its description, checks, files and
-comments beside the list, and a key per action.
+itself current: the ones people opened above the ones apps opened, those merged or closed
+lately below both, where each stands in words, its description, checks, files and comments
+beside the list, and a key per action.
 
 It is for reading a backlog of pull requests, yours and the ones an app opens for you,
 and acting on each one without leaving the terminal. It reads GitHub with the login
@@ -87,10 +88,20 @@ field it filters on drops a repo silently, and every list it prints still looks 
 
 ## How the board reads
 
-- **The rows are every open pull request on a repo prs reads, whoever opened it**, oldest
-  first, because a backlog is a gauge and age is what it measures. One GitHub request asks
-  for the registry's repos by name, and `bbkt` lists each Bitbucket repo in its checkout,
-  several repos at once.
+- **The rows are every open pull request on a repo prs reads, in three groups.** `people`
+  holds those a person opened and `bots` those an app opened, each oldest first, because a
+  backlog is a gauge and age is what it measures. `recently closed` holds those merged or
+  closed within `--since`, newest first. Each header counts its rows, and enter on it folds
+  them. One GitHub request asks for the registry's repos by name, and `bbkt` lists each
+  Bitbucket repo in its checkout, several repos at once. Bitbucket's listing does not say
+  who is an app, so its pull requests sit under `people`.
+- **`--since` is how far back `recently closed` reaches**, and `prs tui --help` prints its
+  default. It takes a span such as `12h`, `2d` or `1w`, counted back from each read, or a
+  day or an RFC 3339 instant. A second GitHub request reads the closed ones. It costs as
+  much as the open one, so it runs on a timer of its own, `closed_refresh_every_seconds` in
+  the config. Its rows read no checks, files or comments, because each would cost a request
+  of its own. prs reads no close time from Bitbucket, so a Bitbucket pull request reaches
+  `recently closed` only when `m` here merged it.
 - **Each GitHub row's checks, files and conversation are read after the list lands**,
   a few pull requests at a time, so the list never waits on them. A pull request's detail
   is read again when its head commit, its update time or its checks state moves, or when
@@ -99,18 +110,24 @@ field it filters on drops a repo silently, and every list it prints still looks 
   `$XDG_CACHE_HOME/prs/listings/` in a file for each set of repos, and reads each provider
   behind them, so the first frame never waits on GitHub. Only `prs tui` keeps them.
   `prs list`, `--once` and `--json` wait for their reads.
-- **Each provider is read again on a timer while the board is open**, whenever its
-  terminal gains focus, and whenever a program a key handed the terminal to exits.
-  `refresh_every_seconds` in the config sets the timer, and `prs config path` prints its
-  default. A return within a few seconds of the last read does not read again. Returning
+- **Each provider's open pull requests are read again on a timer while the board is
+  open**, whenever its terminal gains focus, and whenever a program a key handed the
+  terminal to exits. `refresh_every_seconds` in the config sets the timer, and
+  `prs config path` prints its default. A return within a few seconds of the last read does not read again. Returning
   from a tmux window reaches prs as focus where tmux's `focus-events` option is on. The
   line at the top says how old the newest read is, turns a spinner while a read runs, and
   names a read that failed. A failed read keeps the last good rows, and so does one
   Bitbucket repo that failed while the rest read.
-- **A refresh leaves the cursor on its pull request.** One the read no longer lists stays
-  under the cursor, marked `gone`, until the cursor moves off it, and `m` and `x` refuse it.
-- **State is a word, never a color alone.** `checks passing`, `review required` and
-  `review 2 posted` read under every theme, and the colors are the terminal's own 16.
+- **A refresh leaves the cursor on its pull request, in the group it was in.** One a read
+  moved to another group stays under the cursor where it was, in its new state, and one no
+  read lists any more stays there marked `gone`, each until the cursor moves off it. `m`
+  and `x` refuse a `gone` one.
+- **State is a word, never a color alone.** The first column says where a pull request
+  stands: `ready`, `behind`, `conflicts`, `blocked`, `draft` or `unknown` while open, or
+  `mergeable` where it can merge with its checks not passing, and `merged` or `closed`
+  after. A Bitbucket row reads `open`, because prs reads no merge state from Bitbucket. `checks
+  passing`, `review required` and `review 2 posted` follow it. Each reads under every
+  theme and under `NO_COLOR`, and the colors are the terminal's own 16.
 - **A pull request whose base is another open one's branch names that one**, as `↑ #12`
   after its title. A pull request an app opened names the app.
 - **The branch and the checkout are under the row**, dim, where `f` shows them.
@@ -153,8 +170,10 @@ while one runs is refused. On GitHub a merge after `d` pins the head the diff sh
 fails where the branch moved since. `c` opens your editor on an empty file and posts what
 was written when it exits. Merging, closing, commenting and `o`, which opens the page in
 the browser, each run while the list stays usable, named on the footer until they end. A
-merged or closed row reads `merged` or `closed` at once, and a failure says the client's
-own reason on the footer. Bitbucket's client has no verb to close a pull request, so `x`
+row merged or closed here moves to `recently closed` at once, reading `merged` or `closed`,
+and the cursor goes with it. A read that starts after the key then says where it stands,
+so a merge a queue only accepted, or a close reopened on its page, returns it to its
+group. A failure says the client's own reason on the footer. Bitbucket's client has no verb to close a pull request, so `x`
 refuses there.
 
 `y` copies the branch.
@@ -193,11 +212,12 @@ prs tui --pr https://bitbucket.example.com/projects/FIN/repos/ledger/pull-reques
 
 - **An open pull request sits where the list puts it.** One on a repo prs does not read
   is drawn among the list's rows too.
-- **A merged or closed one sits in a group above the list.** Its row reads `merged` or
-  `closed`, and `m` and `x` refuse it. Bitbucket's `declined` reads `closed`.
+- **A merged or closed one sits in a group above the list**, however long ago it closed,
+  and not under `recently closed`. Its row reads `merged` or `closed`, and `m` and `x`
+  refuse it. Bitbucket's `declined` reads `closed`.
 - **While no listing holds it, prs reads it again on the board's timer**, so one merged
   elsewhere moves above the list, and one on a repo prs does not read stays current. One
-  merged with `m` moves there once the listing drops it.
+  merged with `m` moves there at once.
 - **`owner/name#number` is the registry's repo of that name**, on whichever provider hosts
   it, and GitHub where the registry names none. A URL says its provider itself. bbkt reads
   a Bitbucket one by its project and name, so its repo need not be checked out.
@@ -207,22 +227,26 @@ prs tui --pr https://bitbucket.example.com/projects/FIN/repos/ledger/pull-reques
 
 ## Reading it from a program
 
-`prs list` reads each provider once and prints the board's rows as a table, under a line
-naming any provider it could not read. `prs list --json` prints them as a JSON array, one
+`prs list` reads each provider once and prints the board's open rows as a table, the
+people's then the bots', under a line naming any provider it could not read. It reads no
+closed pull requests. `prs list --json` prints them as a JSON array, one
 object per pull request, in the shape [`cmd/prs/list.schema.json`](cmd/prs/list.schema.json)
 gives. Beside the row's columns it carries each pull request's state, its merge state, its
 head commit and the open pull request it is stacked on.
 
-`prs tui --json` prints the board's snapshot instead: the same rows under
-`pull_requests`, and how each read stands. With `--pr`, `opened_on` is that pull request
-in the shape of one of those rows, merged or closed where it is, and null without `--pr`.
-`pull_requests` holds it only where a listing does. `prs tui --once` prints one frame at
-`COLUMNS` by `LINES`.
+`prs tui --json` prints the board's snapshot instead: the open rows under `pull_requests`,
+as `prs list --json` prints them, those merged or closed within `--since` under
+`recently_closed`, newest first, and how each read stands. Both arrays hold rows of one
+shape. With `--pr`, `opened_on` is that pull request in the shape of one of those rows,
+merged or closed where it is, and null without `--pr`. Either array holds it only where a
+listing does. `prs tui --once` prints one frame at `COLUMNS` by `LINES`.
 
-Each of these exits 1 after printing when a read failed or left pull requests out,
+Each of these exits 1 after printing when a read failed or left open pull requests out,
 because a failed read and a repo with no open pull requests otherwise print the same rows.
 A refused search, a Bitbucket repo that failed or is not checked out, and a search past
-its page each leave pull requests out. The rest of the rows still print.
+its page each leave pull requests out. The rest of the rows still print. A recently closed
+read past its page is not counted, because it keeps the newest, and the line at the top
+says how many it left out.
 
 ```bash
 prs list --json | jq -r '.[] | select(.merge_state_status == "BEHIND") | .url'

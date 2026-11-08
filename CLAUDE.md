@@ -3,13 +3,15 @@
 A Go command whose board is a view on gotermboard. `cmd/prs` holds the commands.
 `internal/board` is the view: `rows.go` the row grammar, `actions.go` the key table,
 `work.go` what a key runs in the background or hands the terminal to, `board.go` the
-sources, the frame and the `--json` snapshot, `listing_cache.go` the last listing kept on
+sources, the frame and the `--json` snapshot, `sections.go` the people, bots and recently
+closed groups, one record per pull request and the row held under the cursor,
+`listing_cache.go` the last listing kept on
 disk for the next start, `table.go` what `prs list` prints, `document.go` each pull
 request's markdown document, a section per heading, and `opened_on.go` the pull request
 `prs tui --pr` names. `internal/pullrequests` reads each provider: GitHub in-process
 through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
-differently by host, `detail.go` the per-PR detail cache, and `reference.go` what `--pr`
-takes and how it is read.
+differently by host, `detail.go` the per-PR detail cache, `reference.go` what `--pr`
+takes and how it is read, and `since.go` what `--since` takes.
 `internal/registry` reads the registry file, and `internal/config` reads
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
@@ -38,12 +40,28 @@ takes and how it is read.
   until its first read lands. A file is drawn only for the scope it was read for, so a
   registry edit never shows another set's rows. Only the interactive board reads or writes
   it, because `prs list`, `--once` and `--json` wait for their reads.
-- **A refresh never moves the row under the cursor.** A pull request a read drops stays
-  under the cursor, marked gone, until the cursor leaves it, and m and x refuse it.
-- **`prs list`, `--json` and `--once` exit 1 when a read failed or left a pull request
-  out**, because a failed read and a repo with no open pull requests otherwise print the
-  same rows. A note leaves one out: a refused search, a Bitbucket repo that failed or is
-  not checked out, a search past its page.
+- **A refresh never moves the row under the cursor.** A pull request a read moves to
+  another group stays under the cursor in the group it was drawn in, in its new state, and
+  one no read lists stays there marked gone, each until the cursor leaves it. m and x
+  refuse a gone one. A merge or close a key made here moves its row at once, and the
+  cursor goes with it.
+- **A pull request's group comes from its own record**: recently closed once its state is
+  merged or closed, whichever listing read it, then bots where `bot` is true, then people.
+  Where two listings read one pull request, the record updated last stands, because
+  GitHub's open search still finds a pull request for a while after it merges. A merge or
+  close a key made here stands over a record read before the key, and gives way once a
+  listing read that started after the key holds the pull request, because that read is
+  the evidence the change took.
+- **The recently closed read runs on its own timer**, `closed_refresh_every_seconds`,
+  because it costs GitHub as much as the open one. Focus and a handover reread only the
+  open listings. Its rows read no detail, because each detail read costs a point and the
+  window holds as many rows as `--since` reaches. `readsDetail` decides which rows read
+  one, for the prefetch and the document alike.
+- **`prs list`, `--json` and `--once` exit 1 when a read failed or left an open pull
+  request out**, because a failed read and a repo with no open pull requests otherwise
+  print the same rows. A note leaves one out: a refused search, a Bitbucket repo that
+  failed or is not checked out, a search past its page. A recently closed read past its
+  page is not a gap, because it sorts the newest first so its page keeps them.
 - **A stacked pull request finds its parent by repo and branch together.** Branch names
   recur across repos.
 - **State is a word on the row, and a glyph never changes with state.** Two glyphs are not
@@ -70,9 +88,11 @@ takes and how it is read.
 - **A per-host fact lives in the Provider table**: the state words a client prints, mapped
   to `Standing`, and the path of a pull request's page, read by `PagePath`. The board
   switches over `Standing` rather than over a host's words.
-- **`pull_requests` in `--json` holds only what the listings read.** The pull request
-  `--pr` names is `opened_on`, and the board draws its own read only where no listing holds
-  it.
+- **`pull_requests` in `--json` holds only the open pull requests the listings read**, the
+  set `prs list --json` prints, and `recently_closed` those merged or closed within the
+  window. The pull request `--pr` names is `opened_on`, and the board draws its own read
+  only where no listing holds it. Once merged or closed it sits in its own group above the
+  others, never under recently closed.
 - **A pull request's detail never holds up its row.** The board reads each GitHub row's
   detail in the background after the listing lands, a few at a time. It reads one again
   when its head commit, update time or checks state moves, or when its last read failed.
@@ -99,6 +119,9 @@ takes and how it is read.
 - **A row's `ReaderTitle` is its pull request's title**, because the table's enter would
   otherwise title the Reader with the row's first cells, which here are its state words.
 - **A row's `Under` line shows only once `f` turns summaries on.**
+- **A group header that is not `Still` takes the cursor**, so `g` lands on the people
+  header and enter there folds the group. The cursor starts on the first row holding cells,
+  of whichever group draws first, so recently closed waits for the first open listing.
 - **The message a key's command ends in reaches `Board.Receive`**, gotermboard's
   `ReceivingBoard`, and `Board.UnderWay`, its `BusyBoard`, puts the work under way on the
   footer after a spinner. A key's own `m.Say` shows until the next key, and the under-way

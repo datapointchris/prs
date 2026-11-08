@@ -104,10 +104,19 @@ func (b *Board) Receive(m *gotermboard.Model, msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-// settle gives a pull request the state a merge or close left it in, which its row reads until
-// a listing drops it, however long the provider's search takes to see the change.
-func (b *Board) settle(m *gotermboard.Model, pr pullrequests.PullRequest, state rowState) {
-	b.settled[pr.Key()] = state
+// closeHere moves a pull request a key merged or closed into recently closed at once, in the
+// state the key left it in, until a listing read after the key holds it.
+func (b *Board) closeHere(m *gotermboard.Model, pr pullrequests.PullRequest, standing pullrequests.Standing) {
+	if provider, err := pullrequests.ProviderOf(pr.Provider); err == nil {
+		pr.State = provider.Word(standing)
+	}
+	at := time.Now()
+	stamp := at.UTC().Truncate(time.Second)
+	pr.ClosedAt, pr.UpdatedAt = &stamp, &stamp
+	if standing == pullrequests.Merged {
+		pr.MergedAt = &stamp
+	}
+	b.closedHere[pr.Key()] = closeMadeHere{pr: pr, at: at}
 	m.Rebuild()
 }
 
@@ -116,8 +125,10 @@ func (b *Board) settle(m *gotermboard.Model, pr pullrequests.PullRequest, state 
 // the token's hourly GraphQL allowance, so rows read moments ago are not read again.
 const freshFor = 10 * time.Second
 
-// readAgain reads, on the board's next tick, every provider whose last good read is older
-// than freshFor, and every one that has not read yet here.
+// readAgain reads, on the board's next tick, every provider's open pull requests whose last
+// good read is older than freshFor, and every one that has not read yet here. The recently
+// closed read keeps its own timer, because it costs as much as the open one. The open read
+// already sees a close made elsewhere, as a row reading merged or closed or as a row it drops.
 func (b *Board) readAgain() {
 	now := time.Now()
 	for _, source := range b.sources {

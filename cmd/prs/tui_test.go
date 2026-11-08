@@ -12,9 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/datapointchris/tuidrive"
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -27,8 +30,9 @@ import (
 const standInToken = "stand-in-token"
 
 // standIn is prs run against a stand-in GitHub answering the listing with
-// testdata/search.json and one pull request with testdata/pull-request-<number>.json where
-// there is one, else testdata/pull-request.json, a stand-in
+// testdata/search.json, the closed listing with testdata/search-closed.json, and one pull
+// request with testdata/pull-request-<number>.json where there is one, else
+// testdata/pull-request.json, a stand-in
 // bbkt answering testdata/bbkt-list.json, and a stand-in gh, tmux, claude, git, nvim and
 // editor. Each records its arguments, and a client records the body it was handed to post,
 // so no test reads a real account, changes a real pull request or starts a real Claude.
@@ -70,8 +74,10 @@ func (g *gitHub) fail() {
 	g.down = true
 }
 
-// serveListing answers a listing request as the test last said.
-func (g *gitHub) serveListing(w http.ResponseWriter, r *http.Request) {
+// serveListing answers a listing request as the test last said. A search for closed pull
+// requests reads testdata/search-closed.json, keeping those closed at or after the instant
+// its closed:>= qualifier names, as GitHub does, so a query without one finds none.
+func (g *gitHub) serveListing(w http.ResponseWriter, r *http.Request, query string) {
 	g.mu.Lock()
 	listing, down := g.listing, g.down
 	g.mu.Unlock()
@@ -80,11 +86,38 @@ func (g *gitHub) serveListing(w http.ResponseWriter, r *http.Request) {
 	case down:
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = w.Write([]byte(`{"message": "Server Error"}`))
+	case strings.Contains(query, "is:closed"):
+		_, _ = w.Write(closedSince(query))
 	case listing == nil:
 		http.ServeFile(w, r, filepath.Join("testdata", "search.json"))
 	default:
 		_, _ = w.Write(listing)
 	}
+}
+
+// closedSince is testdata/search-closed.json holding only the pull requests closed at or
+// after the closed:>= instant in query.
+func closedSince(query string) []byte {
+	var since time.Time
+	if at := regexp.MustCompile(`closed:>=(\S+)`).FindStringSubmatch(query); at != nil {
+		since, _ = time.Parse(time.RFC3339, at[1])
+	}
+	raw, _ := os.ReadFile(filepath.Join("testdata", "search-closed.json"))
+	var doc struct {
+		Data map[string]struct {
+			Nodes []map[string]any `json:"nodes"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(raw, &doc)
+	var nodes []map[string]any
+	for _, node := range doc.Data["s0"].Nodes {
+		closed, _ := time.Parse(time.RFC3339, fmt.Sprint(node["closedAt"]))
+		if !since.IsZero() && !closed.Before(since) {
+			nodes = append(nodes, node)
+		}
+	}
+	answer, _ := json.Marshal(map[string]any{"data": map[string]any{"s0": map[string]any{"issueCount": len(nodes), "nodes": nodes}}})
+	return answer
 }
 
 // gitHubStandIn serves GitHub's GraphQL endpoint on a unix socket and returns a gh config
@@ -119,7 +152,7 @@ func gitHubStandIn(t *testing.T, listing *gitHub) string {
 			return
 		}
 		if !strings.Contains(request.Query, "pullRequest(number:") {
-			listing.serveListing(w, r)
+			listing.serveListing(w, r, fmt.Sprint(request.Variables["s0"]))
 			return
 		}
 		answer := "pull-request.json"
@@ -265,10 +298,12 @@ func (s standIn) run(t *testing.T, args ...string) (string, string, int) {
 	return stdout.String(), stderr.String(), cmd.ProcessState.ExitCode()
 }
 
-func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.T) {
+// The snapshot holds what the board draws: the people's open pull requests, then the bots',
+// under pull_requests, and those closed within --since, newest first, under recently_closed.
+func TestTheSnapshotReadsBothProvidersSortsPeopleFirstAndFindsAParentByRepoAndBranch(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
-	out, said, code := s.run(t, "tui", "--json")
+	out, said, code := s.run(t, "tui", "--json", "--since", "2026-11-01")
 	if code != 0 {
 		t.Fatalf("prs tui --json exited %d: %s", code, said)
 	}
@@ -276,17 +311,21 @@ func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.
 	if err := json.Unmarshal([]byte(out), &snap); err != nil {
 		t.Fatal(err)
 	}
-	var rows struct {
-		PullRequests json.RawMessage `json:"pull_requests"`
-	}
+	var rows map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(out), &rows); err != nil {
 		t.Fatal(err)
 	}
-	if err := listSchema(t).Validate(decoded(t, string(rows.PullRequests))); err != nil {
-		t.Errorf("prs tui --json's pull_requests break list.schema.json: %v", err)
+	for _, key := range []string{"pull_requests", "recently_closed"} {
+		if err := listSchema(t).Validate(decoded(t, string(rows[key]))); err != nil {
+			t.Errorf("prs tui --json's %s break list.schema.json: %v", key, err)
+		}
 	}
 	var got []string
-	for _, row := range snap.PullRequests {
+	for _, row := range slices.Concat(snap.PullRequests, []board.Row{{}}, snap.RecentlyClosed) {
+		if row.Number == 0 {
+			got = append(got, "recently_closed:")
+			continue
+		}
 		stacked := 0
 		if row.StackedOn != nil {
 			stacked = *row.StackedOn
@@ -295,14 +334,18 @@ func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.
 		if row.Bot != nil {
 			bot = fmt.Sprint(*row.Bot)
 		}
-		got = append(got, fmt.Sprintf("%s#%d %s into %s bot=%s stacked_on=%d", row.Slug, row.Number, row.Branch, row.Base, bot, stacked))
+		got = append(got, fmt.Sprintf("%s#%d %s %s into %s bot=%s stacked_on=%d", row.Slug, row.Number, row.State, row.Branch, row.Base, bot, stacked))
 	}
-	// gadget#5 targets a branch only widget has. bbkt's listing types no bot.
+	// gadget#5 targets a branch only widget has. bbkt's listing types no bot, so its row sits
+	// with the people's.
 	want := []string{
-		"FIN/ledger#4 feature/ledger-export into develop bot=unknown stacked_on=0",
-		"acme/widget#12 add-cache into main bot=false stacked_on=0",
-		"acme/widget#13 cache-metrics into add-cache bot=true stacked_on=12",
-		"acme/gadget#5 tidy into add-cache bot=false stacked_on=0",
+		"FIN/ledger#4 OPEN feature/ledger-export into develop bot=unknown stacked_on=0",
+		"acme/widget#12 OPEN add-cache into main bot=false stacked_on=0",
+		"acme/gadget#5 OPEN tidy into add-cache bot=false stacked_on=0",
+		"acme/widget#13 OPEN cache-metrics into add-cache bot=true stacked_on=12",
+		"recently_closed:",
+		"acme/widget#9 MERGED log-misses into main bot=false stacked_on=0",
+		"acme/gadget#8 CLOSED bump-linter into main bot=true stacked_on=0",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -386,32 +429,56 @@ func TestListPrintsAnEmptyArrayAndExits1WhenARepoIsLeftOut(t *testing.T) {
 	}
 }
 
-// On a wide screen the cursor's document sits beside the list and follows the cursor, and
-// enter opens it full screen.
-func TestTheBoardSaysEachStateInWordsShowsTheDocumentBesideTheListAndRunsAKeyTheConfigAdds(t *testing.T) {
+// A person's open pull request sorts above an app's, and those merged or closed within
+// --since sit below both, each state a word that reads with color off. On a wide screen the
+// cursor's document sits beside the list and follows the cursor, and enter opens it full
+// screen, or on a group's header folds the group.
+func TestTheBoardSortsPeopleAboveBotsAndClosedBelowInWordsShowsTheDocumentBesideTheListAndRunsAKeyTheConfigAdds(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
-	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 378, Rows: 91})
-	term.WaitFor("open · 4")
-	for _, words := range []string{"checks passing", "checks failing", "checks not run", "review required", "review 2 posted", "bot acme-automation", "Tidy the gadget (draft)", " #12"} {
+	s.env["NO_COLOR"] = "1"
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--since", "2026-11-01"}, Env: s.env, Cols: 378, Rows: 91})
+	for _, words := range []string{
+		"people · 3", "bots · 1", "recently closed · 2", "checks passing", "checks failing", "checks not run",
+		"review required", "review 2 posted", "bot acme-automation",
+	} {
 		term.WaitFor(words)
 	}
+	for _, pattern := range []string{
+		"behind .*Cache the widget lookups", "draft .*Tidy the gadget", "conflicts .*Count cache hits",
+		"merged .*Log the widget misses", "closed .*Bump the gadget's linter",
+	} {
+		term.WaitForPattern(pattern)
+	}
+	text := term.Frame().Text()
+	order := []string{"#12  Cache the widget lookups", "#13  Count cache hits", "#9  Log the widget misses", "#8  Bump the gadget's linter"}
+	for i := 1; i < len(order); i++ {
+		if strings.Index(text, order[i-1]) > strings.Index(text, order[i]) {
+			t.Errorf("%q should sit above %q:\n%s", order[i-1], order[i], text)
+		}
+	}
 
-	// The cursor starts on the first row of whichever provider answered first.
-	term.Press("g", "j")
+	// The cursor starts on the first row of whichever provider answered first, and g goes to
+	// the people's header.
+	term.Press("g", "j", "j")
 	// The board read the pull request's own detail after its listing landed.
 	term.WaitFor("mona approved at 9e8d7c6")
 	beside := false
 	for line := range strings.SplitSeq(term.Frame().Text(), "\n") {
-		beside = beside || strings.Contains(line, "#12  Cache the widget lookups") && strings.Contains(line, "acme/widget #12 · opened by octo")
+		beside = beside || strings.Contains(line, "review ") && strings.Contains(line, "acme/widget #12 · opened by octo")
 	}
 	if !beside {
-		t.Errorf("#12's row and its document should share a line of the screen:\n%s", term.Frame().Text())
+		t.Errorf("#12's document should share a line of the screen with a row of the table:\n%s", term.Frame().Text())
 	}
-	term.Press("j")
+	term.Press("j", "j", "j")
 	term.WaitFor("Counts the hits the cache in #12 takes.")
 	term.WaitGone("Caches the widget lookups for a minute.")
-	term.Press("k", "enter")
+	term.Press("G")
+	term.WaitFor("It is closed, so its checks, files and comments are not read")
+	term.Press("[", "enter")
+	term.WaitGone("Log the widget misses")
+	term.WaitFor("recently closed · 2")
+	term.Press("g", "j", "j", "enter")
 	term.WaitFor("[/] section")
 	term.Press("esc")
 
@@ -429,15 +496,18 @@ func TestTheBoardSaysEachStateInWordsShowsTheDocumentBesideTheListAndRunsAKeyThe
 	}
 }
 
-func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *testing.T) {
+// A key that acts leaves prs on the list, and a row merged here moves to recently closed at
+// once, though the stand-in's search still lists it open, as GitHub's does for a while.
+func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtOnce(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
-	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 30})
-	term.WaitFor("open · 4")
-	term.WaitFor(" #12")
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--since", "2026-11-01"}, Env: s.env, Cols: 140, Rows: 30})
+	term.WaitFor("people · 3")
+	term.WaitFor("recently closed · 2")
 
-	// The rows run ledger #4, widget #12, widget #13 and gadget #5, oldest first.
-	term.Press("g", "c")
+	// The people's rows run ledger #4, widget #12 and gadget #5, oldest first, under their
+	// header, and widget #13 sits under the bots'.
+	term.Press("g", "j", "c")
 	term.WaitFor("commented on FIN/ledger #4")
 	if !s.ran(t, "bbkt", "cwd="+s.ledger, "pr", "comment", "create", "4", "--body-file") || !s.ran(t, "Looks good to me.") {
 		t.Error("c on a Bitbucket row should post what the editor wrote through bbkt, in its checkout")
@@ -450,12 +520,16 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *tes
 	term.Press("m")
 	term.WaitFor("merging acme/widget #12 is still under way; merge it once that ends")
 	term.WaitFor("merged acme/widget #12")
-	term.WaitFor("merged  Cache the widget lookups")
+	term.WaitFor("recently closed · 3")
+	term.WaitForPattern("merged .*Cache the widget lookups")
 	if recorded, _ := os.ReadFile(s.recorded); strings.Count(string(recorded), "pr\nmerge\n12\n") != 1 {
 		t.Error("m pressed while a merge is under way should not send a second merge")
 	}
+	// The cursor went with the row.
+	term.Press("m")
+	term.WaitFor("acme/widget #12 is merged already")
 
-	term.Press("j", "m", "enter")
+	term.Press("g", "j", "j", "j", "j", "m", "enter")
 	term.WaitFor("gh could not merge #13: X Pull request acme/widget#13 is not mergeable")
 	term.Press("x")
 	term.WaitFor("close acme/widget #13 — Count cache hits? [y/N]")
@@ -465,10 +539,7 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *tes
 		t.Error("enter alone should leave the pull request open")
 	}
 
-	term.Press("k", "m")
-	term.WaitFor("acme/widget #12 is merged already")
-
-	term.Press("j", "d")
+	term.Press("d")
 	term.WaitFor("closed the diff of widget #13")
 	if !s.ran(t, "git", "cwd="+s.checkout, "fetch", "--quiet", "--force", "origin", "pull/13/head:refs/remotes/origin/pr/13") {
 		t.Error("d should fetch the head into its own ref in the checkout")
@@ -513,7 +584,7 @@ func TestTuiOpensOnTheNamedPullRequestWithItsDocumentAndQExits0(t *testing.T) {
 	}
 
 	term = tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "acme/widget#12"}, Env: s.env, Cols: 140, Rows: 40})
-	term.WaitFor("open · 4")
+	term.WaitFor("people · 3")
 	term.WaitFor("Caches the widget lookups for a minute.")
 	// With no side panel, a document running past the screen reads full screen, and ] brings
 	// each heading to the top.
@@ -535,7 +606,7 @@ func TestTuiOpensOnTheNamedPullRequestWithItsDocumentAndQExits0(t *testing.T) {
 	term.WaitFor("merged · 1")
 	term.WaitFor("Pins the schema the widget reads, so a newer one fails loudly.")
 	term.Press("space")
-	term.WaitFor("open · 4")
+	term.WaitFor("people · 3")
 	term.Press("m")
 	term.WaitFor("acme/widget #7 is merged already, so there is nothing to merge")
 	term.Press("q")
@@ -593,6 +664,35 @@ func (s standIn) refreshEvery(t *testing.T, seconds int) {
 // and widget #14 has opened.
 func widget14Opened(t *testing.T) []byte {
 	t.Helper()
+	return editedSearch(t, func(pr map[string]any) []any {
+		switch pr["number"] {
+		case 13.0:
+			return nil
+		case 12.0:
+			opened := maps.Clone(pr)
+			opened["number"], opened["title"], opened["createdAt"] = 14, "Expire the widget cache", "2026-11-06T09:00:00Z"
+			return []any{opened, pr}
+		}
+		return []any{pr}
+	})
+}
+
+// widget12Merged is testdata/search.json once widget #12 has merged, while GitHub's search
+// still finds it among the open pull requests, as it does for a while after a merge.
+func widget12Merged(t *testing.T) []byte {
+	t.Helper()
+	return editedSearch(t, func(pr map[string]any) []any {
+		if pr["number"] == 12.0 {
+			pr["state"], pr["mergedAt"], pr["closedAt"], pr["updatedAt"] = "MERGED", "2026-11-07T09:00:00Z", "2026-11-07T09:00:00Z", "2026-11-07T09:00:00Z"
+		}
+		return []any{pr}
+	})
+}
+
+// editedSearch is testdata/search.json with each pull request in it replaced by what edit
+// returns for it.
+func editedSearch(t *testing.T, edit func(pr map[string]any) []any) []byte {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "search.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -604,16 +704,7 @@ func widget14Opened(t *testing.T) []byte {
 	search := doc["data"].(map[string]any)["s0"].(map[string]any)
 	var nodes []any
 	for _, node := range search["nodes"].([]any) {
-		pr := node.(map[string]any)
-		switch pr["number"] {
-		case 13.0:
-			continue
-		case 12.0:
-			opened := maps.Clone(pr)
-			opened["number"], opened["title"], opened["createdAt"] = 14, "Expire the widget cache", "2026-11-06T09:00:00Z"
-			nodes = append(nodes, opened)
-		}
-		nodes = append(nodes, pr)
+		nodes = append(nodes, edit(node.(map[string]any))...)
 	}
 	search["nodes"] = nodes
 	raw, err = json.Marshal(doc)
@@ -623,9 +714,11 @@ func widget14Opened(t *testing.T) []byte {
 	return raw
 }
 
-// A read lands on the timer and on focus with no key pressed. A pull request a read drops
-// stays under the cursor, marked gone, until the cursor leaves it. A start whose read fails
-// draws the rows the last run on the same repos kept, and names why the read failed.
+// A read lands on the timer and on focus with no key pressed. A pull request a read moves to
+// another group, or drops, stays under the cursor in its group until the cursor leaves it,
+// named merged or gone. One closed here goes back to its group once a later read lists it
+// open. A start whose read fails draws the rows the last run on the same repos kept, and
+// names why the read failed.
 func TestTheBoardDrawsTheLastListingOfTheSameReposAtOnceThenRereadsOnItsTimerAndOnFocus(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
@@ -633,14 +726,31 @@ func TestTheBoardDrawsTheLastListingOfTheSameReposAtOnceThenRereadsOnItsTimerAnd
 	s.refreshEvery(t, 1)
 	program := tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 30}
 	term := tuidrive.Start(t, program)
-	term.WaitFor("open · 4")
+	term.WaitFor("people · 3")
 	term.WaitFor(" #13")
+	// The rows run ledger #4, widget #12 and gadget #5 under the people's header, then widget
+	// #13 under the bots'.
 	term.Press("g", "j", "j")
+	// x closes #12, then someone reopens it on its page, so the next read lists it open. That
+	// read started after the close, so it stands, and #12 returns to the people's group once
+	// the cursor leaves it.
+	term.Press("x", "y", "enter")
+	term.WaitFor("closed acme/widget #12")
+	term.WaitFor("people · 2")
+	term.Press("k")
+	term.WaitFor("people · 3")
+	term.Press("g", "j", "j")
+	s.github.answer(widget12Merged(t))
+	term.WaitForPattern("merged .*Cache the widget lookups")
+	term.WaitFor("people · 3")
+	term.Press("j")
+	term.WaitFor("people · 2")
+	term.Press("j", "j")
 	s.github.answer(opened)
-	term.WaitFor(" #14")
-	term.WaitFor("gone  Count cache hits")
+	term.WaitFor("Expire the widget cache")
+	term.WaitForPattern("gone .*Count cache hits")
 	term.Press("m")
-	term.WaitFor("acme/widget #13 is gone from the open pull requests since the last read, so prs will not merge it")
+	term.WaitFor("acme/widget #13 is in no listing since the last read, so prs will not merge it")
 	term.Press("k")
 	term.WaitGone("Count cache hits")
 	term.Press("q")

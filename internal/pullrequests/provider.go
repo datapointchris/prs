@@ -3,7 +3,11 @@ package pullrequests
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/datapointchris/prs/internal/registry"
 )
@@ -23,6 +27,9 @@ type Provider struct {
 	// Read lists the open pull requests in the scope. last is the previous good listing,
 	// for a reader that can keep one repo's rows when only that repo failed.
 	Read func(ctx context.Context, scope Scope, last Listing) (Listing, error)
+	// ReadClosed lists the pull requests in the scope merged or closed at or after since, as
+	// Read lists the open ones. Nil where the host's client cannot say when one closed.
+	ReadClosed func(ctx context.Context, scope Scope, since time.Time, last Listing) (Listing, error)
 	// Detail reads what the listing leaves out of one pull request. Nil where the host's
 	// client reads no more than its listing.
 	Detail func(ctx context.Context, pr PullRequest) (Detail, error)
@@ -58,6 +65,7 @@ var Providers = []Provider{
 			return parts[0] + "/" + parts[1], parts[3], true
 		},
 		Read:        ReadGitHub,
+		ReadClosed:  ReadGitHubClosed,
 		Detail:      readGitHubDetail,
 		ReadOne:     readGitHubReference,
 		ReadsOwners: true,
@@ -96,7 +104,8 @@ var Providers = []Provider{
 			}
 			return "", "", false
 		},
-		Read:    ReadBitbucket,
+		Read: ReadBitbucket,
+		// bbkt's listing carries no time a pull request closed, so it has no ReadClosed.
 		ReadOne: readBitbucketReference,
 		// Bitbucket serves no pull request refs, so the head is the source branch on origin.
 		Head: func(pr PullRequest) string { return pr.Branch },
@@ -113,6 +122,17 @@ var Providers = []Provider{
 			return []string{"bbkt", "pr", "comment", "create", strconv.Itoa(pr.Number), "--body-file", path}, true
 		},
 	},
+}
+
+// Word is the state word the host prints for standing, the first in sorted order where it
+// prints several, such as Bitbucket's DECLINED and SUPERSEDED.
+func (p Provider) Word(standing Standing) string {
+	for _, word := range slices.Sorted(maps.Keys(p.Standings)) {
+		if p.Standings[word] == standing {
+			return word
+		}
+	}
+	return strings.ToUpper(standing.String())
 }
 
 // ProviderOf is the Provider named name.
