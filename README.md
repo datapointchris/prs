@@ -71,7 +71,7 @@ these fields of an entry and ignores the rest:
 | `name` | yes | The repo's name on its provider. |
 | `owner` | yes | The GitHub owner, or the Bitbucket project key. |
 | `status` | yes | Only `active` repos are read. Every other value skips the entry. |
-| `path` | no | Where it is checked out, `~`-rooted or absolute. `d`, `i` and your own keys run there, and bbkt reads a Bitbucket repo there. |
+| `path` | no | Where it is checked out, `~`-rooted or absolute. The diff keys and your own keys run there, and bbkt reads a Bitbucket repo there. |
 | `provider` | no | `github` or `bitbucket`. An entry without one takes the file's top-level `provider`, and `github` where the file names none. |
 
 `status` and `owner` are required rather than defaulted, because a reader that defaults a
@@ -143,8 +143,8 @@ field it filters on drops a repo silently, and every list it prints still looks 
   reads `claude reviewed` where the newest review is of a version prs does not read.
 - **A pull request pushed to since its newest review says how much**, as `2 commits since
   review`, counted from the commit that review was submitted against. It reads `rebased
-  since review` where the branch does not hold that commit, and nothing where no review was
-  submitted or the head is the reviewed commit.
+  since review` where the branch does not hold that commit. A blank means prs could not
+  tell, or there is nothing to count.
 - **A pull request whose base is another open one's branch names that one**, as `↑ #12`
   after its number. A pull request an app opened names the app at the end of its second
   line.
@@ -215,19 +215,23 @@ config can show the description beside the diff and each thread on its line. prs
 both once nvim exits.
 
 `i` opens what was pushed since the newest review: the same fetch and nvim as `d`, with
-the diff running from the commit that review was submitted against to the head. It checks
-the fetched head still holds that commit. Where it does not, as after a rebase, or where no
-review was submitted, it opens the whole diff instead, and the footer says why once nvim
-exits. Where nothing was pushed since the review, it says so and opens nothing. The threads
-file names the reviewed commit as `base` and holds only the `RIGHT` threads, because a
-`LEFT` thread's line counts in the base branch's copy, which this diff does not show.
-Bitbucket's client reads no reviews, so `i` refuses there.
+the diff running from the commit that review was submitted against to the head. It asks
+git whether the fetched head holds that commit, and whether the base was merged into the
+branch since. Where the head does not hold it, as after a rebase, where a merge brought the
+base's changes in, or where no review was submitted, it opens the whole diff instead, and
+the footer says why once nvim exits. Where git cannot answer, it opens nothing and the
+footer names git's failure. Where nothing was pushed since the review, it says so and
+opens nothing. Its threads file reads `"diff": "since_review"`, names the reviewed commit
+as `base`, and holds only the `RIGHT` threads, because a `LEFT` thread's line counts in the
+base branch's copy, which this diff does not show. `threads_left_out` counts the rest.
+prs reads no reviews from Bitbucket, or of a pull request in `recently closed`, so `i`
+refuses there.
 
 `m` merges and `x` closes without merging. Each names the pull request and asks first:
 enter alone merges, and enter alone leaves it open rather than closing it. A second press
-while one runs is refused. On GitHub every merge pins a head: the one `d` or `i` fetched, or else
-the one the Diff section showed, or else the one the list showed, so it fails where the
-branch moved since. `c` opens your editor on an empty file and posts what
+while one runs is refused. On GitHub every merge pins a head: the one a diff key last
+fetched, or else the one the Diff section showed, or else the one the list showed, so it
+fails where the branch moved since. `c` opens your editor on an empty file and posts what
 was written when it exits. Merging, closing, commenting and `o`, which opens the page in
 the browser, each run while the list stays usable, named on the footer until they end. A
 row merged or closed here moves to `recently closed` at once, reading `merged` or `closed`.
@@ -273,6 +277,12 @@ window_actions:
 `needs` are the programs the command runs. A machine missing one is not offered the key,
 because tmux would open the window and the command would die in it. `{number}`, `{repo}`
 and `{slug}` are filled in. Quote a value holding ` #`, which YAML reads as a comment.
+
+A key prs or the board already binds is refused, and `prs tui` does not start until the
+config moves it, because the board's key would take it. `?` lists every key the board
+binds, and `prs config show` names a refused one with the key that holds it. A release can
+bind a letter that was free, so a window action on that letter is refused after the
+upgrade by the same rule.
 
 `runs_review_round` marks a command that runs a Claude review round. Its row then reads
 `claude running` while the window is open, which prs asks tmux every few seconds, until a

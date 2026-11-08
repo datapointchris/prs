@@ -1,21 +1,22 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "urn:prs:diff-threads:v1",
-  "title": "The review threads of the pull request whose diff d or i opened",
-  "description": "The file PRS_DIFF_THREADS names in the nvim d or i starts. It sits beside the diff's socket and is removed once nvim exits. Every field is always present.",
+  "title": "The review threads of the pull request whose diff prs opened in nvim",
+  "description": "The file PRS_DIFF_THREADS names in the nvim a diff key starts. It sits beside the diff's socket and is removed once nvim exits. Every field is always present.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["slug", "number", "title", "url", "base", "head", "threads_read", "threads"],
+  "required": ["slug", "number", "title", "url", "diff", "base", "head", "threads_read", "threads", "threads_left_out"],
   "properties": {
     "slug": {"description": "owner/name of the repository. A Bitbucket owner is the project key.", "type": "string"},
     "number": {"type": "integer", "minimum": 1},
     "title": {"type": "string"},
     "url": {"type": "string"},
-    "base": {"description": "The revision the diff runs from. For the whole diff it is origin/<base branch>, and the diff is three-dot, so its left side is where the branch left this. For i's diff since review it is the commit the newest review read, which is its left side.", "type": "string"},
-    "head": {"description": "The commit d or i fetched for the pull request's head, which is the diff's right side.", "type": "string"},
+    "diff": {"description": "Which diff opened. whole runs three-dot from where the branch left its base branch. since_review runs from the commit the newest review read to the head.", "enum": ["whole", "since_review"]},
+    "base": {"description": "The revision the diff runs from, which is its left side's: origin/<base branch> for whole, where the left side is where the branch left it, and the reviewed commit for since_review.", "type": "string"},
+    "head": {"description": "The commit the diff key fetched for the pull request's head, which is the diff's right side.", "type": "string"},
     "threads_read": {"description": "False where prs held no detail read for the pull request when the diff opened, such as one on a host whose detail it does not read, so an empty threads list says nothing.", "type": "boolean"},
     "threads": {
-      "description": "Each review thread the detail read holds on a side the diff shows, in the provider's order. That is every one for the whole diff, and the RIGHT ones for i's diff since review, whose left side is not the base branch's copy.",
+      "description": "Each review thread the detail read holds on a side the diff shows, in the provider's order. That is every one for whole, and the RIGHT ones for since_review, whose left side is not the base branch's copy.",
       "type": "array",
       "items": {
         "type": "object",
@@ -47,6 +48,7 @@
           "comment_count": {"description": "How many comments the thread holds, which can pass the number listed.", "type": "integer", "minimum": 0}
         }
       }
-    }
+    },
+    "threads_left_out": {"description": "How many threads the detail read holds on a side this diff does not show, which threads leaves out: 0 for whole, and the LEFT ones for since_review.", "type": "integer", "minimum": 0}
   }
 }

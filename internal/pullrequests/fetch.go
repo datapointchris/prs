@@ -2,8 +2,10 @@ package pullrequests
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -89,11 +91,55 @@ func (t LocalDiff) Range() string { return "origin/" + t.Base + "..." + t.Ref() 
 // after it.
 func (t LocalDiff) RangeFrom(commit string) string { return commit + ".." + t.Ref() }
 
-// HeadHolds says the head fetched into the target's Ref has commit in its history. A commit
-// git does not have here is in no history the fetch brought.
-func HeadHolds(ctx context.Context, t LocalDiff, commit string) bool {
-	_, err := Run(ctx, t.Checkout, "git", "merge-base", "--is-ancestor", commit, t.Ref())
-	return err == nil
+// HeadHolds says the head fetched into the target's Ref has commit in its history, and fails
+// where git could not answer. A commit git does not have here is in no history the fetch
+// brought. git says each answer by its exit status, 1 for no, so a failure never reads as no.
+func HeadHolds(ctx context.Context, t LocalDiff, commit string) (bool, error) {
+	_, said, err := run(ctx, t.Checkout, "git", "rev-parse", "--verify", "--quiet", commit+"^{commit}")
+	switch {
+	case exitedWith(err, 1):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("git could not say whether %s has %s: %s", t.Repo, commit, orError(said, err))
+	}
+	_, said, err = run(ctx, t.Checkout, "git", "merge-base", "--is-ancestor", commit, t.Ref())
+	switch {
+	case err == nil:
+		return true, nil
+	case exitedWith(err, 1):
+		return false, nil
+	}
+	return false, fmt.Errorf("git could not say whether #%d's head holds %s: %s", t.Number, commit, orError(said, err))
+}
+
+// BaseMergedSince says the branch took in commits from origin/<base> after commit, as a merge
+// of its base into it or GitHub's update of the branch does. A diff from commit to the head
+// would then show the base's changes as the branch's own. Where the head holds commit, the
+// two meet origin/<base> at the same commit unless such a merge came between them.
+func BaseMergedSince(ctx context.Context, t LocalDiff, commit string) (bool, error) {
+	var met [2]string
+	for i, revision := range []string{commit, t.Ref()} {
+		out, said, err := run(ctx, t.Checkout, "git", "merge-base", revision, "origin/"+t.Base)
+		if err != nil {
+			return false, fmt.Errorf("git could not find where %s meets origin/%s: %s", revision, t.Base, orError(said, err))
+		}
+		met[i] = strings.TrimSpace(string(out))
+	}
+	return met[0] != met[1], nil
+}
+
+// exitedWith says err is a client that ran and exited with status.
+func exitedWith(err error, status int) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == status
+}
+
+// orError is what a client said on stderr, or its error where it said nothing.
+func orError(said string, err error) string {
+	if said != "" {
+		return said
+	}
+	return err.Error()
 }
 
 // defaultBranch is the branch origin's HEAD names, for a provider whose listing reports no

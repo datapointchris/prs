@@ -10,7 +10,7 @@ import (
 	"github.com/datapointchris/prs/internal/pullrequests"
 )
 
-// The variables nvim's diff is started with, each naming a file d wrote. An nvim config
+// The variables nvim's diff is started with, each naming a file its key wrote. An nvim config
 // that finds them shows the pull request beside the diff, and one that does not ignores them.
 const (
 	documentVariable = "PRS_DIFF_DOCUMENT"
@@ -24,16 +24,19 @@ type diffThreads struct {
 	Number int    `json:"number"`
 	Title  string `json:"title"`
 	URL    string `json:"url"`
-	// Base and Head are the revisions the diff compares.
-	Base string `json:"base"`
-	Head string `json:"head"`
+	// Diff is which diff the key opened, and Base and Head the revisions it compares.
+	Diff diffKind `json:"diff"`
+	Base string   `json:"base"`
+	Head string   `json:"head"`
 	// ThreadsRead is false where no detail read was held when the diff opened, so an empty
-	// Threads says nothing about the pull request.
-	ThreadsRead bool                  `json:"threads_read"`
-	Threads     []pullrequests.Thread `json:"threads"`
+	// Threads says nothing about the pull request. ThreadsLeftOut counts the threads the
+	// detail read holds on a side the diff does not show.
+	ThreadsRead    bool                  `json:"threads_read"`
+	Threads        []pullrequests.Thread `json:"threads"`
+	ThreadsLeftOut int                   `json:"threads_left_out"`
 }
 
-// diffFiles are the two files d hands nvim, named from the socket's stem.
+// diffFiles are the two files a diff in nvim is handed, named from the socket's stem.
 type diffFiles struct {
 	document string
 	threads  string
@@ -45,19 +48,20 @@ func diffFilesAt(stem string) diffFiles {
 
 // write puts the pull request's title over its MarkdownDocument in the document file, and its
 // review threads in the threads file. roundWindow is the open tmux window running a review
-// round on it, where one is. base and head are the revisions the diff compares. A LEFT
-// thread's line counts in the base branch's copy of its file, so the threads file holds one
-// only where baseOnLeft says the diff's left side is that copy.
-func (f diffFiles) write(pr pullrequests.PullRequest, detail *pullrequests.DetailState, roundWindow, base, head string, baseOnLeft bool, now time.Time) error {
+// round on it, where one is. kind is the diff opened, and base and head the revisions it
+// compares. A LEFT thread's line counts in the base branch's copy of its file, so the threads
+// file holds one only where kind's left side is that copy.
+func (f diffFiles) write(pr pullrequests.PullRequest, detail *pullrequests.DetailState, roundWindow, base, head string, kind diffKind, now time.Time) error {
 	threads := diffThreads{
-		Slug: pr.Slug, Number: pr.Number, Title: pr.Title, URL: pr.URL, Base: base, Head: head,
+		Slug: pr.Slug, Number: pr.Number, Title: pr.Title, URL: pr.URL, Diff: kind, Base: base, Head: head,
 		Threads: []pullrequests.Thread{},
 	}
 	if detail != nil && detail.Held {
 		threads.ThreadsRead = true
 		threads.Threads = slices.DeleteFunc(slices.Clone(detail.Detail.Threads), func(thread pullrequests.Thread) bool {
-			return !baseOnLeft && thread.Side == "LEFT"
+			return kind != whole && thread.Side == "LEFT"
 		})
+		threads.ThreadsLeftOut = len(detail.Detail.Threads) - len(threads.Threads)
 	}
 	encoded, err := json.MarshalIndent(threads, "", "  ")
 	if err != nil {

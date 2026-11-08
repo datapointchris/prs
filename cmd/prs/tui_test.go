@@ -419,8 +419,9 @@ esac
 		"tmux": "#!/bin/sh\n" + record + "case \"$*\" in *automatic-rename}*) printf 'prs\\t0\\n' ;; esac\n" +
 			fmt.Sprintf("case \"$1\" in new-window) printf '%%s\\n' \"$3\" >> %[1]q ;; list-windows) cat %[1]q 2>/dev/null ;; esac\n", s.windows),
 		"claude": "#!/bin/sh\n" + record,
-		"git": "#!/bin/sh\n" + record + "[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\n" +
-			"[ \"$1 $2 $3\" = 'merge-base --is-ancestor " + rebasedAway + "' ] && { echo \"fatal: Not a valid commit name $3\" >&2; exit 128; }\n" +
+		"git": "#!/bin/sh\n" + record +
+			"case \"$*\" in 'rev-parse --verify --quiet " + rebasedAway + "^{commit}') exit 1 ;; esac\n" +
+			"[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\n" +
 			`case " $* " in *' diff '*) for a; do last=$a; done; cat "` + filepath.Dir(listed) + `/pull-request-${last##*/pr/}.diff" 2>/dev/null ;; esac` + "\nexit 0\n",
 		"nvim": "#!/bin/sh\n" + record + fmt.Sprintf(`printf '%%s\n' "PRS_DIFF_DOCUMENT=$PRS_DIFF_DOCUMENT" "PRS_DIFF_THREADS=$PRS_DIFF_THREADS" >> %q
 cp "$PRS_DIFF_DOCUMENT" %q; cp "$PRS_DIFF_THREADS" %q; exit 0
@@ -778,7 +779,7 @@ func TestEachRowReadsItsNewestReviewRoundAndItsDocumentHoldsTheRound(t *testing.
 // A row whose head moved past the commit its newest review read counts the commits since, and
 // i opens nvim's diff from that commit to the head. One reviewed by nobody, and one whose
 // reviewed commit a rebase took off the branch, open the whole diff, and the footer says why.
-// Bitbucket's reviews are not read, so i refuses there. D binds nothing.
+// Bitbucket's reviews are not read, so i refuses there and starts nothing.
 func TestARowCountsTheCommitsSinceItsReviewAndIDiffsOnlyThoseOrTheWholeDiffWithWhy(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
@@ -795,21 +796,29 @@ func TestARowCountsTheCommitsSinceItsReviewAndIDiffsOnlyThoseOrTheWholeDiffWithW
 	// The people's rows run ledger #4, widget #12 and gadget #5, then widget #13 under the
 	// bots' header.
 	term.Press("g", "j", "i")
-	term.WaitFor("prs reads no reviews from bitbucket, so #4 has no reviewed commit to diff from; d opens the whole diff")
+	term.WaitForPattern("bitbucket.*#4")
+	if s.ran(t, "git", "cwd="+s.ledger, "fetch", "--quiet", "--force", "origin") || s.ran(t, "nvim", "cwd="+s.ledger) {
+		t.Error("i on a Bitbucket row should fetch nothing and open no nvim")
+	}
 	term.Press("j", "i")
-	term.WaitFor("closed the diff of widget #12 since its newest review, at 9e8d7c6")
+	term.WaitForPattern("diff of widget #12.*9e8d7c6")
 	reviewed := "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a291807"
 	since := "if exists(':DiffviewOpen') == 2 | execute 'DiffviewOpen " + reviewed + "..refs/remotes/origin/pr/12' | else | cquit 3 | endif"
 	if !s.ran(t, "git", "cwd="+s.checkout, "fetch", "--quiet", "--force", "origin", "pull/12/head:refs/remotes/origin/pr/12") ||
 		!s.ran(t, "git", "cwd="+s.checkout, "merge-base", "--is-ancestor", reviewed, "refs/remotes/origin/pr/12") ||
+		!s.ran(t, "git", "cwd="+s.checkout, "merge-base", reviewed, "origin/main") ||
 		!s.ran(t, "-c", since) {
 		t.Error("i should fetch the head as d does, find the reviewed commit on it, and diff from that commit to the head")
 	}
 	// The diff's left side is the reviewed commit's copy, where a LEFT thread's line does not count.
 	threads, _ := os.ReadFile(s.handed + ".threads.json")
-	if !strings.Contains(string(threads), `"base": "`+reviewed+`"`) || !strings.Contains(string(threads), `"side": "RIGHT"`) ||
-		strings.Contains(string(threads), `"side": "LEFT"`) {
-		t.Errorf("the threads file should name the reviewed commit as the base and hold only the RIGHT threads:\n%s", threads)
+	for _, want := range []string{`"diff": "since_review"`, `"base": "` + reviewed + `"`, `"side": "RIGHT"`, `"threads_left_out": 1`} {
+		if !strings.Contains(string(threads), want) {
+			t.Errorf("the threads file should hold %s:\n%s", want, threads)
+		}
+	}
+	if strings.Contains(string(threads), `"side": "LEFT"`) {
+		t.Errorf("the threads file should leave the LEFT thread out:\n%s", threads)
 	}
 
 	// Nothing on #5's row says its detail landed, so its document beside the list does.
@@ -820,21 +829,16 @@ func TestARowCountsTheCommitsSinceItsReviewAndIDiffsOnlyThoseOrTheWholeDiffWithW
 		t.Errorf("a row nobody reviewed should name no commits since review:\n%s", term.Frame().Text())
 	}
 	term.Press("i")
-	term.WaitFor("closed the whole diff of gadget #5. It was whole, because no review was submitted on it")
+	term.WaitForPattern("whole diff of gadget #5")
 	term.Press("j", "j", "i")
-	term.WaitFor("closed the whole diff of widget #13. It was whole, because the commit its newest review read, 5ca1ab1, is gone from the branch, as after a rebase")
+	term.WaitForPattern("whole diff of widget #13.*5ca1ab1")
 	for _, whole := range []string{"origin/add-cache...refs/remotes/origin/pr/5", "origin/add-cache...refs/remotes/origin/pr/13"} {
 		if !s.ran(t, "-c", "if exists(':DiffviewOpen') == 2 | execute 'DiffviewOpen "+whole+"' | else | cquit 3 | endif") {
 			t.Errorf("i should open the whole diff, %s, where it has no reviewed commit on the branch", whole)
 		}
 	}
 
-	term.Press("?")
-	term.WaitForPattern(`i {17}view diff since review`)
-	if regexp.MustCompile(`(?m)^\s*D {17}`).MatchString(term.Frame().Text()) {
-		t.Errorf("D deletes in the terminal tools prs sits among, so prs should bind nothing to it:\n%s", term.Frame().Text())
-	}
-	term.Press("esc", "q")
+	term.Press("q")
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
 	}

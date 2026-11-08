@@ -438,7 +438,7 @@ func (b *Board) secondLine(at rowAt, parent int) gotermboard.Line {
 
 // sinceReviewCell is how many commits were pushed after the one the newest review read, or
 // that a rebase took that commit off the branch, which i then opens the whole diff for. It is
-// empty where the detail is not read, no review was submitted, or nothing was pushed since.
+// empty where the detail is not read, and wherever SinceReview is not Known or counts none.
 func sinceReviewCell(detail *pullrequests.DetailState) gotermboard.Cell {
 	if detail == nil || !detail.Held {
 		return gotermboard.C("", "")

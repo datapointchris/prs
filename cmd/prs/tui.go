@@ -85,8 +85,8 @@ One whose repo is not cloned here gets a section saying so.
 A letter acts on the pull request under the cursor, and ? lists every key. d hands the
 terminal to its diff in nvim, and :qa comes back to the list. i opens only what was pushed
 since its newest review, from the commit that review read to the head. Where no review was
-submitted, or a rebase took that commit off the branch, it opens the whole diff, and the
-footer says why once nvim exits. m merges and x closes,
+submitted, a rebase took that commit off the branch, or a merge brought the base in since,
+it opens the whole diff, and the footer says why once nvim exits. m merges and x closes,
 each after asking, and its row moves to recently closed once it has, while the cursor
 moves on to the next open row in its group. c posts what your editor wrote. Each runs
 while the list stays usable, named on the footer until it ends.
@@ -106,11 +106,13 @@ holds is read again on the same timer. A pull request prs cannot read is refused
 the board draws.
 
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
-so an agent reads what a person reads. The snapshot holds the open pull requests under
-pull_requests and the recently closed under recently_closed. Either exits 1 after printing
-when a read failed, or when the open pull requests' read left some out. A recently closed
-read past its page keeps the newest, and says so on the first line. With no terminal and
-neither flag it refuses.`,
+so an agent reads what a person reads. Neither reads a pull request's own detail, so both
+leave out what the open board fills in from it: the Claude review round, the commits
+since review, and the document's review, checks, files and comments. The snapshot holds
+the open pull requests under pull_requests and the recently closed under recently_closed.
+Either exits 1 after printing when a read failed, or when the open pull requests' read
+left some out. A recently closed read past its page keeps the newest, and says so on the
+first line. With no terminal and neither flag it refuses.`,
 		Example: `  prs tui
   prs tui --pr 'acme/widget#12'
   prs tui --pr https://github.com/acme/widget/pull/12
