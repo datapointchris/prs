@@ -46,10 +46,17 @@ func Refused(window config.WindowAction) error {
 // actions the config adds, then what changes a pull request, so merge is listed last.
 //
 // The letters are the ones common terminal tools use for the same thing: o opens outside,
-// y copies, m merges and d reads, never deletes. x closes, because c is the comment.
+// y copies, m merges and d reads, never deletes. x closes, because c is the comment. i is
+// the interdiff, the diff since review. D is left unbound, because D deletes in other
+// terminal tools.
 func (b *Board) keyTable(windows []config.WindowAction) []gotermboard.Action {
 	actions := []gotermboard.Action{
 		{Keys: []string{"d"}, Label: "view diff: fetch its head and open it in nvim here, until :qa", Footer: "d diff", Run: b.onRow(b.diff)},
+		{
+			Keys:  []string{"i"},
+			Label: "view diff since review: open in nvim what was pushed after the commit its newest review read, or the whole diff where no review read one still on the branch",
+			Run:   b.onRow(b.diffSinceReview),
+		},
 	}
 	for _, window := range windows {
 		if len(window.Missing()) > 0 {
@@ -170,10 +177,114 @@ func (b *Board) onCursor(act func(pullrequests.PullRequest) (string, error)) fun
 	})
 }
 
-// diff fetches the pull request's head and base in the background, then hands prs's terminal
-// to nvim's diff of its LocalDiff, run in the checkout. Quitting nvim gives the terminal back
-// to the board, with the cursor where it was, and Receive reads the providers again. The head
-// it fetched is the one m then pins.
+// diff opens the pull request's whole diff: three-dot from where its branch left origin/<base>.
+func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
+	return b.openDiff(m, pr, func(_ context.Context, target pullrequests.LocalDiff, _ string) (diffOpened, error) {
+		return wholeDiff(pr, target, ""), nil
+	})
+}
+
+// diffSinceReview opens what was pushed after the commit the pull request's newest review read,
+// which is all a reviewer has not seen. Where no review was submitted, the fetched head does
+// not hold that commit, as after a rebase, or the base was merged into the branch since, it
+// opens the whole diff, and the footer says why once nvim exits. Where git cannot say whether
+// the head holds it, nvim does not start and the footer names git's failure. A pull request
+// whose detail prs does not read has no reviewed commit to start from, so the key refuses
+// there, as it does before the detail's first read lands.
+func (b *Board) diffSinceReview(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
+	detail := b.detailOf(pr)
+	switch {
+	case detail == nil:
+		m.Say(fmt.Sprintf("prs reads no reviews from %s, so #%d has no reviewed commit to diff from; d opens the whole diff", pr.Provider, pr.Number))
+		return nil
+	case detail.Held:
+	case detail.Fault != "":
+		m.Say(fmt.Sprintf("#%d's reviews could not be read, so it has no reviewed commit to diff from: %s", pr.Number, detail.Fault))
+		return nil
+	case detail.Reading:
+		m.Say(fmt.Sprintf("#%d's reviews are still being read; i diffs from the commit the newest one read once they land", pr.Number))
+		return nil
+	default:
+		m.Say(unreadReviews(pr, b.stateOf(pr)) + ", so it has no reviewed commit to diff from; d opens the whole diff")
+		return nil
+	}
+	review, reviewed := detail.Detail.NewestReview()
+	return b.openDiff(m, pr, func(ctx context.Context, target pullrequests.LocalDiff, head string) (diffOpened, error) {
+		at := short(review.CommitOID)
+		switch {
+		case !reviewed:
+			return wholeDiff(pr, target, "no review was submitted on it"), nil
+		case review.CommitOID == "":
+			return wholeDiff(pr, target, "GitHub names no commit for its newest review, as after a rebase"), nil
+		case review.CommitOID == head:
+			return diffOpened{nothing: fmt.Sprintf("nothing was pushed to %s #%d since its newest review, at %s", pr.Repo, pr.Number, at)}, nil
+		}
+		if holds, err := pullrequests.HeadHolds(ctx, target, review.CommitOID); err != nil || !holds {
+			return wholeDiff(pr, target, fmt.Sprintf("the commit its newest review read, %s, is gone from the branch, as after a rebase", at)), err
+		}
+		if merged, err := pullrequests.BaseMergedSince(ctx, target, review.CommitOID); err != nil || merged {
+			return wholeDiff(pr, target, fmt.Sprintf("origin/%s was merged into the branch since its newest review, at %s, and a diff from there would show the base's changes as the branch's", target.Base, at)), err
+		}
+		return diffOpened{
+			revisions: target.RangeFrom(review.CommitOID), base: review.CommitOID, kind: sinceReview,
+			closed: fmt.Sprintf("closed the diff of %s #%d since its newest review, at %s", pr.Repo, pr.Number, at),
+		}, nil
+	})
+}
+
+// unreadReviews is why prs holds none of the pull request's reviews on a host whose detail it
+// reads: a recently closed one's detail is never read, and neither is one no read lists.
+func unreadReviews(pr pullrequests.PullRequest, state rowState) string {
+	switch state {
+	case "":
+		return fmt.Sprintf("prs has not read #%d's reviews", pr.Number)
+	case gone:
+		return fmt.Sprintf("no read lists #%d any more, so prs reads none of its reviews", pr.Number)
+	}
+	return fmt.Sprintf("#%d is %s, so prs reads none of its reviews", pr.Number, state)
+}
+
+// diffKind is which diff a key opened, as the threads file names it.
+type diffKind string
+
+const (
+	// whole runs three-dot from where the branch left origin/<base>, so its left side is the
+	// base branch's copy, where a LEFT thread's line counts.
+	whole diffKind = "whole"
+	// sinceReview runs from the commit the newest review read, which is its left side.
+	sinceReview diffKind = "since_review"
+)
+
+// diffOpened is what a diff key opens once the head is fetched: the revisions Diffview
+// compares, which diff they are, the base the threads file names, and what the footer says
+// once nvim exits.
+type diffOpened struct {
+	revisions, base, closed string
+	kind                    diffKind
+	// why is the sentence after closed, saying why the diff is what it is.
+	why string
+	// nothing is what the footer says where revisions is empty, and nvim does not start.
+	nothing string
+}
+
+// wholeDiff is the pull request's whole diff, three-dot from where its branch left
+// origin/<base>, with why it is whole where the key asked for less.
+func wholeDiff(pr pullrequests.PullRequest, target pullrequests.LocalDiff, why string) diffOpened {
+	opened := diffOpened{
+		revisions: target.Range(), base: "origin/" + target.Base, kind: whole,
+		closed: fmt.Sprintf("closed the diff of %s #%d", pr.Repo, pr.Number),
+	}
+	if why != "" {
+		opened.closed = fmt.Sprintf("closed the whole diff of %s #%d", pr.Repo, pr.Number)
+		opened.why = "It was whole, because " + why
+	}
+	return opened
+}
+
+// openDiff fetches the pull request's head and base in the background, then hands prs's
+// terminal to nvim's diff of what choose picks from the fetched head, run in the checkout.
+// Quitting nvim gives the terminal back to the board, with the cursor where it was, and
+// Receive reads the providers again. The head it fetched is the one m then pins.
 //
 // nvim listens on a socket named for the pull request, so another program can ask it what
 // is under the cursor. Inside tmux the window is named diff <repo> #<n> while nvim has it,
@@ -181,7 +292,9 @@ func (b *Board) onCursor(act func(pullrequests.PullRequest) (string, error)) fun
 // writes the pull request's document and its review threads, and starts nvim with
 // PRS_DIFF_DOCUMENT and PRS_DIFF_THREADS naming them, so an nvim config can show them
 // beside the diff.
-func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
+func (b *Board) openDiff(m *gotermboard.Model, pr pullrequests.PullRequest,
+	choose func(ctx context.Context, target pullrequests.LocalDiff, head string) (diffOpened, error),
+) tea.Cmd {
 	refuse := func(err error) tea.Cmd {
 		m.Say(err.Error())
 		return nil
@@ -193,27 +306,35 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 	if err != nil {
 		return refuse(err)
 	}
-	// run writes this and done reads it, after the message that ends the work. A base that
+	// run writes these and done reads them, after the message that ends the work. A base that
 	// failed to fetch still diffs against the origin/<base> fetched earlier, and the footer
 	// says so once nvim exits.
 	var got pullrequests.Fetched
+	var opened diffOpened
 	return b.start(work{
 		pr:    pr,
 		doing: fmt.Sprintf("fetching %s #%d", pr.Repo, pr.Number),
 		run: func(ctx context.Context) error {
 			var err error
-			got, err = pullrequests.Fetch(ctx, target)
+			if got, err = pullrequests.Fetch(ctx, target); err != nil {
+				return err
+			}
+			opened, err = choose(ctx, target, got.Head)
 			return err
 		},
 		done: func(m *gotermboard.Model) tea.Cmd {
 			b.diffed[pr.Key()] = got.Head
+			if opened.revisions == "" {
+				m.Say(opened.nothing)
+				return nil
+			}
 			stem := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d", pr.Repo, pr.Number))
 			socket := stem + ".sock"
 			_ = os.Remove(socket)
-			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview(target.Range()))
+			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview(opened.revisions))
 			nvim.Dir = target.Checkout
 			files := diffFilesAt(stem)
-			unwritten := files.write(pr, b.detailOf(pr), b.roundWindowOf(pr), "origin/"+target.Base, got.Head, time.Now())
+			unwritten := files.write(pr, b.detailOf(pr), b.roundWindowOf(pr), opened.base, got.Head, opened.kind, time.Now())
 			if unwritten == nil {
 				nvim.Env = append(os.Environ(), files.env()...)
 			}
@@ -222,17 +343,19 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 				restore()
 				files.remove()
 				var exit *exec.ExitError
-				var said string
+				said := opened.closed
 				switch {
 				case errors.As(err, &exit) && exit.ExitCode() == noDiffview:
 					said = "nvim has no :DiffviewOpen, and the diff needs the diffview.nvim plugin"
 				case err != nil:
 					said = fmt.Sprintf("nvim ended the diff of #%d: %s", pr.Number, gotermboard.LastLine(stderr, err))
-				case got.BaseFault != "":
-					said = fmt.Sprintf("closed the diff of %s #%d, which ran against the origin/%s fetched earlier, because fetching it again failed: %s",
-						pr.Repo, pr.Number, target.Base, got.BaseFault)
 				default:
-					said = fmt.Sprintf("closed the diff of %s #%d", pr.Repo, pr.Number)
+					if got.BaseFault != "" && opened.kind == whole {
+						said += fmt.Sprintf(", which ran against the origin/%s fetched earlier, because fetching it again failed: %s", target.Base, got.BaseFault)
+					}
+					if opened.why != "" {
+						said += ". " + opened.why
+					}
 				}
 				if unwritten != nil {
 					said += fmt.Sprintf(". nvim had no pull request to show beside it, because writing it failed: %v", unwritten)
@@ -284,13 +407,13 @@ func (b *Board) mergeable(pr pullrequests.PullRequest) (pullrequests.Provider, s
 	return provider, ""
 }
 
-// pinFor is the head a merge of the pull request pins, and where it came from: the one d
-// fetched, else the one its Diff section was read at, else the one the board's record holds,
-// so a commit pushed since the screen showed it is not merged unseen. A host whose client
-// cannot pin a head ignores it.
+// pinFor is the head a merge of the pull request pins, and where it came from: the one a diff
+// key last fetched, else the one its Diff section was read at, else the one the board's
+// record holds, so a commit pushed since the screen showed it is not merged unseen. A host
+// whose client cannot pin a head ignores it.
 func (b *Board) pinFor(pr pullrequests.PullRequest) (head, from string) {
 	if head := b.diffed[pr.Key()]; head != "" {
-		return head, "d fetched it"
+		return head, "its diff in nvim fetched it"
 	}
 	if b.diffs != nil {
 		if state := b.diffs.Of(pr); state.Held && state.Diff.Head != "" {

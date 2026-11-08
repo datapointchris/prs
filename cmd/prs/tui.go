@@ -44,7 +44,9 @@ Each pull request takes two lines. The first gives where it stands in one word: 
 behind, conflicts, blocked, mergeable with checks not passing, draft or unknown while open,
 and merged or closed after. Then its title, its diff, its age, or how long ago it closed,
 and its branch. The second gives its checks in words, its checkout, its number and its
-review, and names the app that opened it. A Bitbucket row reads open, and only one merged
+review, then what was pushed since its newest review, as 2 commits since review, or rebased
+since review where the branch does not hold the commit that review read, and names the app
+that opened it. A Bitbucket row reads open, and only one merged
 here reaches recently closed, because prs reads no merge state or close time from
 Bitbucket.
 
@@ -81,7 +83,10 @@ refs/remotes/origin/pr/<number> in its checkout and diffs it there, touching no 
 One whose repo is not cloned here gets a section saying so.
 
 A letter acts on the pull request under the cursor, and ? lists every key. d hands the
-terminal to its diff in nvim, and :qa comes back to the list. m merges and x closes,
+terminal to its diff in nvim, and :qa comes back to the list. i opens only what was pushed
+since its newest review, from the commit that review read to the head. Where no review was
+submitted, a rebase took that commit off the branch, or a merge brought the base in since,
+it opens the whole diff, and the footer says why once nvim exits. m merges and x closes,
 each after asking, and its row moves to recently closed once it has, while the cursor
 moves on to the next open row in its group. c posts what your editor wrote. Each runs
 while the list stays usable, named on the footer until it ends.
@@ -101,11 +106,13 @@ holds is read again on the same timer. A pull request prs cannot read is refused
 the board draws.
 
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
-so an agent reads what a person reads. The snapshot holds the open pull requests under
-pull_requests and the recently closed under recently_closed. Either exits 1 after printing
-when a read failed, or when the open pull requests' read left some out. A recently closed
-read past its page keeps the newest, and says so on the first line. With no terminal and
-neither flag it refuses.`,
+so an agent reads what a person reads. Neither reads a pull request's own detail, so both
+leave out what the open board fills in from it: the Claude review round, the commits
+since review, and the document's review, checks, files and comments. The snapshot holds
+the open pull requests under pull_requests and the recently closed under recently_closed.
+Either exits 1 after printing when a read failed, or when the open pull requests' read
+left some out. A recently closed read past its page keeps the newest, and says so on the
+first line. With no terminal and neither flag it refuses.`,
 		Example: `  prs tui
   prs tui --pr 'acme/widget#12'
   prs tui --pr https://github.com/acme/widget/pull/12

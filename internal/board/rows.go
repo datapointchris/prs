@@ -31,6 +31,7 @@ const (
 	stackGlyph   = "" // fa-arrow-up, toward the pull request this one is stacked on
 	pathGlyph    = "" // fa-folder
 	numberGlyph  = "" // oct-git-pull-request
+	sinceGlyph   = "" // oct-git-commit
 	botGlyph     = "" // fa-robot, in every Nerd Font, where U+F544 is in none
 )
 
@@ -411,9 +412,9 @@ var fieldGap = gotermboard.C("   ", "")
 
 // secondLine is a pull request's second line on the board: its checks under where it stands,
 // then where it is checked out, its number and the open pull request it is stacked on, its
-// review, its newest Claude review round, and the app that opened it. A field a pull request
-// does not have takes no room. The line is cut at the table's edge, so a narrow screen loses
-// its end first.
+// review, its newest Claude review round, what was pushed since its newest review, and the
+// app that opened it. A field a pull request does not have takes no room. The line is cut at
+// the table's edge, so a narrow screen loses its end first.
 func (b *Board) secondLine(at rowAt, parent int) gotermboard.Line {
 	pr := at.pr
 	line := gotermboard.Line{checksCell(pr)}
@@ -426,10 +427,33 @@ func (b *Board) secondLine(at rowAt, parent int) gotermboard.Line {
 	if claude := claudeCell(b.reviewOf(pr, at.now)); claude.Text != "" {
 		line = append(line, fieldGap, claude)
 	}
+	if since := sinceReviewCell(b.detailOf(pr)); since.Text != "" {
+		line = append(line, fieldGap, since)
+	}
 	if isBot(pr) {
 		line = append(line, fieldGap, botCell(pr))
 	}
 	return line
+}
+
+// sinceReviewCell is how many commits were pushed after the one the newest review read, or
+// that a rebase took that commit off the branch, which i then opens the whole diff for. It is
+// empty where the detail is not read, and wherever SinceReview is not Known or counts none.
+func sinceReviewCell(detail *pullrequests.DetailState) gotermboard.Cell {
+	if detail == nil || !detail.Held {
+		return gotermboard.C("", "")
+	}
+	switch since := detail.Detail.SinceReview(); {
+	case !since.Known:
+		return gotermboard.C("", "")
+	case since.Gone:
+		return gotermboard.C(sinceGlyph+"  rebased since review", gotermboard.Yellow)
+	case since.Commits == 1:
+		return gotermboard.C(sinceGlyph+"  1 commit since review", gotermboard.Yellow)
+	case since.Commits > 1:
+		return gotermboard.C(fmt.Sprintf("%s  %d commits since review", sinceGlyph, since.Commits), gotermboard.Yellow)
+	}
+	return gotermboard.C("", "")
 }
 
 // whereCells are where the pull request is checked out on this disk, or its repo where it is
