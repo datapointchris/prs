@@ -18,6 +18,9 @@ func (b *Board) detailLines(pr pullrequests.PullRequest) []gotermboard.Line {
 	if err != nil || provider.Detail == nil {
 		return nil
 	}
+	if b.isGone(pr) {
+		return []gotermboard.Line{{}, {gotermboard.C("It is gone from the open pull requests, so its reviews and checks are not read.", dim)}}
+	}
 	state := b.details.Of(pr)
 	if detail, own := b.openedOnDetail(pr); own && !state.Held {
 		state.Detail, state.Held = detail, true

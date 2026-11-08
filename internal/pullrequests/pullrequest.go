@@ -127,6 +127,20 @@ const ViewerOwner = "@me"
 // Empty says the scope names nothing to read.
 func (s Scope) Empty() bool { return len(s.Repos) == 0 && len(s.Owners) == 0 }
 
+// Covers says a read of the scope could list the pull request: its repo is one the scope
+// names, or its owner one the scope reads whole. Any owner may be the token's own, so a
+// scope reading ViewerOwner covers every pull request. Slugs and owners match in any case,
+// as GitHub matches them.
+func (s Scope) Covers(pr PullRequest) bool {
+	owner, _, _ := strings.Cut(pr.Slug, "/")
+	for _, read := range s.Owners {
+		if read == ViewerOwner || strings.EqualFold(read, owner) {
+			return true
+		}
+	}
+	return slices.ContainsFunc(s.Repos, func(repo registry.Repo) bool { return strings.EqualFold(repo.Slug, pr.Slug) })
+}
+
 // readTimeout bounds one client call, so a hung network never holds a read forever.
 const readTimeout = 2 * time.Minute
 

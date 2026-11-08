@@ -82,7 +82,9 @@ func (b *Board) UnderWay() string {
 	return strings.Join(doing, " · ")
 }
 
-// Receive is gotermboard.ReceivingBoard's.
+// Receive is gotermboard.ReceivingBoard's. Every provider is read again when the terminal
+// gains focus and when a program prs handed the terminal to exits, because either is someone
+// coming back to the list, maybe from changing a pull request.
 func (b *Board) Receive(m *gotermboard.Model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case workEnded:
@@ -93,7 +95,10 @@ func (b *Board) Receive(m *gotermboard.Model, msg tea.Msg) tea.Cmd {
 		}
 		return msg.work.done(m)
 	case handedBack:
+		b.readAgain()
 		return msg.then(m, msg.err)
+	case tea.FocusMsg:
+		b.readAgain()
 	}
 	return nil
 }

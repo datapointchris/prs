@@ -171,7 +171,6 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 			restore := nameWindow(fmt.Sprintf("diff %s #%d", pr.Repo, pr.Number))
 			return handOver(nvim, func(m *gotermboard.Model, err error) tea.Cmd {
 				restore()
-				b.readAgain()
 				var exit *exec.ExitError
 				switch {
 				case errors.As(err, &exit) && exit.ExitCode() == noDiffview:
@@ -259,6 +258,10 @@ func (b *Board) closePR(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 func (b *Board) writable(pr pullrequests.PullRequest, verb string) (pullrequests.Provider, error) {
 	if settled := b.settled[pr.Key()]; settled != "" {
 		return pullrequests.Provider{}, fmt.Errorf("%s #%d is %s already, so there is nothing to %s", pr.Slug, pr.Number, settled, verb)
+	}
+	if b.isGone(pr) {
+		return pullrequests.Provider{}, fmt.Errorf("%s #%d is gone from the open pull requests since the last read, so prs will not %s it; o opens its page",
+			pr.Slug, pr.Number, verb)
 	}
 	if doing := b.busy(pr); doing != "" {
 		return pullrequests.Provider{}, fmt.Errorf("%s is still under way; %s it once that ends", doing, verb)

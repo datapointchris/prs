@@ -11,7 +11,7 @@ import (
 )
 
 // openedOn is the pull request the board opened on: its key, its launch read, and the
-// source that reads it again each minute while no listing holds it.
+// source that reads it again on the board's timer while no listing holds it.
 type openedOn struct {
 	key    string
 	launch pullrequests.Named
@@ -24,15 +24,15 @@ type openedOn struct {
 //
 // While a listing holds it, it is that listing's row. Otherwise its own read draws it: an
 // open one among the listing's rows, and a merged or closed one in a group above them. That
-// read runs each minute, so a pull request merged elsewhere, or on a repo the board does not
-// read, moves as it does.
+// read runs on the board's timer, so a pull request merged elsewhere, or on a repo the board
+// does not read, moves as it does.
 func (b *Board) OpenOn(ctx context.Context, ref pullrequests.Reference) error {
 	launch, err := pullrequests.ReadReference(ctx, ref, b.repos)
 	if err != nil {
 		return err
 	}
 	on := &openedOn{key: launch.PullRequest.Key(), launch: launch}
-	on.source = gotermboard.NewSource(ref.String(), readEvery, func(ctx context.Context) (pullrequests.Named, string, error) {
+	on.source = gotermboard.NewSource(ref.String(), b.every, func(ctx context.Context) (pullrequests.Named, string, error) {
 		switch {
 		case on.source.Status().ReadAt.IsZero():
 			return launch, "", nil

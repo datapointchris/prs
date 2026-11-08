@@ -36,9 +36,16 @@ func tuiCommand() *cobra.Command {
 		Use:   "tui",
 		Short: "Open the board of every open pull request",
 		Long: `The board lists every open pull request on the repos prs reads, which prs config
-show names, oldest first, and reads each provider again while it is open. Each row gives its checks and
-review in words, its age, its diff, its repo and number, and its title. f shows its
-branch and checkout under it.
+show names, oldest first. Each row gives its checks and review in words, its age, its
+diff, its repo and number, and its title. f shows its branch and checkout under it.
+
+It opens on the rows the last run read, kept under $XDG_CACHE_HOME/prs, with their age on
+the first line, and reads each provider behind them. It reads them again every
+refresh_every_seconds in the config, 60 by default, whenever its terminal gains focus, and
+whenever a program a key handed the terminal to exits. A spinner follows the age while a
+read runs, and a read that fails keeps the rows and names why on that line. A refresh
+leaves the cursor on its pull request, and one the read no longer lists stays under the
+cursor, marked gone, until the cursor moves off it.
 
 enter opens a pull request's description, full screen where it runs past the screen.
 A letter acts on the pull request under the cursor, and ? lists every key. d hands the
@@ -94,12 +101,17 @@ refuses.`,
 			}
 			pal := gotermstyle.PaletteFor(os.Stdout)
 			if !printing {
+				kept, err := config.ListingCache()
+				if err != nil {
+					return err
+				}
 				b.ReadDetails()
+				b.KeepListings(kept)
 				tabs, err := gotermboard.NewTabs([]gotermboard.Tab{{Name: board.View, Board: b}}, pal, view)
 				if err != nil {
 					return err
 				}
-				_, err = tea.NewProgram(tabs).Run()
+				_, err = tea.NewProgram(reportsFocus{tabs}).Run()
 				return err
 			}
 			gotermboard.RefreshAll(cmd.Context(), b.Sources()...)
@@ -148,9 +160,25 @@ func loadBoard() (*board.Board, error) {
 			return nil, err
 		}
 	}
-	b, err := board.New(repos, cfg.WindowActions)
+	b, err := board.New(repos, cfg.RefreshEvery, cfg.WindowActions)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", cfg.File, err)
 	}
 	return b, nil
+}
+
+// reportsFocus is the board's program with the terminal's focus reported, so the board reads
+// every provider again when its window or pane is returned to, such as from a tmux window a
+// key opened. tmux passes focus on only with its focus-events option on.
+type reportsFocus struct{ tea.Model }
+
+func (r reportsFocus) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := r.Model.Update(msg)
+	return reportsFocus{model}, cmd
+}
+
+func (r reportsFocus) View() tea.View {
+	view := r.Model.View()
+	view.ReportFocus = true
+	return view
 }

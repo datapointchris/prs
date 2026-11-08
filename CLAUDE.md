@@ -3,12 +3,12 @@
 A Go command whose board is a view on gotermboard. `cmd/prs` holds the commands.
 `internal/board` is the view: `rows.go` the row grammar, `actions.go` the key table,
 `work.go` what a key runs in the background or hands the terminal to, `board.go` the
-sources, the frame and the `--json` snapshot, `table.go` what `prs list` prints, and
-`detail.go` the detail under a description, and `opened_on.go` the pull request
-`prs tui --pr` names. `internal/pullrequests` reads each provider: GitHub in-process
-through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
-differently by host, `detail.go` the per-PR detail cache, and `reference.go` what `--pr`
-takes and how it is read.
+sources, the frame and the `--json` snapshot, `listing_cache.go` the last listing kept on
+disk for the next start, `table.go` what `prs list` prints, `detail.go` the detail under
+a description, and `opened_on.go` the pull request `prs tui --pr` names.
+`internal/pullrequests` reads each provider: GitHub in-process through go-gh, Bitbucket
+through bbkt. `provider.go` holds everything prs does differently by host, `detail.go`
+the per-PR detail cache, and `reference.go` what `--pr` takes and how it is read.
 `internal/registry` reads the registry file, and `internal/config` reads
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
@@ -31,6 +31,12 @@ takes and how it is read.
   of one name. GitHub matches owners and names in any case, so the checkout join does too.
 - **A repo whose read failed keeps its last rows, and a note says so.** One repo's failure
   must not take the others' rows with it.
+- **`prs tui` draws the last listing before any read returns.** Each read that lands is
+  written to `$XDG_CACHE_HOME/prs/listings.json`, and a provider's rows come from there,
+  with their age on the strip, until its first read lands. Only the interactive board
+  reads or writes it, because `prs list`, `--once` and `--json` wait for their reads.
+- **A refresh never moves the row under the cursor.** A pull request a read drops stays
+  under the cursor, marked gone, until the cursor leaves it, and m and x refuse it.
 - **`prs list`, `--json` and `--once` exit 1 when a read failed or left a pull request
   out**, because a failed read and a repo with no open pull requests otherwise print the
   same rows. A note leaves one out: a refused search, a Bitbucket repo that failed or is
@@ -87,8 +93,13 @@ takes and how it is read.
   footer after a spinner. A key's own `m.Say` shows until the next key, and the under-way
   line until the work ends.
 - **`tea.ExecProcess` holds Bubble Tea's event loop until the program exits**, so no read
-  lands while nvim or the editor has the terminal. The diff reads every provider again
-  once nvim exits.
+  lands while nvim or the editor has the terminal. The board reads every provider again
+  once a program it handed the terminal to exits.
+- **Work under way on the footer adds a footer line**, which takes a line from the table.
+  So a read's spinner turns on the strip, through `MovingBoard`, which redraws only the
+  strip.
+- **Bubble Tea v2 reports focus only where the View sets `ReportFocus`**, which
+  gotermboard's Tabs does not, so `reportsFocus` in `cmd/prs/tui.go` sets it.
 
 ## Never write the breaking-change trailer in a commit message
 

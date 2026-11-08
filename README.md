@@ -97,9 +97,19 @@ field it filters on drops a repo silently, and every list it prints still looks 
   and how many comments, threads, files and commits there are. A pull request's detail is
   read again when its head commit, its update time or its checks state moves, or when its
   last read failed.
-- **Each provider is read again every minute while the board is open.** The line at the
-  top says how old the newest read is, and names a read that failed. A failed read keeps
-  the last good rows, and so does one Bitbucket repo that failed while the rest read.
+- **The board opens on the rows the last run read**, kept in
+  `$XDG_CACHE_HOME/prs/listings.json`, and reads each provider behind them, so the first
+  frame never waits on GitHub. Only `prs tui` keeps them. `prs list`, `--once` and
+  `--json` wait for their reads.
+- **Each provider is read again every minute while the board is open**, whenever its
+  terminal gains focus, and whenever a program a key handed the terminal to exits.
+  `refresh_every_seconds` in the config changes the minute. Returning from a tmux window
+  reaches prs as focus where tmux's `focus-events` option is on. The line at the top says
+  how old the newest read is, turns a spinner while a read runs, and names a read that
+  failed. A failed read keeps the last good rows, and so does one Bitbucket repo that
+  failed while the rest read.
+- **A refresh leaves the cursor on its pull request.** One the read no longer lists stays
+  under the cursor, marked `gone`, until the cursor moves off it, and `m` and `x` refuse it.
 - **State is a word, never a color alone.** `checks passing`, `review required` and
   `review 2 posted` read under every theme, and the colors are the terminal's own 16.
 - **A pull request whose base is another open one's branch names that one**, as `↑ #12`

@@ -25,6 +25,7 @@ func configCommand() *cobra.Command {
 exists. The file is YAML:
 
   repos_registry: ~/repos.json
+  refresh_every_seconds: 60
   window_actions:
     - key: r
       label: claude review
@@ -42,6 +43,10 @@ owners lists GitHub users and organizations whose every repo is read:
   owners: [acme, octo]
 
 With no registry anywhere and no owners, prs reads the repos your GitHub login owns.
+
+refresh_every_seconds is how often prs tui reads each provider again while it is open, 60
+where the file does not say, and at least 1. A GitHub read costs one of GitHub's 5,000
+hourly GraphQL points for every 20 repos it names, or every owner it reads whole.
 
 Each window action is a key that runs its command in a new tmux window in the pull
 request's checkout. needs are the programs it runs, and a machine missing one is not
@@ -90,6 +95,15 @@ which YAML otherwise reads as a comment.`,
 				}
 				_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("registry"), registry, cfg.ReposFrom)
 			}
+			_, _ = fmt.Fprintf(out, "%s  every %d seconds  from %s\n", pal.Bold("refresh "), int(cfg.RefreshEvery.Seconds()), cfg.RefreshFrom)
+			kept, err := config.ListingCache()
+			if err != nil {
+				return err
+			}
+			if _, err := os.Stat(kept); err != nil {
+				kept += pal.Paint(gotermstyle.CodeYellow, "  not there until prs tui reads")
+			}
+			_, _ = fmt.Fprintf(out, "%s  %s\n", pal.Bold("cache   "), kept)
 			for _, action := range cfg.WindowActions {
 				state := pal.Paint(gotermstyle.CodeGreen, "offered")
 				if err := board.Refused(action); err != nil {

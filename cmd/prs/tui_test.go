@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/datapointchris/tuidrive"
@@ -36,20 +38,60 @@ const standInToken = "stand-in-token"
 // commit, and the stand-in tmux names prs's window prs.
 type standIn struct {
 	env      map[string]string
+	config   string
 	checkout string
 	ledger   string
 	tmp      string
 	recorded string
+	github   *gitHub
 }
 
 // fetchedHead is the commit the stand-in git names for any ref.
 const fetchedHead = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
 
+// gitHub is the stand-in GitHub's listing, which a test changes while prs runs. It answers
+// testdata/search.json until a test hands it another listing, and refuses each listing with
+// a 502 while down.
+type gitHub struct {
+	mu      sync.Mutex
+	listing []byte
+	down    bool
+}
+
+func (g *gitHub) answer(listing []byte) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.listing, g.down = listing, false
+}
+
+func (g *gitHub) fail() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.down = true
+}
+
+// serveListing answers a listing request as the test last said.
+func (g *gitHub) serveListing(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	listing, down := g.listing, g.down
+	g.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	switch {
+	case down:
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"message": "Server Error"}`))
+	case listing == nil:
+		http.ServeFile(w, r, filepath.Join("testdata", "search.json"))
+	default:
+		_, _ = w.Write(listing)
+	}
+}
+
 // gitHubStandIn serves GitHub's GraphQL endpoint on a unix socket and returns a gh config
 // directory whose http_unix_socket names it, which go-gh then sends every request through.
 // The socket sits under a short temporary directory, because a socket's path has a length
 // limit that a test's own temporary directory can pass.
-func gitHubStandIn(t *testing.T) string {
+func gitHubStandIn(t *testing.T, listing *gitHub) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "prs-gh")
 	if err != nil {
@@ -76,13 +118,14 @@ func gitHubStandIn(t *testing.T) string {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		answer := "search.json"
-		if strings.Contains(request.Query, "pullRequest(number:") {
-			answer = "pull-request.json"
-			// A pull request outside the listing has a file of its own.
-			if own := fmt.Sprintf("pull-request-%v.json", request.Variables["number"]); fileExists(filepath.Join("testdata", own)) {
-				answer = own
-			}
+		if !strings.Contains(request.Query, "pullRequest(number:") {
+			listing.serveListing(w, r)
+			return
+		}
+		answer := "pull-request.json"
+		// A pull request outside the listing has a file of its own.
+		if own := fmt.Sprintf("pull-request-%v.json", request.Variables["number"]); fileExists(filepath.Join("testdata", own)) {
+			answer = own
 		}
 		w.Header().Set("Content-Type", "application/json")
 		http.ServeFile(w, r, filepath.Join("testdata", answer))
@@ -112,7 +155,10 @@ func newStandIn(t *testing.T) standIn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := standIn{checkout: filepath.Join(dir, "widget"), ledger: filepath.Join(dir, "ledger"), tmp: filepath.Join(dir, "tmp"), recorded: filepath.Join(dir, "recorded")}
+	s := standIn{
+		config: filepath.Join(dir, "config", "prs", "config.yml"), checkout: filepath.Join(dir, "widget"), ledger: filepath.Join(dir, "ledger"),
+		tmp: filepath.Join(dir, "tmp"), recorded: filepath.Join(dir, "recorded"), github: &gitHub{},
+	}
 	bin := filepath.Join(dir, "bin")
 	for _, d := range []string{bin, s.checkout, s.ledger, s.tmp, filepath.Join(dir, "config", "prs")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -170,7 +216,7 @@ window_actions:
     window: "review {repo} #{number}"
     command: claude '/review-pr {number}'
 `, filepath.Join(dir, "repos.json"))
-	files := map[string]string{filepath.Join(dir, "repos.json"): registry, filepath.Join(dir, "config", "prs", "config.yml"): config}
+	files := map[string]string{filepath.Join(dir, "repos.json"): registry, s.config: config}
 	for path, body := range files {
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -183,7 +229,8 @@ window_actions:
 		"TMUX_PANE":       "%1",
 		"EDITOR":          filepath.Join(bin, "editor"),
 		"TMPDIR":          s.tmp,
-		"GH_CONFIG_DIR":   gitHubStandIn(t),
+		"XDG_CACHE_HOME":  filepath.Join(dir, "cache"),
+		"GH_CONFIG_DIR":   gitHubStandIn(t, s.github),
 		"GH_TOKEN":        standInToken,
 	}
 	return s
@@ -219,6 +266,7 @@ func (s standIn) run(t *testing.T, args ...string) (string, string, int) {
 }
 
 func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.T) {
+	t.Parallel()
 	s := newStandIn(t)
 	out, said, code := s.run(t, "tui", "--json")
 	if code != 0 {
@@ -299,6 +347,7 @@ func decodedFrom(t *testing.T, r io.Reader) any {
 // provider that cannot be read must say so on the table's first line without taking the
 // other provider's rows with it.
 func TestListPrintsRowsTheSchemaHoldsAndNamesAProviderItCouldNotRead(t *testing.T) {
+	t.Parallel()
 	s := newStandIn(t)
 	out, said, code := s.run(t, "list", "--json")
 	if code != 0 {
@@ -324,6 +373,7 @@ func TestListPrintsRowsTheSchemaHoldsAndNamesAProviderItCouldNotRead(t *testing.
 // leaves that repo's pull requests out. A script reads an empty array, which jq iterates,
 // and an exit status saying the array is not the whole.
 func TestListPrintsAnEmptyArrayAndExits1WhenARepoIsLeftOut(t *testing.T) {
+	t.Parallel()
 	s := newStandIn(t)
 	registry := filepath.Join(t.TempDir(), "repos.json")
 	if err := os.WriteFile(registry, []byte(`{"repos": [{"name": "ledger", "owner": "FIN", "status": "active", "provider": "bitbucket"}]}`), 0o644); err != nil {
@@ -337,6 +387,7 @@ func TestListPrintsAnEmptyArrayAndExits1WhenARepoIsLeftOut(t *testing.T) {
 }
 
 func TestTheBoardSaysEachStateInWordsOpensADescriptionAndRunsAKeyTheConfigAdds(t *testing.T) {
+	t.Parallel()
 	s := newStandIn(t)
 	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 30})
 	term.WaitFor("open · 4")
@@ -367,6 +418,7 @@ func TestTheBoardSaysEachStateInWordsOpensADescriptionAndRunsAKeyTheConfigAdds(t
 }
 
 func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *testing.T) {
+	t.Parallel()
 	s := newStandIn(t)
 	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 30})
 	term.WaitFor("open · 4")
@@ -436,6 +488,7 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *tes
 // above the list. Each opens with its description showing and the cursor on it, which a
 // key's question naming it proves.
 func TestTuiOpensOnTheNamedPullRequestWithItsDescriptionAndQExits0(t *testing.T) {
+	t.Parallel()
 	s := newStandIn(t)
 	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "acme/widget#12"}, Env: s.env, Cols: 140, Rows: 30})
 	term.WaitFor("open · 4")
@@ -466,6 +519,7 @@ func TestTuiOpensOnTheNamedPullRequestWithItsDescriptionAndQExits0(t *testing.T)
 // opened_on and leaves it out of pull_requests, which holds what the listings read. One bbkt
 // cannot read is refused before anything draws.
 func TestAMergedBitbucketPullRequestOpensByItsURLAndOneBbktCannotReadIsRefused(t *testing.T) {
+	t.Parallel()
 	s := newStandIn(t)
 	out, said, code := s.run(t, "tui", "--pr", "https://bitbucket.example.com/projects/FIN/repos/ledger/pull-requests/3/overview", "--json")
 	var snap board.Snapshot
@@ -484,5 +538,98 @@ func TestAMergedBitbucketPullRequestOpensByItsURLAndOneBbktCannotReadIsRefused(t
 	out, said, code = s.run(t, "tui", "--pr", "FIN/ledger#9", "--json")
 	if code != 1 || out != "" || !strings.Contains(said, "bbkt could not read FIN/ledger#9") {
 		t.Errorf("prs tui --pr FIN/ledger#9 exited %d and printed %q, saying %q", code, out, said)
+	}
+}
+
+// refreshEvery sets refresh_every_seconds in the stand-in's config, for the next start.
+func (s standIn) refreshEvery(t *testing.T, seconds int) {
+	t.Helper()
+	raw, err := os.ReadFile(s.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for line := range strings.Lines(string(raw)) {
+		if !strings.HasPrefix(line, "refresh_every_seconds:") {
+			lines = append(lines, line)
+		}
+	}
+	lines = append(lines, fmt.Sprintf("refresh_every_seconds: %d\n", seconds))
+	if err := os.WriteFile(s.config, []byte(strings.Join(lines, "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// widget14Opened is testdata/search.json once widget #13 has left the open pull requests
+// and widget #14 has opened.
+func widget14Opened(t *testing.T) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "search.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	search := doc["data"].(map[string]any)["s0"].(map[string]any)
+	var nodes []any
+	for _, node := range search["nodes"].([]any) {
+		pr := node.(map[string]any)
+		switch pr["number"] {
+		case 13.0:
+			continue
+		case 12.0:
+			opened := maps.Clone(pr)
+			opened["number"], opened["title"], opened["createdAt"] = 14, "Expire the widget cache", "2026-11-06T09:00:00Z"
+			nodes = append(nodes, opened)
+		}
+		nodes = append(nodes, pr)
+	}
+	search["nodes"] = nodes
+	raw, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// A read lands on the timer and on focus with no key pressed. A pull request a read drops
+// stays under the cursor, marked gone, until the cursor leaves it. A start whose read fails
+// draws the rows the last run kept, and names why the read failed.
+func TestTheBoardDrawsTheLastListingAtOnceThenRereadsOnItsTimerAndOnFocus(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t)
+	opened := widget14Opened(t)
+	s.refreshEvery(t, 1)
+	program := tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 30}
+	term := tuidrive.Start(t, program)
+	term.WaitFor("open · 4")
+	term.WaitFor(" #13")
+	term.Press("g", "j", "j")
+	s.github.answer(opened)
+	term.WaitFor(" #14")
+	term.WaitFor("gone  Count cache hits")
+	term.Press("m")
+	term.WaitFor("acme/widget #13 is gone from the open pull requests since the last read, so prs will not merge it")
+	term.Press("k")
+	term.WaitGone("Count cache hits")
+	term.Press("q")
+	term.WaitExit()
+
+	// GitHub fails from the start, so only the first run's cache holds #14, and only focus
+	// reads again within the hour.
+	s.refreshEvery(t, 3600)
+	s.github.fail()
+	term = tuidrive.Start(t, program)
+	term.WaitFor("could not read GitHub at github.com")
+	term.WaitFor("Expire the widget cache")
+	s.github.answer(nil)
+	term.Type("\x1b[I")
+	term.WaitFor("Count cache hits")
+	term.WaitGone("Expire the widget cache")
+	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
 	}
 }

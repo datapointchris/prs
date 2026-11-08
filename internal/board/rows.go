@@ -140,7 +140,7 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 	return gotermboard.Row{
 		Key:         pr.Key(),
 		Cells:       cells,
-		WrapLast:    titleLine(pr, parentOf(pr, parents), b.settled[pr.Key()]),
+		WrapLast:    titleLine(pr, parentOf(pr, parents), b.settled[pr.Key()], b.isGone(pr)),
 		Under:       gotermboard.C(identity(pr), dim),
 		Document:    b.description(pr, false),
 		ReaderTitle: pr.Title,
@@ -214,14 +214,17 @@ func repoCell(pr pullrequests.PullRequest) gotermboard.Cell {
 	return gotermboard.C(pathGlyph+" "+pr.Repo, gotermboard.Cyan)
 }
 
-// titleLine is the state a merge or close left it in, the title, the open pull request it is
-// stacked on, and the app that opened it. A pull request a person opened carries no mark, so
-// the mark sets an app's row apart. A settled one dims its title, because it waits on nobody.
-func titleLine(pr pullrequests.PullRequest, parent int, settled settledState) gotermboard.Line {
+// titleLine is the state a merge or close left it in, or gone where a read stopped listing
+// it while the cursor sat on it, then the title, the open pull request it is stacked on,
+// and the app that opened it. A pull request a person opened carries no mark, so the mark
+// sets an app's row apart. A settled or gone one dims its title, because it waits on nobody.
+func titleLine(pr pullrequests.PullRequest, parent int, settled settledState, gone bool) gotermboard.Line {
 	line := gotermboard.Line{gotermboard.C(pr.Title, "")}
 	switch {
 	case settled != "":
 		line = gotermboard.Line{gotermboard.C(string(settled), settledCodes[settled]), gotermboard.C("  "+pr.Title, dim)}
+	case gone:
+		line = gotermboard.Line{gotermboard.C("gone", gotermboard.Yellow), gotermboard.C("  "+pr.Title, dim)}
 	case pr.Draft:
 		line = gotermboard.Line{gotermboard.C(pr.Title+" (draft)", dim)}
 	}
