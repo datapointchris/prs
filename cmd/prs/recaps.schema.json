@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "urn:prs:recaps:v1",
   "title": "The windows a recap is written for, and the recap read for each",
-  "description": "What `prs tui --view recaps --json` prints: each window the config's recaps list command printed, in its order, newest first, with the recap its show command printed. prs reads nothing of the commands' output but each window's kind and label, so a recap is the markdown as printed. A printed tab reads only the first window's recap, which its frame shows. Every field is always present but fault.",
+  "description": "What `prs tui --view recaps --json` prints: each window the config's recaps list command printed, in its order, with the recap its show command printed. prs reads nothing of the commands' output but each window's kind and label, so a recap is the markdown as printed. A printed tab reads only the first window's recap, which its frame shows. Every field of a window is always present but fault.",
   "type": "object",
   "additionalProperties": false,
   "required": ["view", "windows", "sources"],

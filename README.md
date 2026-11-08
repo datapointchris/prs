@@ -359,27 +359,33 @@ recaps:
   write: [recap, write, "--{kind}", "{label}"]
 ```
 
-- **`list` prints the windows, newest first, one a line as its kind and its label**, such
-  as `day 2026-11-06` or `week 2026-W45`. prs reads nothing else any command prints, and
-  leaves out a line that is not two words, saying so at the top.
+- **`list` prints the windows in the order the tab draws them, one a line as its kind and
+  its label**, such as `day 2026-11-06` or `week 2026-W45`. prs reads nothing else any
+  command prints, and leaves out a line that is not two words, saying so at the top.
 - **`show` prints one window's recap as markdown**, which the side panel shows beside the
   list and enter opens full screen, where `[` and `]` jump between headings and `/`
   searches it. prs reads every listed window's recap in the background once the list
   lands, the cursor's first, so `/` on the list matches a recap's text.
 - **`write` writes one window's recap, which is a model call, and may be left out.** `w`
-  asks first, naming that, and enter writes the cursor's window. Typing another window's
-  kind and label writes that one, such as a day the list does not hold yet. The write runs
-  while the list stays usable, named on the footer, and the list runs again once it ends,
-  so a window written for the first time joins it.
+  asks first, naming that, and `y` writes the cursor's window. Typing another window's
+  kind and label writes that one, such as a day the list does not hold yet. Enter alone
+  writes nothing, so a reflex enter spends no model call. The write runs while the list
+  stays usable, named on the footer, and the list runs again once it ends, so a window
+  written for the first time joins it.
+- **A write runs detached, so quitting prs leaves it to finish.** It runs in a session of
+  its own with its output in `$XDG_CACHE_HOME/prs/recap-writes/<kind>-<label>.log`, which
+  the next write of that window replaces, and a failure names that file. prs refuses a
+  second write of a window while its own first runs. Writing atomically, and refusing a
+  write of a window another process is already writing, are the write program's to do.
 - **Each is an argv run with no shell**, so a command that pipes runs through
   `sh -c`, with `set -o pipefail` so a failure ahead of the pipe is not read as an empty
   list. `{kind}` and `{label}` in `show` and `write` take the window's.
 - **`needs` names the programs the commands run beyond each one's first**, which `sh -c`
   hides. A machine missing one draws no recaps tab, as a config naming no `list` does, so
   one config serves machines with and without the program.
-- **The list runs when the tab first shows, every ten minutes while it shows, on `R`, and
-  once a write ends.** A recap is read once, and again where `R` or a timer reads the list
-  while the cursor is on it, or once a write of it ends.
+- **The list runs when the tab first shows, on a timer while it shows, on `R`, and once a
+  write ends, and each run reads every recap again.** `--json` gives the timer as each
+  source's `every`.
 
 ## Reading it from a program
 

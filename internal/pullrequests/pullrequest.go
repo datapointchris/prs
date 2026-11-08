@@ -158,20 +158,14 @@ const readTimeout = 2 * time.Minute
 // once the client itself has ended.
 const pipesGrace = 5 * time.Second
 
-// ErrNoAnswer is a client killed at its timeout, which the error wrapping it names. A client
-// that changes a pull request may have changed it by then.
-var ErrNoAnswer = errors.New("no answer")
+// ErrNoAnswer is a client killed at its timeout. A client that changes a pull request may
+// have changed it by then.
+var ErrNoAnswer = fmt.Errorf("no answer in %s", readTimeout)
 
 // Run runs a client a key uses as a read runs one, and returns its stdout. It fails with the
 // first line the client said, or with ErrNoAnswer.
 func Run(ctx context.Context, dir string, argv ...string) ([]byte, error) {
-	return RunWithin(ctx, readTimeout, dir, argv...)
-}
-
-// RunWithin is Run killing the client at timeout rather than a read's, for a command that does
-// more than read, such as one waiting on a model call.
-func RunWithin(ctx context.Context, timeout time.Duration, dir string, argv ...string) ([]byte, error) {
-	out, said, err := runWithin(ctx, timeout, dir, argv[0], argv[1:]...)
+	out, said, err := run(ctx, dir, argv[0], argv[1:]...)
 	switch {
 	case errors.Is(err, ErrNoAnswer), err != nil && said == "":
 		return out, err
@@ -181,17 +175,44 @@ func RunWithin(ctx context.Context, timeout time.Duration, dir string, argv ...s
 	return out, nil
 }
 
+// RunDetached runs a command that is to finish whether or not prs is still open, such as one
+// waiting on a model call, and returns when it ends. It runs as run runs a client, in a
+// session of its own with stdin closed, with its output written to the file at log in place
+// of a pipe, so neither prs exiting nor its terminal closing stops it, and nothing bounds it.
+// It fails with the last line the command wrote.
+func RunDetached(dir, log string, argv ...string) error {
+	out, err := os.Create(log)
+	if err != nil {
+		return fmt.Errorf("could not open the log %s: %w", log, err)
+	}
+	defer func() { _ = out.Close() }()
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := cmd.Run(); err != nil {
+		if line := lastLineOf(log); line != "" {
+			return errors.New(line)
+		}
+		return err
+	}
+	return nil
+}
+
+// lastLineOf is the file's last line holding text, and empty where it holds none or cannot be read.
+func lastLineOf(path string) string {
+	written, _ := os.ReadFile(path)
+	lines := strings.Split(strings.TrimSpace(string(written)), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
 // run runs a client with stdin closed and returns its stdout, and stderr's first line on
 // a failure. git and ssh ask on the terminal itself rather than on stdin, so the client runs
 // in a session of its own, with no terminal to open, and git's prompt is turned off as well.
-// At a read's timeout its whole process group is killed, ssh included.
+// At the timeout its whole process group is killed, ssh included.
 func run(ctx context.Context, dir string, name string, args ...string) ([]byte, string, error) {
-	return runWithin(ctx, readTimeout, dir, name, args...)
-}
-
-// runWithin is run killing the client's process group at timeout.
-func runWithin(ctx context.Context, timeout time.Duration, dir string, name string, args ...string) ([]byte, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
@@ -203,8 +224,7 @@ func runWithin(ctx context.Context, timeout time.Duration, dir string, name stri
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		noAnswer := fmt.Errorf("%w in %s", ErrNoAnswer, timeout)
-		return out, noAnswer.Error(), noAnswer
+		return out, ErrNoAnswer.Error(), ErrNoAnswer
 	}
 	if err != nil {
 		said := strings.TrimSpace(stderr.String())

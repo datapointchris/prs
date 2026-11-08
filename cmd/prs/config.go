@@ -73,9 +73,10 @@ Claude review round, so the row reads claude running while its window is open, u
 round finishes after the key opened it.
 
 recaps names the three commands prs tui's recaps tab runs, each an argv run with no shell,
-so one that pipes runs through sh -c. list prints the windows a recap is written for,
-newest first, one a line as its kind and its label, such as day 2026-11-06, and prs reads
-nothing else it prints. show prints one window's recap as markdown. write writes one, a
+so one that pipes runs through sh -c. list prints the windows a recap is written for, in
+the order the tab draws them, one a line as its kind and its label, such as day 2026-11-06,
+and prs reads nothing else it prints. show prints one window's recap as markdown. write
+writes one, a
 model call, and may be left out. %[5]s in show and write are filled in from the window.
 needs are the programs the commands run beyond each one's first, and a machine missing one
 draws no recaps tab, as a config naming no list does.`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds()),
@@ -146,12 +147,18 @@ draws no recaps tab, as a config naming no list does.`, int(config.DefaultRefres
 				}
 				_, _ = fmt.Fprintf(out, "%s  %s  %s\n", pal.Bold(fmt.Sprintf("key %-4s", action.Key)), action.Label, state)
 			}
-			if recaps := cfg.Recaps; recaps.Named() {
+			for _, tab := range tuiTabs {
+				if tab.absent == nil {
+					continue
+				}
 				state := pal.Paint(gotermstyle.CodeGreen, "drawn")
-				if why := recapsAbsent(cfg); why != "" {
+				if why := tab.absent(cfg); why != "" {
 					state = pal.Paint(gotermstyle.CodeYellow, "not drawn, because "+why)
 				}
-				_, _ = fmt.Fprintf(out, "%s  %s\n", pal.Bold("recaps  "), state)
+				_, _ = fmt.Fprintf(out, "%s  %s  %s\n", pal.Bold("tab     "), tab.name, state)
+			}
+			if recaps := cfg.Recaps; recaps.Named() {
+				_, _ = fmt.Fprintf(out, "%s\n", pal.Bold("recaps  "))
 				for _, command := range []struct {
 					name string
 					argv []string

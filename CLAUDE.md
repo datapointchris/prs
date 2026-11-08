@@ -212,10 +212,14 @@ own `Sources`, as the Summary tab does, so a read is not made twice.
   config's, so prs knows nothing of the program behind them, and a config naming no list,
   or a machine missing a program `needs` names, draws no recaps tab rather than an empty
   one.
-- **The recaps tab's write is a model call, so `w` asks first, naming it**, and runs it in
-  the background under `RunWithin`'s longer bound, because it waits on the model and on
-  whatever admits the call. The list runs again once it ends, so a window written for the
-  first time joins it.
+- **The recaps tab's write is a model call, so `w` asks first, naming it, with enter
+  meaning no**, because a reflex enter would spend the call. It runs through
+  `pullrequests.RunDetached`, in a session of its own with its output in a file under the
+  cache, so quitting prs leaves it to finish, and nothing bounds it. The list runs again
+  once it ends, so a window written for the first time joins it.
+- **Each run of the recaps list reads every recap again.** A recap read before the newest
+  list run began is due, so `R`, the timer and a write's end all reach every recap, and a
+  read under way when a write ended is read again.
 - **No test reads a real account or starts a real program a key runs.** `cmd/prs/tui_test.go`
   puts a stand-in on `PATH` for every program a read or a key in the test runs, and its
   testdata answers in each provider's published shape. GitHub's stand-in is an HTTP server

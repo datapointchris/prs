@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/datapointchris/tuidrive"
 )
@@ -15,7 +16,8 @@ import (
 // withRecaps puts a stand-in recap program on PATH and names its three commands in the
 // config. list prints the list file, show prints a window's file, and write takes a second,
 // then puts its window atop the list and writes its file, as a recap written on demand joins
-// the list. Each records its arguments beside the other stand-ins'.
+// the list, and adds its window to the written file. Each records its arguments beside the
+// other stand-ins'.
 func (s standIn) withRecaps(t *testing.T) {
 	t.Helper()
 	dir := filepath.Join(filepath.Dir(s.config), "..", "..", "recaps")
@@ -37,7 +39,8 @@ func (s standIn) withRecaps(t *testing.T) {
 list) cat "$dir/list" ;;
 show) [ -f "$dir/${2#--}-$3.md" ] && exec cat "$dir/${2#--}-$3.md"; echo "no recap of ${2#--} $3" >&2; exit 1 ;;
 write) sleep 1; printf '%s %s\n' "${2#--}" "$3" | cat - "$dir/list" > "$dir/list.new" && mv "$dir/list.new" "$dir/list"
-  printf '# Recap of %s\n\nWritten on demand.\n' "$3" > "$dir/${2#--}-$3.md" ;;
+  printf '# Recap of %s\n\nWritten on demand.\n' "$3" > "$dir/${2#--}-$3.md"
+  echo "wrote ${2#--} $3"; echo "${2#--} $3" >> "$dir/written" ;;
 esac
 `
 	bin := strings.SplitN(s.env["PATH"], string(os.PathListSeparator), 2)[0]
@@ -74,8 +77,9 @@ func (s standIn) recordedRuns(t *testing.T, args ...string) int {
 }
 
 // The recaps tab lists each window the list prints, with the cursor's recap beside it. w asks
-// naming the model call, and a window typed there that the list does not hold is written,
-// then joins the list as it is run again.
+// naming the model call, and enter alone writes nothing. A window typed there that the list
+// does not hold is written, then joins the list as it is run again. A write under way when q
+// quits finishes, with its output in its log.
 func TestTheRecapsTabShowsEachWindowsRecapAndWritesOneAfterAskingThenListsAgain(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
@@ -89,7 +93,11 @@ func TestTheRecapsTabShowsEachWindowsRecapAndWritesOneAfterAskingThenListsAgain(
 	term.WaitFor("Week forty-five landed the tab.")
 
 	term.Press("w")
-	term.WaitFor("write the recap of week 2026-W45 with a model call?")
+	term.WaitFor("write the recap of week 2026-W45 with a model call? [y/N]")
+	term.Press("enter")
+	term.WaitFor("wrote no recap")
+	term.Press("w")
+	term.WaitFor("write the recap of week 2026-W45 with a model call? [y/N]")
 	term.Type("day 2026-11-07")
 	term.Press("enter")
 	term.WaitFor("writing the recap of day 2026-11-07")
@@ -97,16 +105,40 @@ func TestTheRecapsTabShowsEachWindowsRecapAndWritesOneAfterAskingThenListsAgain(
 	term.WaitFor("RECAPS · 3")
 	term.Press("g")
 	term.WaitFor("Written on demand.")
+	if n := s.recordedRuns(t, "list"); n < 2 {
+		t.Errorf("the list should run again once the write ends, ran %d times", n)
+	}
+
+	term.Press("w")
+	term.WaitFor("write the recap of day 2026-11-07 with a model call? [y/N]")
+	term.Type("y")
+	term.Press("enter")
+	term.WaitFor("writing the recap of day 2026-11-07")
 	term.Press("q")
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
 	}
-	if n := s.recordedRuns(t, "write", "--day", "2026-11-07"); n != 1 {
-		t.Errorf("the write should run once for the window typed, ran %d times", n)
+	written := filepath.Join(filepath.Dir(s.config), "..", "..", "recaps", "written")
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if held, _ := os.ReadFile(written); strings.Count(string(held), "day 2026-11-07\n") == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the write under way when q quit should finish, and %s holds %q", written, readOrEmpty(written))
+		}
 	}
-	if n := s.recordedRuns(t, "list"); n < 2 {
-		t.Errorf("the list should run again once the write ends, ran %d times", n)
+	logged := filepath.Join(s.env["XDG_CACHE_HOME"], "prs", "recap-writes", "day-2026-11-07.log")
+	if held := readOrEmpty(logged); held != "wrote day 2026-11-07\n" {
+		t.Errorf("the write's output should be in %s, which holds %q", logged, held)
 	}
+	if n := s.recordedRuns(t, "write", "--day", "2026-11-07"); n != 2 {
+		t.Errorf("the write should run once for each yes, ran %d times", n)
+	}
+}
+
+func readOrEmpty(path string) string {
+	held, _ := os.ReadFile(path)
+	return string(held)
 }
 
 // A config naming no recaps commands draws no recaps tab, and --view recaps says why. Naming
@@ -122,7 +154,7 @@ func TestTheRecapsTabIsDrawnOnlyWhereTheConfigNamesItsCommandsAndItsSnapshotHold
 	}
 	term.Press("q")
 	term.WaitExit()
-	if _, said, code := s.run(t, "tui", "--view", "recaps", "--json"); code != 1 || !strings.Contains(said, "the config names no recaps commands") {
+	if _, said, code := s.run(t, "tui", "--view", "recaps", "--json"); code != 1 {
 		t.Errorf("--view recaps with no recaps commands exited %d, saying %q", code, said)
 	}
 

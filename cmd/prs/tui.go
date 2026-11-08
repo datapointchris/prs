@@ -70,7 +70,10 @@ func recapsAbsent(cfg config.Config) string {
 }
 
 func recapsTab(b *board.Board, cfg config.Config) openedTab {
-	r := b.OpenRecaps(cfg.Recaps)
+	// With no home and no XDG_CACHE_HOME a write's output goes nowhere, and a failed one says
+	// only its error.
+	logs, _ := config.RecapWritesDir()
+	r := b.OpenRecaps(cfg.Recaps, logs)
 	return openedTab{
 		board:    r,
 		snapshot: func(time.Time) any { return r.Snapshot() },
@@ -213,12 +216,14 @@ opened, merged and closed over a window, %[1]s at first, which w and W step thro
 prs summary --help says what each count is and where they are kept.
 
 The recaps tab shows where the config names recaps commands and PATH holds what they run.
-It lists the windows the list command prints, newest first, and the side panel shows the
-recap the show command prints for the one under the cursor, which enter opens full screen.
-w writes a recap with the write command, a model call, after asking. Enter writes the
-cursor's window, or type another's kind and label, such as one the list does not hold yet.
-The write runs while the list stays usable, and the list reads again once it ends. prs
-config path says what the three commands take.
+It lists the windows in the order the list command prints them, and the side panel shows
+the recap the show command prints for the one under the cursor, which enter opens full
+screen. w writes a recap with the write command, a model call, after asking. y writes the
+cursor's window, or type another's kind and label, such as one the list does not hold yet,
+and enter alone writes nothing. The write runs while the list stays usable, its output in a
+file under $XDG_CACHE_HOME/prs/recap-writes, and quitting leaves it to finish. The list
+runs again once it ends, and each run of the list reads every recap again. prs config path
+says what the three commands take.
 
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
 so an agent reads what a person reads. Neither reads a pull request's own detail, so both
@@ -230,8 +235,8 @@ left some out. A recently closed read past its page keeps the newest, and says s
 first line. With --view summary, the frame is the Summary tab's and the snapshot is what
 prs summary --json prints for %[1]s. With --view recaps, the snapshot holds each window the
 list names and the recap of its first, which the frame shows, and either exits 1 where the
-list or that recap could not be read. --since and --pr are the board's, so the other tabs
-refuse them with --once or --json. With no terminal and neither flag it refuses.`, board.DefaultSummaryWindow, strings.Join(board.SummaryWindows, ", ")),
+list or that recap could not be read, or the list printed a line that is not a window.
+--since and --pr are the board's, so the other tabs refuse them with --once or --json. With no terminal and neither flag it refuses.`, board.DefaultSummaryWindow, strings.Join(board.SummaryWindows, ", ")),
 		Example: `  prs tui
   prs tui --pr 'acme/widget#12'
   prs tui --pr https://github.com/acme/widget/pull/12

@@ -2,8 +2,9 @@ package board
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -20,12 +21,10 @@ import (
 // RecapsView is the Recaps tab's name, the name --view takes.
 const RecapsView = "recaps"
 
-// recapsListEvery is how often the Recaps tab runs its list again while it shows. A list
-// changes only when a recap is written, and a write the tab started reads it again as it ends.
+// recapsListEvery is how often the Recaps tab runs its list again while it shows, and reads
+// every recap again with it. A list changes only when a recap is written, and a write the tab
+// started runs it again as it ends.
 const recapsListEvery = 10 * time.Minute
-
-// recapWriteTimeout bounds a write, which waits on a model call and on whatever admits it.
-const recapWriteTimeout = 30 * time.Minute
 
 // recapReadsAtOnce is how many recaps the tab reads at once once a list lands.
 const recapReadsAtOnce = 4
@@ -75,33 +74,36 @@ func parseRecapList(out []byte) recapList {
 	return list
 }
 
-// recapRecord is how one window's recap stands: what show printed, when, and why the newest
-// read failed. stale says a write here ended since it was read, so the next read reads it.
+// recapRecord is how one window's recap stands: what show printed, when the read that printed
+// it began, and why the newest read failed.
 type recapRecord struct {
 	markdown string
 	held     bool
 	readAt   time.Time
 	fault    string
 	reading  bool
-	stale    bool
 }
 
-// due says the recap is to be read: never read, or written here since, and not reading now.
-func (r recapRecord) due() bool { return !r.reading && (!r.held || r.stale) }
+// due says the recap is to be read: never read, or read before from, and not reading now. A
+// read that began before from may have missed a write that ended since, so it counts as old.
+func (r recapRecord) due(from time.Time) bool {
+	return !r.reading && (!r.held || r.readAt.Before(from))
+}
 
 type recapWrite struct {
 	id     int
 	window RecapWindow
 }
 
-// recapWritten is what a write's command sends when it ends.
+// recapWritten is what a write's command sends when it ends, with the file its output went to.
 type recapWritten struct {
 	id     int
 	window RecapWindow
+	log    string
 	err    error
 }
 
-// Recaps is the Recaps tab: the windows the config's list command prints, newest first, and
+// Recaps is the Recaps tab: the windows the config's list command prints, in its order, and
 // the recap its show command prints for each, as a markdown document beside the list. Its
 // write command writes a window's recap with a model call, on w after asking. prs runs the
 // three as argv and reads nothing of what they print but the list's kind and label.
@@ -109,40 +111,50 @@ type Recaps struct {
 	board    *Board
 	commands config.Recaps
 	list     *gotermboard.Source[recapList]
-	// records reads each listed window's recap not yet read, the cursor's first. Its value is
+	// records reads each listed window's recap that is due, the cursor's first. Its value is
 	// how many it read.
 	records  *gotermboard.Source[int]
 	renderer *markdown.Renderer
+	// writeLogs is the directory each write's output goes to, and empty where there is none.
+	writeLogs string
 
 	mu     sync.Mutex
 	recaps map[RecapWindow]*recapRecord
 	cursor string
+	// refreshFrom is when the newest list run that landed began. Every recap read before it is
+	// due, so each run of the list, on its timer, on R or after a write, reads every recap again.
+	refreshFrom time.Time
 
 	// writing is every write w started that has not ended, oldest first.
 	writing    []recapWrite
 	writeCount int
 }
 
-// OpenRecaps is the Recaps tab, running commands. An open board reads every listed window's
-// recap once the list lands, and a printed one only the recap it draws, since a board printed
-// once reads no detail either.
-func (b *Board) OpenRecaps(commands config.Recaps) *Recaps {
-	r := &Recaps{board: b, commands: commands, renderer: markdown.New(nil), recaps: map[RecapWindow]*recapRecord{}}
+// OpenRecaps is the Recaps tab, running commands, with each write's output in a file under
+// writeLogs. A board that reads detail reads every listed window's recap once the list lands,
+// and one that reads none, as a printed one, only the recap it draws.
+func (b *Board) OpenRecaps(commands config.Recaps, writeLogs string) *Recaps {
+	r := &Recaps{board: b, commands: commands, writeLogs: writeLogs, renderer: markdown.New(nil), recaps: map[RecapWindow]*recapRecord{}}
 	r.list = gotermboard.NewSource("list", recapsListEvery, r.readList)
 	r.records = gotermboard.NewSource("recaps", recapsListEvery, r.readRecaps)
 	return r
 }
 
-// readList runs the list command, then reads the recap the screen shows again, so a read
-// again of the list shows the newest of both. The rest read on records, which this starts.
+// readList runs the list command, then reads the recap the screen shows, so a run of the list
+// shows the newest of both. Every other recap read before the run began reads on records,
+// which this starts.
 func (r *Recaps) readList(ctx context.Context) (recapList, string, error) {
+	started := time.Now()
 	out, err := pullrequests.Run(ctx, "", r.commands.List...)
 	if err != nil {
 		return recapList{}, "", err
 	}
 	list := parseRecapList(out)
+	r.mu.Lock()
+	r.refreshFrom = started
+	r.mu.Unlock()
 	if shown, ok := r.shownIn(list); ok {
-		r.readRecap(ctx, shown, true)
+		r.readRecap(ctx, shown)
 	}
 	r.records.Force()
 	note := ""
@@ -176,7 +188,7 @@ func (r *Recaps) readRecaps(ctx context.Context) (int, string, error) {
 	var due []RecapWindow
 	r.mu.Lock()
 	for _, w := range list.windows {
-		if r.recordLocked(w).due() && (r.board.readDetails || w == shown) {
+		if r.recordLocked(w).due(r.refreshFrom) && (r.board.readDetails || w == shown) {
 			due = append(due, w)
 		}
 	}
@@ -192,7 +204,7 @@ func (r *Recaps) readRecaps(ctx context.Context) (int, string, error) {
 		slots <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-slots }()
-			r.readRecap(ctx, w, false)
+			r.readRecap(ctx, w)
 		})
 	}
 	wg.Wait()
@@ -210,26 +222,31 @@ func (r *Recaps) readRecaps(ctx context.Context) (int, string, error) {
 	return len(due), "", nil
 }
 
-// readRecap runs show for the window, where always says to or its recap is due, unless a read
-// of it is under way. A failure keeps the recap last read.
-func (r *Recaps) readRecap(ctx context.Context, w RecapWindow, always bool) {
+// readRecap runs show for the window where its recap is due. A failure keeps the recap last
+// read. A list run that landed while it read leaves it due again, so records reads it again.
+func (r *Recaps) readRecap(ctx context.Context, w RecapWindow) {
 	r.mu.Lock()
 	record := r.recordLocked(w)
-	if record.reading || !always && !record.due() {
+	if !record.due(r.refreshFrom) {
 		r.mu.Unlock()
 		return
 	}
 	record.reading = true
+	started := time.Now()
 	r.mu.Unlock()
-	out, err := pullrequests.Run(ctx, "", config.FillRecap(r.commands.Show, w.Kind, w.Label)...)
+	out, err := pullrequests.Run(ctx, "", config.FillRecap(r.commands.Show, config.RecapFields{Kind: w.Kind, Label: w.Label})...)
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	record.reading = false
 	if err != nil {
 		record.fault = err.Error()
-		return
+	} else {
+		record.markdown, record.held, record.readAt, record.fault = string(out), true, started, ""
 	}
-	record.markdown, record.held, record.readAt, record.fault, record.stale = string(out), true, time.Now(), "", false
+	again := started.Before(r.refreshFrom)
+	r.mu.Unlock()
+	if again {
+		r.records.Force()
+	}
 }
 
 // recordLocked is the window's record, made where there is none. The caller holds mu.
@@ -265,13 +282,13 @@ func (r *Recaps) Look(width int) gotermboard.Look {
 	return look
 }
 
-// CursorOn is gotermboard.CursorBoard's. A cursor landing on a window whose recap is not read
+// CursorOn is gotermboard.CursorBoard's. A cursor landing on a window whose recap is due
 // reads it on the next tick, ahead of the rest.
 func (r *Recaps) CursorOn(key string) {
 	r.mu.Lock()
 	r.cursor = key
 	w, ok := recapWindowOf(key)
-	due := ok && r.recordLocked(w).due()
+	due := ok && r.recordLocked(w).due(r.refreshFrom)
 	r.mu.Unlock()
 	if due {
 		r.records.Force()
@@ -285,20 +302,20 @@ func (r *Recaps) Actions() []gotermboard.Action {
 	}
 	return []gotermboard.Action{{
 		Keys:   []string{"w"},
-		Label:  "write a recap with a model call, after asking: the cursor's window, or another typed as its kind and label",
+		Label:  "write a recap with a model call, after asking: y for the cursor's window, or another typed as its kind and label",
 		Footer: "w write",
 		Run:    r.askWrite,
 	}}
 }
 
-// askWrite asks which window's recap to write, naming the model call. Enter alone writes the
-// cursor's, and a kind and a label typed write that window, so one the list does not hold yet
-// can be written.
+// askWrite asks which window's recap to write, naming the model call. y writes the cursor's,
+// and a kind and a label typed write that window, so one the list does not hold yet can be
+// written. Enter alone writes nothing, because a reflex enter would spend a model call.
 func (r *Recaps) askWrite(m *gotermboard.Model) tea.Cmd {
 	shown, onRow := recapWindowOf(m.Cursor())
 	text := "write which window's recap, with a model call? Type its kind and its label, as the list names a window."
 	if onRow {
-		text = fmt.Sprintf("write the recap of %s with a model call? [Y/n], or type another window's kind and label", shown)
+		text = fmt.Sprintf("write the recap of %s with a model call? [y/N], or type another window's kind and label", shown)
 	}
 	m.Ask(gotermboard.Question{
 		Text:  text,
@@ -326,18 +343,18 @@ func (r *Recaps) askWrite(m *gotermboard.Model) tea.Cmd {
 }
 
 // answeredWindow is the window a typed answer names, or what the footer says where it names
-// none: enter or yes is the cursor's window, no writes nothing, and two words are a kind and
-// a label.
+// none: yes is the cursor's window, enter alone or no writes nothing, and two words are a
+// kind and a label.
 func answeredWindow(typed string, shown RecapWindow, onRow bool) (RecapWindow, string) {
 	fields := strings.Fields(typed)
 	switch strings.ToLower(typed) {
-	case "", "y", "yes":
+	case "", "n", "no":
+		return RecapWindow{}, "wrote no recap"
+	case "y", "yes":
 		if onRow {
 			return shown, ""
 		}
-		return RecapWindow{}, "nothing typed, so no recap is written"
-	case "n", "no":
-		return RecapWindow{}, "wrote no recap"
+		return RecapWindow{}, "no window is under the cursor, so type one's kind and label to write it"
 	}
 	if len(fields) != 2 {
 		return RecapWindow{}, fmt.Sprintf("%q is not a kind and a label, as day 2026-11-06, so no recap is written", typed)
@@ -350,16 +367,35 @@ func (r *Recaps) writingOf(w RecapWindow) bool {
 }
 
 // startWrite runs the write command for the window in the background, while the footer names
-// it after a spinner.
+// it after a spinner. It runs detached, with its output in a file, so quitting prs leaves it
+// to finish, and the next list run shows what it wrote.
 func (r *Recaps) startWrite(w RecapWindow) tea.Cmd {
 	r.writeCount++
 	id := r.writeCount
 	r.writing = append(r.writing, recapWrite{id: id, window: w})
-	argv := config.FillRecap(r.commands.Write, w.Kind, w.Label)
+	argv := config.FillRecap(r.commands.Write, config.RecapFields{Kind: w.Kind, Label: w.Label})
+	log := r.writeLogOf(w)
 	return func() tea.Msg {
-		_, err := pullrequests.RunWithin(context.Background(), recapWriteTimeout, "", argv...)
-		return recapWritten{id: id, window: w, err: err}
+		return recapWritten{id: id, window: w, log: log, err: pullrequests.RunDetached("", log, argv...)}
 	}
+}
+
+// writeLogOf is the file a write of the window sends its output to, the null device where
+// there is no directory for it. The kind and label are the list's or what was typed, so any
+// character a path would read is replaced.
+func (r *Recaps) writeLogOf(w RecapWindow) string {
+	if r.writeLogs == "" || os.MkdirAll(r.writeLogs, 0o755) != nil {
+		return os.DevNull
+	}
+	safe := func(s string) string {
+		return strings.Map(func(c rune) rune {
+			if c == '-' || c == '.' || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+				return c
+			}
+			return '_'
+		}, s)
+	}
+	return filepath.Join(r.writeLogs, safe(w.Kind)+"-"+safe(w.Label)+".log")
 }
 
 // UnderWay is gotermboard.BusyBoard's: every write w started that has not ended.
@@ -371,23 +407,20 @@ func (r *Recaps) UnderWay() string {
 	return strings.Join(doing, " · ")
 }
 
-// Receive is gotermboard.ReceivingBoard's. A write ending reads the list again, and its
-// window's recap with it, so a window written for the first time joins the list.
+// Receive is gotermboard.ReceivingBoard's. A write ending runs the list again, which reads
+// every recap again with it, so a window written for the first time joins the list.
 func (r *Recaps) Receive(m *gotermboard.Model, msg tea.Msg) tea.Cmd {
 	written, ok := msg.(recapWritten)
 	if !ok {
 		return nil
 	}
 	r.writing = slices.DeleteFunc(r.writing, func(w recapWrite) bool { return w.id == written.id })
-	r.mu.Lock()
-	r.recordLocked(written.window).stale = true
-	r.mu.Unlock()
 	r.list.Force()
-	switch err := written.err; {
-	case errors.Is(err, pullrequests.ErrNoAnswer):
-		m.Say(fmt.Sprintf("the write of the recap of %s gave %v, so it may still be running; R reads the list again", written.window, err))
-	case err != nil:
-		m.Say(fmt.Sprintf("could not write the recap of %s: %v", written.window, err))
+	switch {
+	case written.err != nil && written.log != os.DevNull:
+		m.Say(fmt.Sprintf("could not write the recap of %s: %v; its output is in %s", written.window, written.err, written.log))
+	case written.err != nil:
+		m.Say(fmt.Sprintf("could not write the recap of %s: %v", written.window, written.err))
 	default:
 		m.Say(fmt.Sprintf("wrote the recap of %s, so the list reads again", written.window))
 	}

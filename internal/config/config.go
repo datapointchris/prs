@@ -67,10 +67,11 @@ type Config struct {
 }
 
 // Recaps are the commands the Recaps tab runs, each an argv run with no shell. List prints the
-// windows a recap is written for, newest first, one a line as its kind and its label, and is
-// left as written, so a list run through sh may hold braces. Show prints one window's recap as
-// markdown, and Write writes it, which is a model call. Show and Write take the names
-// RecapPlaceholders lists. Write may be left out, and the tab then has no key that writes.
+// windows a recap is written for, in the order the tab draws them, one a line as its kind and
+// its label, and is left as written, so a list run through sh may hold braces. Show prints one
+// window's recap as markdown, and Write writes it, which is a model call. Show and Write take
+// the names RecapPlaceholders lists. Write may be left out, and the tab then has no key that
+// writes.
 type Recaps struct {
 	// Needs are the programs the commands run, which an argv starting sh hides. A machine
 	// missing one shows no Recaps tab.
@@ -100,25 +101,26 @@ func (r Recaps) Missing() []string {
 	return MissingPrograms(programs)
 }
 
-// recapPlaceholders fills each name a Show or Write may hold, from the window's kind and label.
-var recapPlaceholders = map[string]func(kind, label string) string{
-	"{kind}":  func(kind, _ string) string { return kind },
-	"{label}": func(_, label string) string { return label },
+// RecapFields are what a recaps Show or Write can name of a window.
+type RecapFields struct {
+	Kind  string
+	Label string
+}
+
+// recapPlaceholders fills each name a Show or Write may hold.
+var recapPlaceholders = placeholderSet[RecapFields]{
+	"{kind}":  func(f RecapFields) string { return f.Kind },
+	"{label}": func(f RecapFields) string { return f.Label },
 }
 
 // RecapPlaceholders are the names FillRecap fills, sorted.
-func RecapPlaceholders() []string { return slices.Sorted(maps.Keys(recapPlaceholders)) }
+func RecapPlaceholders() []string { return recapPlaceholders.names() }
 
-// FillRecap is a Show or Write argv with a window's kind and label in each placeholder.
-func FillRecap(argv []string, kind, label string) []string {
-	var pairs []string
-	for name, value := range recapPlaceholders {
-		pairs = append(pairs, name, value(kind, label))
-	}
-	replacer := strings.NewReplacer(pairs...)
+// FillRecap is a Show or Write argv with a window's fields in each placeholder.
+func FillRecap(argv []string, fields RecapFields) []string {
 	filled := make([]string, len(argv))
 	for i, arg := range argv {
-		filled[i] = replacer.Replace(arg)
+		filled[i] = recapPlaceholders.fill(arg, fields)
 	}
 	return filled
 }
@@ -133,10 +135,13 @@ func (r Recaps) check() error {
 	if len(r.Show) == 0 {
 		return errors.New("show is empty, and the tab needs it to show a window's recap")
 	}
-	for key, argv := range map[string][]string{"show": r.Show, "write": r.Write} {
-		for _, name := range placeholder.FindAllString(strings.Join(argv, " "), -1) {
-			if _, ok := recapPlaceholders[name]; !ok {
-				return fmt.Errorf("%s names %s, and only %s are filled in", key, name, strings.Join(RecapPlaceholders(), ", "))
+	for _, command := range []struct {
+		key  string
+		argv []string
+	}{{"show", r.Show}, {"write", r.Write}} {
+		for _, arg := range command.argv {
+			if err := recapPlaceholders.check(command.key, arg); err != nil {
+				return err
 			}
 		}
 	}
@@ -197,24 +202,44 @@ type Fields struct {
 }
 
 // placeholders fills each name a Window or Command may hold.
-var placeholders = map[string]func(Fields) string{
+var placeholders = placeholderSet[Fields]{
 	"{number}": func(f Fields) string { return strconv.Itoa(f.Number) },
 	"{repo}":   func(f Fields) string { return f.Repo },
 	"{slug}":   func(f Fields) string { return f.Slug },
 }
 
-var placeholder = regexp.MustCompile(`\{[^}]*\}`)
-
 // Placeholders are the names Fill fills, sorted.
-func Placeholders() []string { return slices.Sorted(maps.Keys(placeholders)) }
+func Placeholders() []string { return placeholders.names() }
 
 // Fill puts a pull request's fields into a Window or Command.
-func Fill(template string, fields Fields) string {
+func Fill(template string, fields Fields) string { return placeholders.fill(template, fields) }
+
+// placeholderSet is the names a templated value may hold, each filled from fields of F. Every
+// templated key in the file matches, fills and refuses its names through one, so the keys
+// cannot drift apart on what a placeholder is.
+type placeholderSet[F any] map[string]func(F) string
+
+var placeholder = regexp.MustCompile(`\{[^}]*\}`)
+
+func (s placeholderSet[F]) names() []string { return slices.Sorted(maps.Keys(s)) }
+
+// fill puts the fields into each name text holds.
+func (s placeholderSet[F]) fill(text string, fields F) string {
 	var pairs []string
-	for name, value := range placeholders {
+	for name, value := range s {
 		pairs = append(pairs, name, value(fields))
 	}
-	return strings.NewReplacer(pairs...).Replace(template)
+	return strings.NewReplacer(pairs...).Replace(text)
+}
+
+// check refuses a name text holds that the set does not fill, saying where through where.
+func (s placeholderSet[F]) check(where, text string) error {
+	for _, name := range placeholder.FindAllString(text, -1) {
+		if _, ok := s[name]; !ok {
+			return fmt.Errorf("%s names %s, and only %s are filled in", where, name, strings.Join(s.names(), ", "))
+		}
+	}
+	return nil
 }
 
 // Missing is the programs the action needs that are not on PATH. The board offers its key
@@ -248,6 +273,13 @@ func DefaultRegistry() (string, error) {
 // $XDG_CACHE_HOME/prs, or ~/.cache/prs where that is unset.
 func ListingCacheDir() (string, error) {
 	return xdgPath("XDG_CACHE_HOME", ".cache", "listings")
+}
+
+// RecapWritesDir is where the recaps tab keeps each write's output, one file a window, which
+// that window's next write replaces: recap-writes under $XDG_CACHE_HOME/prs, or ~/.cache/prs
+// where that is unset.
+func RecapWritesDir() (string, error) {
+	return xdgPath("XDG_CACHE_HOME", ".cache", "recap-writes")
 }
 
 // ClosedPullRequestsDir is where the Summary tab and prs summary keep the merged and closed
@@ -424,10 +456,8 @@ func (a WindowAction) check() error {
 		return errors.New("window is empty")
 	}
 	for _, field := range []string{a.Window, a.Command} {
-		for _, name := range placeholder.FindAllString(field, -1) {
-			if _, ok := placeholders[name]; !ok {
-				return fmt.Errorf("%s names %s, and only %s are filled in", field, name, strings.Join(Placeholders(), ", "))
-			}
+		if err := placeholders.check(field, field); err != nil {
+			return err
 		}
 	}
 	return nil
