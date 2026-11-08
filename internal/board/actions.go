@@ -129,12 +129,20 @@ func (b *Board) diff(pr pullrequests.PullRequest) (string, error) {
 		return "", fmt.Errorf("could not work out what #%d is based on", pr.Number)
 	}
 	ref := "refs/remotes/origin/pr/" + strconv.Itoa(pr.Number)
+	// Bitbucket serves no pull request refs, so its head is the source branch on origin.
+	head := fmt.Sprintf("pull/%d/head", pr.Number)
+	if pr.Provider == registry.Bitbucket {
+		head = pr.Branch
+	}
+	if head == "" {
+		return "", fmt.Errorf("#%d in %s names no source branch to fetch", pr.Number, pr.Repo)
+	}
 	socket := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d.sock", pr.Repo, pr.Number))
 	_ = os.Remove(socket)
 	script := strings.Join([]string{
 		`fail() { printf 'prs: %s\npress enter to close ' "$1"; read -r answer; exit 1; }`,
 		fmt.Sprintf("git fetch --quiet --force origin %s || fail %s",
-			quote(fmt.Sprintf("pull/%d/head:%s", pr.Number, ref)), quote(fmt.Sprintf("could not fetch #%d in %s", pr.Number, pr.Repo))),
+			quote(head+":"+ref), quote(fmt.Sprintf("could not fetch #%d in %s", pr.Number, pr.Repo))),
 		"git fetch --quiet origin " + quote(base),
 		fmt.Sprintf("git rev-parse --verify --quiet %s >/dev/null || fail %s",
 			quote("origin/"+base), quote(fmt.Sprintf("%s has no origin/%s to diff against", pr.Repo, base))),
