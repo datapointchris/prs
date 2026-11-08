@@ -307,6 +307,21 @@ func gitHubStandIn(t *testing.T, listing *gitHub) string {
 	return config
 }
 
+// listSide is the list's half of each line of a frame, left of the side panel's border.
+func listSide(frame string) string {
+	var list strings.Builder
+	for line := range strings.SplitSeq(frame, "\n") {
+		left, _, _ := strings.Cut(line, "│")
+		list.WriteString(left + "\n")
+	}
+	return list.String()
+}
+
+// underRow matches a row whose first line holds title and whose second holds below.
+func underRow(title, below string) string {
+	return regexp.QuoteMeta(title) + `[^\n]*\n[^\n]*` + regexp.QuoteMeta(below)
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -393,6 +408,7 @@ window_actions:
 		}
 	}
 	s.env = map[string]string{
+		"HOME":            dir,
 		"PATH":            bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"XDG_CONFIG_HOME": filepath.Join(dir, "config"),
 		"TMUX":            filepath.Join(dir, "tmux") + ",1,0",
@@ -421,7 +437,7 @@ func (s standIn) ran(t *testing.T, lines ...string) bool {
 func (s standIn) run(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
 	cmd := exec.Command(tuidrive.Build(t, "."), args...)
-	cmd.Env = []string{"HOME=" + t.TempDir()}
+	cmd.Env = []string{}
 	for name, value := range s.env {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
@@ -587,8 +603,8 @@ func TestTheBoardSortsPeopleAboveBotsAndClosedBelowInWordsShowsTheDocumentBeside
 	} {
 		term.WaitForPattern(pattern)
 	}
-	text := term.Frame().Text()
-	order := []string{"#12  Cache the widget lookups", "#13  Count cache hits", "#9  Log the widget misses", "#8  Bump the gadget's linter"}
+	text := listSide(term.Frame().Text())
+	order := []string{"Cache the widget lookups", "Count cache hits", "Log the widget misses", "Bump the gadget's linter"}
 	for i := 1; i < len(order); i++ {
 		if strings.Index(text, order[i-1]) > strings.Index(text, order[i]) {
 			t.Errorf("%q should sit above %q:\n%s", order[i-1], order[i], text)
@@ -602,7 +618,8 @@ func TestTheBoardSortsPeopleAboveBotsAndClosedBelowInWordsShowsTheDocumentBeside
 	term.WaitFor("mona approved at 9e8d7c6")
 	beside := false
 	for line := range strings.SplitSeq(term.Frame().Text(), "\n") {
-		beside = beside || strings.Contains(line, "review ") && strings.Contains(line, "acme/widget #12 · opened by octo")
+		list, document, found := strings.Cut(line, "│")
+		beside = beside || found && strings.TrimSpace(list) != "" && strings.Contains(document, "acme/widget #12 · opened by octo")
 	}
 	if !beside {
 		t.Errorf("#12's document should share a line of the screen with a row of the table:\n%s", term.Frame().Text())
@@ -648,9 +665,9 @@ func TestEachRowReadsItsNewestReviewRoundAndItsDocumentHoldsTheRound(t *testing.
 		t.Fatal(err)
 	}
 	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 300, Rows: 40})
-	term.WaitForPattern(`claude 5 correctness · 3 design · 4 prose .*Count cache hits`)
-	term.WaitForPattern(`claude unfinished .*Tidy the gadget`)
-	term.WaitForPattern(`claude reviewed .*Cache the widget lookups`)
+	term.WaitForPattern(underRow("Count cache hits", "claude 5 correctness · 3 design · 4 prose"))
+	term.WaitForPattern(underRow("Tidy the gadget", "claude unfinished"))
+	term.WaitForPattern(underRow("Cache the widget lookups", "claude reviewed"))
 
 	// d hands nvim the whole document, which the stand-in nvim keeps. The people's rows run
 	// ledger #4, widget #12 and gadget #5, then widget #13 under the bots' header.
@@ -705,11 +722,11 @@ func TestEachRowReadsItsNewestReviewRoundAndItsDocumentHoldsTheRound(t *testing.
 	// The cursor is on #13, whose round finished before r opened a window for another.
 	term.Press("r")
 	term.WaitFor("opened review widget #13 in a tmux window")
-	term.WaitForPattern(`claude running .*Count cache hits`)
+	term.WaitForPattern(underRow("Count cache hits", "claude running"))
 	if err := os.WriteFile(s.windows, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	term.WaitForPattern(`claude 5 correctness · 3 design · 4 prose .*Count cache hits`)
+	term.WaitForPattern(underRow("Count cache hits", "claude 5 correctness · 3 design · 4 prose"))
 	term.Press("q")
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
@@ -722,7 +739,7 @@ func TestEachRowReadsItsNewestReviewRoundAndItsDocumentHoldsTheRound(t *testing.
 func TestTheDiffSectionShowsASmallDiffWholeAndNamesALargeOnesSize(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
-	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 340, Rows: 40})
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 360, Rows: 40})
 	term.WaitFor("people · 3")
 	term.WaitFor(" #5")
 
@@ -923,7 +940,7 @@ func TestOneQuestionMergesEveryMarkedGreenPullRequestInTurnEachAfterItsOwnRead(t
 		t.Fatal(err)
 	}
 	term.Press("enter")
-	term.WaitFor("merged 3 of 4: acme/widget #21, acme/widget #23, acme/widget #25. Left acme/widget #22: GitHub reads its merge state as behind, not ready")
+	term.WaitForPattern(`merged 3 of 4: acme/widget #21, acme/widget #23, acme/widget #25\. Left acme/widget #22: GitHub reads its merge state as behind,\s+not\s+ready`)
 
 	recorded, _ := os.ReadFile(s.recorded)
 	var events []string

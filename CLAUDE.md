@@ -7,7 +7,7 @@ sources, the frame and the `--json` snapshot, `sections.go` the people, bots and
 closed groups, one record per pull request and the row held under the cursor,
 `listing_cache.go` the last listing kept on
 disk for the next start, `table.go` what `prs list` prints, `document.go` each pull
-request's markdown document, a section per heading, `review_rounds.go` the CLAUDE cell,
+request's markdown document, a section per heading, `review_rounds.go` the round's cell,
 the Review section and the tmux windows that run a round, `diff_files.go` the document and
 review threads `d` writes for nvim, and `opened_on.go` the pull request `prs tui --pr`
 names. `internal/reviewrounds` reads a pull request's Claude review rounds out of its
@@ -129,9 +129,16 @@ is the shape of the threads file `d` hands nvim, held the same way.
 - **A round record's statuses stay apart.** A skipped reviewer was skipped on purpose and
   reads as skipped. One not run or not posted counts as a gap beside the findings, and a
   round none ran reads `claude did not run`, never as a clean one.
-- **The CLAUDE column draws only while a row fills it**, so a board on repos no round
-  reviews never has it. `rowColumns` holds every column with the cell it draws, so a
+- **`prs list`'s CLAUDE column draws only while a row fills it**, so a list of repos no
+  round reviews never has it. On the board the round follows the review on a row's second
+  line. `listColumns` and `boardColumns` hold every column with the cell it draws, so a
   column's header and its cells cannot drift apart.
+- **A pull request is two lines on the board, and a field keeps its line.** The first is
+  `boardColumns`: state, title, diff, age and branch. The second is `secondLine`: checks
+  under the state, then the checkout, the number, the review, the round and the bot. A new
+  field goes at the end of `secondLine`'s flow before the bot, or into `boardColumns`. The
+  second line is cut at the table's edge, so the checkout's length decides what a narrow
+  screen loses.
 - **A window marked `runs_review_round` reads running only until a round finishes after
   prs opened it.** A session that ran a round keeps its window afterwards, so one prs did
   not open reads running only where no round has finished. tmux is asked every
@@ -183,7 +190,14 @@ is the shape of the threads file `d` hands nvim, held the same way.
   request's markdown until its row, its detail state or the minute moves.
 - **A row's `ReaderTitle` is its pull request's title**, because the table's enter would
   otherwise title the Reader with the row's first cells, which here are its state words.
-- **A row's `Under` line shows only once `f` turns summaries on.**
+- **`Board.Look` is gotermboard's `LookBoard`**: a margin, the columns spread across the
+  width, rules under the titles and over the keys, the cursor's row bold on the selection,
+  and no row chevrons. `PanelFrom` is measured inside the margin, so the side panel shows
+  from 184 columns.
+- **A column with no title continues the one before it under `Look.Spread`**, so the
+  diff's three counts take two untitled columns after DIFF and stay together.
+- **`f` applies only where a row or group sets `Under`**, and no prs row does, so `f`
+  stays out of the footer and `?`.
 - **A group header that is not `Still` takes the cursor**, so `g` lands on the people
   header and enter there folds the group. The cursor starts on the first row holding cells,
   of whichever group draws first, so recently closed waits for the first open listing.

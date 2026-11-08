@@ -235,7 +235,10 @@ func (b *Board) groups(rows []placed, parents map[[2]string]int, now time.Time) 
 		if s.in == recentlyClosed && b.unread() && !b.failed() {
 			continue
 		}
-		group := gotermboard.Group{Key: s.key, Title: gotermboard.Line{gotermboard.C(s.title, gotermboard.Bold)}, Counted: true, Gap: true}
+		group := gotermboard.Group{
+			Key: s.key, Title: gotermboard.Line{gotermboard.C(s.title, gotermboard.Bold)}, Counted: true, Gap: true,
+			BetweenRows: gotermboard.RuleDotted,
+		}
 		for _, p := range rows {
 			if p.in != s.in {
 				continue
