@@ -58,7 +58,7 @@ func (f diffFiles) write(pr pullrequests.PullRequest, detail *pullrequests.Detai
 	if err != nil {
 		return err
 	}
-	document := "# " + pr.Title + "\n\n" + MarkdownDocument(pr, detail, now)
+	document := "# " + pr.Title + "\n\n" + MarkdownDocument(pr, detail, nil, now)
 	err = errors.Join(os.WriteFile(f.document, []byte(document), 0o600), os.WriteFile(f.threads, append(encoded, '\n'), 0o600))
 	if err != nil {
 		f.remove()

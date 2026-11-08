@@ -36,6 +36,9 @@ type Provider struct {
 	// ReadOne reads the one pull request ref names, open or not, with its detail where the
 	// host has one.
 	ReadOne func(ctx context.Context, ref Reference) (PullRequest, *Detail, error)
+	// Diff reads the pull request's diff in git's format from the host, for one whose repo is
+	// not checked out here. Nil where the host's client has no diff.
+	Diff func(ctx context.Context, pr PullRequest) (string, error)
 	// ReadsOwners says Read can read an owner whole, for a config that names owners.
 	ReadsOwners bool
 	// Head is what git fetches from origin as the pull request's head.
@@ -68,6 +71,7 @@ var Providers = []Provider{
 		ReadClosed:  ReadGitHubClosed,
 		Detail:      readGitHubDetail,
 		ReadOne:     readGitHubReference,
+		Diff:        readGitHubDiff,
 		ReadsOwners: true,
 		Head:        func(pr PullRequest) string { return fmt.Sprintf("pull/%d/head", pr.Number) },
 		Browse: func(pr PullRequest) ([]string, bool) {

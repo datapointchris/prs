@@ -64,6 +64,9 @@ type Board struct {
 	// details holds each row's detail, read after each listing once ReadDetails is called.
 	details     *pullrequests.Details
 	readDetails bool
+	// diffs holds each row's diff, read after each listing, and is nil until ReadDiffs is
+	// called.
+	diffs *pullrequests.Diffs
 	// openedOn is the pull request OpenOn read, and nil where the board opened on none.
 	openedOn *openedOn
 	// every is how often each read runs again while the board is open.
@@ -135,6 +138,9 @@ func (b *Board) listingSource(provider pullrequests.Provider, name string, every
 				return !readsDetail(pr)
 			}))
 		}
+		if b.diffs != nil {
+			b.diffs.Prefetch(ctx, name, pullrequests.Finish(slices.Clone(listing.PullRequests), b.repos, time.Now()))
+		}
 		if b.listings != nil {
 			b.listings.keep(name, listing, time.Now())
 		}
@@ -164,6 +170,12 @@ func (b *Board) ReadClosed(since pullrequests.Since, every time.Duration) {
 // document's sections that detail fills. A board printed once leaves it off, since nothing
 // waits for them.
 func (b *Board) ReadDetails() { b.readDetails = true }
+
+// ReadDiffs has each listing that lands read its rows' diffs in the background, for the
+// document's Diff section, which shows one whole up to maxLines changed lines. A diff is
+// read in the repo's checkout, fetched as d fetches it, and from GitHub where the repo is
+// not checked out. A board printed once leaves it off, since nothing waits for them.
+func (b *Board) ReadDiffs(maxLines int) { b.diffs = pullrequests.NewDiffs(maxLines) }
 
 // KeepListings has the board draw the listings the last run on these repos kept in dir until
 // each provider's first read lands, and keep each listing that lands there for the next run. A

@@ -1,0 +1,63 @@
+diff --git a/cache/cache.go b/cache/cache.go
+index 3b18e51..a9c2f04 100644
+--- a/cache/cache.go
++++ b/cache/cache.go
+@@ -6,6 +6,7 @@ import (
+ type Cache struct {
+ 	mu      sync.Mutex
+ 	clock   Clock
+ 	entries map[string]entry
++	stats   Stats
+ 	ttl     time.Duration
+ }
+@@ -14,6 +15,8 @@ func (c *Cache) Get(key string) (Widget, bool) {
+ 	entry, ok := c.entries[key]
+ 	if !ok || entry.expired(c.clock.Now()) {
++		c.stats.misses.Add(1)
+ 		return Widget{}, false
+ 	}
++	c.stats.hits.Add(1)
+ 	return entry.widget, true
+ }
+diff --git a/cache/counter.go b/cache/metrics.go
+similarity index 31%
+rename from cache/counter.go
+rename to cache/metrics.go
+index 5d1c2e3..8f7a6b5 100644
+--- a/cache/counter.go
++++ b/cache/metrics.go
+@@ -1,6 +1,17 @@
+ package cache
+
+ import "sync/atomic"
+
+-// counter counts one thing the cache does.
+-type counter = atomic.Int64
++// Stats counts what the cache does, for its metrics endpoint.
++type Stats struct {
++	hits   atomic.Int64
++	misses atomic.Int64
++}
++// HitRate is the share of reads the cache answered, and 0 before any read.
++func (s *Stats) HitRate() float64 {
++	hits, misses := s.hits.Load(), s.misses.Load()
++	if hits+misses == 0 {
++		return 0
++	}
++	return float64(hits) / float64(hits+misses)
++}
+diff --git a/cache/metrics_test.go b/cache/metrics_test.go
+new file mode 100644
+index 0000000..c4d3e2f
+--- /dev/null
++++ b/cache/metrics_test.go
+@@ -0,0 +1,9 @@
++package cache
++
++import "testing"
++
++func TestHitRateIsZeroBeforeAnyRead(t *testing.T) {
++	if rate := new(Stats).HitRate(); rate != 0 {
++		t.Errorf("HitRate() = %v before any read, want 0", rate)
++	}
++}

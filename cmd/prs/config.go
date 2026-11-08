@@ -28,6 +28,7 @@ exists. The file is YAML:
   repos_registry: ~/repos.json
   refresh_every_seconds: %[1]d
   closed_refresh_every_seconds: %[2]d
+  diff_section_max_lines: %[4]d
   window_actions:
     - key: r
       label: claude review
@@ -53,11 +54,16 @@ file does not say. Each GitHub read spends points from the token's hourly GraphQ
 allowance, about a point for every %[3]d repos whichever it reads, so a shorter interval spends
 them faster. gh api rate_limit shows what is left.
 
+diff_section_max_lines is the most lines a pull request may add and remove for the Diff
+section of its document to show the diff whole, a whole number, 1 or more, and %[4]d where
+the file does not say. A larger one's section names how many lines it changes and the key
+that opens it.
+
 Each window action is a key that runs its command in a new tmux window in the pull
 request's checkout. needs are the programs it runs, and a machine missing one is not
 offered the key. {number}, {repo} and {slug} are filled in. Quote a value holding " #",
 which YAML otherwise reads as a comment.`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds()),
-			pullrequests.ReposPerSearch),
+			pullrequests.ReposPerSearch, config.DefaultDiffSectionMaxLines),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := config.Path()
@@ -103,6 +109,7 @@ which YAML otherwise reads as a comment.`, int(config.DefaultRefreshEvery.Second
 			}
 			_, _ = fmt.Fprintf(out, "%s  open every %d seconds  from %s\n", pal.Bold("refresh "), int(cfg.RefreshEvery.Seconds()), cfg.RefreshFrom)
 			_, _ = fmt.Fprintf(out, "%s  closed every %d seconds  from %s\n", pal.Bold("        "), int(cfg.ClosedRefreshEvery.Seconds()), cfg.ClosedRefreshFrom)
+			_, _ = fmt.Fprintf(out, "%s  shown whole up to %d changed lines  from %s\n", pal.Bold("diff    "), cfg.DiffSectionMaxLines, cfg.DiffSectionFrom)
 			kept, err := config.ListingCacheDir()
 			if err != nil {
 				return err

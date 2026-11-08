@@ -1,0 +1,19 @@
+diff --git a/gadget.go b/gadget.go
+index 1a2b3c4..4c3b2a1 100644
+--- a/gadget.go
++++ b/gadget.go
+@@ -19,10 +19,10 @@ func New(name string) *Gadget {
+ // Start runs the gadget, and refuses a second start.
+ func (g *Gadget) Start() error {
+-	if g.running == true {
++	if g.running {
+ 		return errAlreadyRunning
+ 	}
+-	g.running = true
+-	g.started = time.Now()
+-	g.log.Printf("Started gadget %s.", g.name)
++	g.running, g.started = true, time.Now()
++	g.log.Printf("started %s", g.name)
++	defer g.notify()
+ 	return nil
+ }

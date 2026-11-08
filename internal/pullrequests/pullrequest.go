@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/datapointchris/prs/internal/registry"
@@ -130,6 +131,10 @@ func (s Scope) Empty() bool { return len(s.Repos) == 0 && len(s.Owners) == 0 }
 // readTimeout bounds one client call, so a hung network never holds a read forever.
 const readTimeout = 2 * time.Minute
 
+// pipesGrace is how long a client's Wait waits on pipes a process it started still holds,
+// once the client itself has ended.
+const pipesGrace = 5 * time.Second
+
 // ErrNoAnswer is a client killed at its timeout. A client that changes a pull request may
 // have changed it by then.
 var ErrNoAnswer = fmt.Errorf("no answer in %s", readTimeout)
@@ -148,14 +153,18 @@ func Run(ctx context.Context, dir string, argv ...string) ([]byte, error) {
 }
 
 // run runs a client with stdin closed and returns its stdout, and stderr's first line on
-// a failure. git asks for credentials on the terminal itself rather than on stdin, so its
-// prompt is turned off too.
+// a failure. git and ssh ask on the terminal itself rather than on stdin, so the client runs
+// in a session of its own, with no terminal to open, and git's prompt is turned off as well.
+// At the timeout its whole process group is killed, ssh included.
 func run(ctx context.Context, dir string, name string, args ...string) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = pipesGrace
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

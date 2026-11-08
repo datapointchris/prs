@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -39,9 +40,10 @@ const standInToken = "stand-in-token"
 //
 // The stand-in gh holds no login, takes a second to merge, so the work shows under way, and
 // refuses to merge #13 in gh's own words. The stand-in git names fetchedHead as any ref's
-// commit, and the stand-in tmux names prs's window prs. The stand-in nvim also records the
-// variables naming the pull request's files, and copies each to handed.md and
-// handed.threads.json, since prs removes them once nvim exits.
+// commit, and diffs a pull request's fetched head as testdata/pull-request-<number>.diff,
+// which the stand-in GitHub sends as its diff too. The stand-in tmux names prs's window prs.
+// The stand-in nvim also records the variables naming the pull request's files, and copies
+// each to handed.md and handed.threads.json, since prs removes them once nvim exits.
 type standIn struct {
 	env      map[string]string
 	config   string
@@ -146,6 +148,15 @@ func gitHubStandIn(t *testing.T, listing *gitHub) string {
 			_, _ = w.Write([]byte(`{"message": "Bad credentials"}`))
 			return
 		}
+		// REST sends a pull request's diff only under the diff media type.
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/") {
+			if r.Header.Get("Accept") != "application/vnd.github.diff" {
+				http.Error(w, "asked for no diff", http.StatusUnsupportedMediaType)
+				return
+			}
+			http.ServeFile(w, r, filepath.Join("testdata", "pull-request-"+path.Base(r.URL.Path)+".diff"))
+			return
+		}
 		var request struct {
 			Query     string         `json:"query"`
 			Variables map[string]any `json:"variables"`
@@ -229,7 +240,8 @@ esac
 ` + fmt.Sprintf("cat %q\n", listed),
 		"tmux":   "#!/bin/sh\n" + record + "case \"$*\" in *automatic-rename}*) printf 'prs\\t0\\n' ;; esac\n",
 		"claude": "#!/bin/sh\n" + record,
-		"git":    "#!/bin/sh\n" + record + "[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\nexit 0\n",
+		"git": "#!/bin/sh\n" + record + "[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\n" +
+			`case " $* " in *' diff '*) for a; do last=$a; done; cat "` + filepath.Dir(listed) + `/pull-request-${last##*/pr/}.diff" 2>/dev/null ;; esac` + "\nexit 0\n",
 		"nvim": "#!/bin/sh\n" + record + fmt.Sprintf(`printf '%%s\n' "PRS_DIFF_DOCUMENT=$PRS_DIFF_DOCUMENT" "PRS_DIFF_THREADS=$PRS_DIFF_THREADS" >> %q
 cp "$PRS_DIFF_DOCUMENT" %q; cp "$PRS_DIFF_THREADS" %q; exit 0
 `, s.recorded, s.handed+".md", s.handed+".threads.json"),
@@ -501,6 +513,54 @@ func TestTheBoardSortsPeopleAboveBotsAndClosedBelowInWordsShowsTheDocumentBeside
 	}
 }
 
+// A small pull request's diff reads whole in its document, a file to a heading the Reader's
+// ] lands on, sent by GitHub, or diffed in its checkout for Bitbucket, whose client has no
+// diff. A large one's section names its size and d. Nothing here starts nvim.
+func TestTheDiffSectionShowsASmallDiffWholeAndNamesALargeOnesSize(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t)
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 340, Rows: 40})
+	term.WaitFor("people · 3")
+	term.WaitFor(" #5")
+
+	// The people's rows run ledger #4, widget #12 and gadget #5, oldest first, under their
+	// header, and widget #13 sits under the bots'.
+	term.Press("g", "j")
+	term.WaitFor("5 lines changed in 1 file at 1a2b3c4, read in the checkout here.")
+	term.Press("j")
+	term.WaitFor("1017 lines changed, more than the 300 this section shows whole. d opens the whole diff in nvim.")
+	term.Press("j")
+	term.WaitFor("8 lines changed in 1 file at 0f1e2d3, read from github.")
+	term.Press("j", "j")
+	term.WaitFor("27 lines changed in 3 files at a1b2c3d, read from github.")
+
+	// Full screen, ] lands on each heading: Description, Checks, Files and Diff, then a file each.
+	term.Press("enter")
+	term.WaitFor("[/] section")
+	term.Press("]", "]", "]", "]", "]")
+	term.WaitGone("27 lines changed in 3 files")
+	term.WaitFor("c.stats.hits.Add(1)")
+	term.Press("]")
+	term.WaitGone("c.stats.hits.Add(1)")
+	term.WaitFor("HitRate is the share of reads the cache answered")
+	term.Press("esc", "q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+	if s.ran(t, "nvim") {
+		t.Error("reading a diff in its document should start no nvim")
+	}
+	// Opened on checked-out repos with no key pressed, the board fetches nothing into a GitHub
+	// checkout and only the pull request's own ref into a Bitbucket one, so origin/<base> stays put.
+	if s.ran(t, "git", "cwd="+s.checkout, "fetch") {
+		t.Error("a GitHub pull request's diff should come from GitHub, with nothing fetched into its checkout")
+	}
+	if !s.ran(t, "git", "cwd="+s.ledger, "fetch", "--quiet", "--force", "--no-write-fetch-head", "--no-auto-maintenance",
+		"origin", "feature/ledger-export:refs/remotes/origin/pr/4") || s.ran(t, "origin", "develop") {
+		t.Error("a Bitbucket pull request's diff should fetch its head into its own ref and leave origin/develop alone")
+	}
+}
+
 // A key that acts leaves prs on the list, and a row merged here moves to recently closed at
 // once, though the stand-in's search still lists it open, as GitHub's does for a while.
 func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtOnce(t *testing.T) {
@@ -611,7 +671,7 @@ func TestTuiOpensOnTheNamedPullRequestWithItsDocumentAndQExits0(t *testing.T) {
 	// each heading to the top.
 	term.Press("enter")
 	term.WaitFor("[/] section")
-	term.Press("]", "]")
+	term.Press("]", "]", "]", "]")
 	term.WaitGone("Caches the widget lookups for a minute.")
 	term.WaitFor("cache/cache.go:14 · unresolved")
 	term.Press("esc", "m")

@@ -58,10 +58,18 @@ request, in the group it was in, and one no read lists any more stays under the 
 marked gone, until the cursor moves off it.`,
 			int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds())) + `
 
-A pull request's document holds its ` + board.DocumentSectionNames() + `, each under a heading.
-On a wide terminal a side panel shows the document of the row under the cursor, and enter
-opens it full screen, where [ and ] jump between headings and / searches it. Narrower,
-enter opens it in place where it fits on the screen.
+A pull request's document holds its ` + board.DocumentSectionNames() + `,
+each under a heading. On a wide terminal a side panel shows the document of the row under
+the cursor, and enter opens it full screen, where [ and ] jump between headings and /
+searches it. Narrower, enter opens it in place where it fits on the screen.
+
+The Diff section shows the diff whole, each file under a heading of its own, up to
+diff_section_max_lines changed lines in the config, and names the size of a larger one. Each
+listed pull request's diff, recently closed ones included, is read once its list lands.
+GitHub sends it. Bitbucket's client
+has no diff, so prs fetches a Bitbucket pull request's head into
+refs/remotes/origin/pr/<number> in its checkout and diffs it there, touching no other ref.
+One whose repo is not cloned here gets a section saying so.
 
 A letter acts on the pull request under the cursor, and ? lists every key. d hands the
 terminal to its diff in nvim, and :qa comes back to the list. m merges and x closes,
@@ -125,6 +133,7 @@ neither flag it refuses.`,
 			pal := gotermstyle.PaletteFor(os.Stdout)
 			if !printing {
 				b.ReadDetails()
+				b.ReadDiffs(cfg.DiffSectionMaxLines)
 				// With no home and no XDG_CACHE_HOME the board reads first, as it would with
 				// nothing kept.
 				if kept, err := config.ListingCacheDir(); err == nil {
