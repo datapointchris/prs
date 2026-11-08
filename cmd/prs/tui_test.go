@@ -15,11 +15,17 @@ import (
 )
 
 // standIn is prs run against a stand-in gh answering testdata/search.json, a stand-in bbkt
-// answering testdata/bbkt-list.json, and a stand-in tmux and claude that each record their
-// arguments, so no test reads a real account or starts a real Claude.
+// answering testdata/bbkt-list.json, and a stand-in tmux, claude, git, nvim and editor. Each
+// records its arguments, and a client records the body it was handed to post, so no test
+// reads a real account, changes a real pull request or starts a real Claude.
+//
+// The stand-in gh takes half a second to merge, so the work shows under way, and refuses to
+// merge #13 in gh's own words.
 type standIn struct {
 	env      map[string]string
 	checkout string
+	ledger   string
+	tmp      string
 	recorded string
 }
 
@@ -34,18 +40,38 @@ func newStandIn(t *testing.T) standIn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := standIn{checkout: filepath.Join(dir, "widget"), recorded: filepath.Join(dir, "recorded")}
+	s := standIn{checkout: filepath.Join(dir, "widget"), ledger: filepath.Join(dir, "ledger"), tmp: filepath.Join(dir, "tmp"), recorded: filepath.Join(dir, "recorded")}
 	bin := filepath.Join(dir, "bin")
-	for _, d := range []string{bin, s.checkout, filepath.Join(dir, "ledger"), filepath.Join(dir, "config", "prs")} {
+	for _, d := range []string{bin, s.checkout, s.ledger, s.tmp, filepath.Join(dir, "config", "prs")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	record := fmt.Sprintf("printf '%%s\\n' \"$(basename \"$0\")\" \"cwd=$(pwd)\" \"$@\" >> %q\n", s.recorded)
+	posted := fmt.Sprintf("for a; do [ \"$prev\" = --body-file ] && cat \"$a\" >> %q; prev=$a; done\n", s.recorded)
 	scripts := map[string]string{
-		"gh":     fmt.Sprintf("#!/bin/sh\ncat %q\n", answer),
-		"bbkt":   fmt.Sprintf("#!/bin/sh\ncat %q\n", listed),
-		"tmux":   fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' tmux \"$@\" >> %q\n", s.recorded),
-		"claude": fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' claude \"$@\" >> %q\n", s.recorded),
+		"gh": "#!/bin/sh\n" + record + `case "$1 $2" in
+'pr merge')
+  if [ "$3" = 13 ]; then
+    echo 'X Pull request acme/widget#13 is not mergeable: the base branch policy prohibits the merge.' >&2
+    echo 'To have the pull request merged after all the requirements have been met, add the ` + "`--auto`" + ` flag.' >&2
+    exit 1
+  fi
+  sleep 0.5; exit 0 ;;
+'pr close') exit 0 ;;
+'pr comment') ` + posted + ` exit 0 ;;
+esac
+` + fmt.Sprintf("cat %q\n", answer),
+		"bbkt": "#!/bin/sh\n" + record + `case "$1 $2" in
+'pr merge') exit 0 ;;
+'pr comment') ` + posted + ` exit 0 ;;
+esac
+` + fmt.Sprintf("cat %q\n", listed),
+		"tmux":   "#!/bin/sh\n" + record,
+		"claude": "#!/bin/sh\n" + record,
+		"git":    "#!/bin/sh\n" + record,
+		"nvim":   "#!/bin/sh\n" + record,
+		"editor": "#!/bin/sh\n" + record + "printf 'Looks good to me.\\n' > \"$1\"\n",
 	}
 	for name, script := range scripts {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
@@ -76,8 +102,20 @@ window_actions:
 		"PATH":            bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"XDG_CONFIG_HOME": filepath.Join(dir, "config"),
 		"TMUX":            filepath.Join(dir, "tmux") + ",1,0",
+		"EDITOR":          filepath.Join(bin, "editor"),
+		"TMPDIR":          s.tmp,
 	}
 	return s
+}
+
+// ran says whether the stand-ins recorded lines in this order, one argument a line.
+func (s standIn) ran(t *testing.T, lines ...string) bool {
+	t.Helper()
+	recorded, err := os.ReadFile(s.recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Contains(string(recorded), strings.Join(lines, "\n")+"\n")
 }
 
 func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.T) {
@@ -135,18 +173,63 @@ func TestTheBoardSaysEachStateInWordsOpensADescriptionAndRunsAKeyTheConfigAdds(t
 
 	term.Press("r")
 	term.WaitFor("opened review widget #12 in a tmux window")
-	recorded, err := os.ReadFile(s.recorded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := strings.Join([]string{"tmux", "new-window", "-n", "review widget #12", "-c", s.checkout, "claude '/review-pr 12'"}, "\n")
 	// Bubble Tea runs tmux info itself to learn the terminal's colors, so the window is one
 	// call among those recorded.
-	if !strings.Contains(string(recorded), want) {
-		t.Errorf("the stand-ins recorded:\n%s\nwant:\n%s", recorded, want)
+	if !s.ran(t, "new-window", "-n", "review widget #12", "-c", s.checkout, "claude '/review-pr 12'") {
+		t.Error("r did not open the review's tmux window in the checkout")
 	}
 
 	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+}
+
+func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *testing.T) {
+	s := newStandIn(t)
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 30})
+	term.WaitFor("open · 4")
+	term.WaitFor(" #12")
+
+	// The rows run ledger #4, widget #12, widget #13 and gadget #5, oldest first.
+	term.Press("g", "c")
+	term.WaitFor("commented on FIN/ledger #4")
+	if !s.ran(t, "bbkt", "cwd="+s.ledger, "pr", "comment", "create", "4", "--body-file") || !s.ran(t, "Looks good to me.") {
+		t.Error("c on a Bitbucket row should post what the editor wrote through bbkt, in its checkout")
+	}
+
+	term.Press("j", "m")
+	term.WaitFor("merge acme/widget #12 — Cache the widget lookups? [Y/n]")
+	term.Press("enter")
+	term.WaitFor("merging acme/widget #12")
+	term.WaitFor("merged acme/widget #12")
+	term.WaitFor("merged  Cache the widget lookups")
+
+	term.Press("j", "m", "enter")
+	term.WaitFor("gh could not merge #13: X Pull request acme/widget#13 is not mergeable")
+	term.Press("x")
+	term.WaitFor("close acme/widget #13 — Count cache hits? [y/N]")
+	term.Press("enter")
+	term.WaitFor("did not close acme/widget #13")
+	if s.ran(t, "pr", "close") {
+		t.Error("enter alone should leave the pull request open")
+	}
+
+	term.Press("k", "m")
+	term.WaitFor("acme/widget #12 is merged already")
+
+	term.Press("j", "d")
+	term.WaitFor("closed the diff of widget #13")
+	if !s.ran(t, "git", "cwd="+s.checkout, "fetch", "--quiet", "--force", "origin", "pull/13/head:refs/remotes/origin/pr/13") {
+		t.Error("d should fetch the head into its own ref in the checkout")
+	}
+	socket := filepath.Join(s.tmp, "prs-diff-widget-13.sock")
+	if !s.ran(t, "nvim", "cwd="+s.checkout, "--listen", socket, "-c", "DiffviewOpen origin/add-cache...refs/remotes/origin/pr/13") {
+		t.Error("d should diff three-dot against the base the listing reports, in the checkout")
+	}
+	term.Press("m")
+	term.WaitFor("merge acme/widget #13 — Count cache hits? [Y/n]")
+	term.Press("esc", "q")
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
 	}

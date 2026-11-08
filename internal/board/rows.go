@@ -94,15 +94,19 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 	cells := append([]gotermboard.Cell{checksCell(pr), reviewCell(pr), ageCell(pr, now)}, diffCells(pr)...)
 	cells = append(cells, repoCell(pr), gotermboard.C(fmt.Sprintf("%s #%d", numberGlyph, pr.Number), gotermboard.Yellow))
 	return gotermboard.Row{
-		Key:      pr.Key(),
-		Cells:    cells,
-		WrapLast: titleLine(pr, parentOf(pr, parents)),
-		Under:    gotermboard.C(identity(pr), dim),
-		Document: b.description(pr, false),
-		Panel:    b.description(pr, true),
-		Text:     strings.Join([]string{pr.Body, pr.Author, pr.Branch, pr.Slug}, " "),
+		Key:         pr.Key(),
+		Cells:       cells,
+		WrapLast:    titleLine(pr, parentOf(pr, parents), b.settled[pr.Key()]),
+		Under:       gotermboard.C(identity(pr), dim),
+		Document:    b.description(pr, false),
+		ReaderTitle: pr.Title,
+		Panel:       b.description(pr, true),
+		Text:        strings.Join([]string{pr.Body, pr.Author, pr.Branch, pr.Slug}, " "),
 	}
 }
+
+// settledCodes color the state a merge or close left a pull request in, as GitHub does.
+var settledCodes = map[string]string{"merged": gotermboard.Magenta, "closed": gotermboard.Red}
 
 // checksCell is the CI state. A rollup state this does not know is yellow rather than
 // dim, because GitHub adds states and a new one is in flight rather than absent.
@@ -171,11 +175,15 @@ func repoCell(pr pullrequests.PullRequest) gotermboard.Cell {
 	return gotermboard.C(pathGlyph+" "+pr.Repo, gotermboard.Cyan)
 }
 
-// titleLine is the title, the open pull request it is stacked on, and the app that opened
-// it. A pull request a person opened carries no mark, so the mark sets an app's row apart.
-func titleLine(pr pullrequests.PullRequest, parent int) gotermboard.Line {
+// titleLine is the state a merge or close left it in, the title, the open pull request it is
+// stacked on, and the app that opened it. A pull request a person opened carries no mark, so
+// the mark sets an app's row apart. A settled one dims its title, because it waits on nobody.
+func titleLine(pr pullrequests.PullRequest, parent int, settled string) gotermboard.Line {
 	line := gotermboard.Line{gotermboard.C(pr.Title, "")}
-	if pr.Draft {
+	switch {
+	case settled != "":
+		line = gotermboard.Line{gotermboard.C(settled, settledCodes[settled]), gotermboard.C("  "+pr.Title, dim)}
+	case pr.Draft:
 		line = gotermboard.Line{gotermboard.C(pr.Title+" (draft)", dim)}
 	}
 	if parent != 0 {

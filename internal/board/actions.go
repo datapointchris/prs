@@ -19,32 +19,24 @@ import (
 	"github.com/datapointchris/prs/internal/pullrequests"
 )
 
-// commandTimeout bounds a client a key runs while the board waits, such as gh opening the
-// browser.
+// commandTimeout bounds a program a key runs while the board waits, such as tmux opening a
+// window.
 const commandTimeout = 30 * time.Second
 
 // Actions is gotermboard.Keyed's. The board's keys sit ahead of the table's, so the footer
 // and the ? overlay list them first.
 func (b *Board) Actions() []gotermboard.Action { return b.actions }
 
-// tableKeys are the keys gotermboard's own table binds, with tab and shift+tab, which cycle
-// tabs, and esc, which backs out of whatever is open. gotermboard does not export its
-// table, so this list follows it by hand.
-var tableKeys = []string{
-	"j", "down", "k", "up", "]", "[", "g", "home", "G", "end", "ctrl+d", "pgdown", "ctrl+u", "pgup",
-	"enter", "space", "?", "q", "ctrl+c", "J", "K", "v", "f", "p", "/", "R",
-	"tab", "shift+tab", "esc",
-}
-
 // Refused says why a window action cannot have its key, and is nil where the key is free.
 // A board's key sits ahead of the table's, so a window action on a bound key would take it.
+// esc backs out of whatever is open, which no table action names.
 func Refused(window config.WindowAction) error {
 	for _, action := range new(Board).keyTable(nil) {
 		if slices.Contains(action.Keys, window.Key) {
 			return fmt.Errorf("key %q is prs's own, for %s", window.Key, action.Label)
 		}
 	}
-	if slices.Contains(tableKeys, window.Key) {
+	if slices.Contains(append(gotermboard.TableKeys(), "esc"), window.Key) {
 		return fmt.Errorf("key %q is one the board's table binds", window.Key)
 	}
 	return nil
@@ -57,11 +49,7 @@ func Refused(window config.WindowAction) error {
 // y copies, m merges and d reads, never deletes. x closes, because c is the comment.
 func (b *Board) keyTable(windows []config.WindowAction) []gotermboard.Action {
 	actions := []gotermboard.Action{
-		{
-			Keys: []string{"enter"}, Label: "open the pull request's description, full screen where it runs past the screen",
-			Footer: "enter open", Run: b.open,
-		},
-		{Keys: []string{"d"}, Label: "view diff: fetch its ref and open it in nvim in a tmux window", Footer: "d diff", Run: b.onCursor(b.diff)},
+		{Keys: []string{"d"}, Label: "view diff: fetch its head and open it in nvim here, until :qa", Footer: "d diff", Run: b.onRow(b.diff)},
 		{Keys: []string{"p"}, Label: "page and comments: GitHub's page and every comment, in a pager in a tmux window", Run: b.onCursor(b.page)},
 	}
 	for _, window := range windows {
@@ -75,49 +63,30 @@ func (b *Board) keyTable(windows []config.WindowAction) []gotermboard.Action {
 		actions = append(actions, gotermboard.Action{Keys: []string{window.Key}, Label: label, Run: b.onCursor(b.windowAction(window))})
 	}
 	return append(actions,
-		gotermboard.Action{Keys: []string{"o"}, Label: "open in browser", Footer: "o browser", Run: b.onCursor(b.browse)},
+		gotermboard.Action{Keys: []string{"o"}, Label: "open in browser", Footer: "o browser", Run: b.onRow(b.browse)},
 		gotermboard.Action{Keys: []string{"y"}, Label: "copy branch: its name, to the system clipboard", Footer: "y copy", Run: b.onCursor(b.copyBranch)},
-		notBuilt("c", "comment"),
-		notBuilt("x", "close"),
-		notBuilt("m", "merge"),
+		gotermboard.Action{Keys: []string{"c"}, Label: "comment: write it in $EDITOR, and it posts when the editor exits", Run: b.onRow(b.comment)},
+		gotermboard.Action{Keys: []string{"x"}, Label: "close without merging, after asking, and enter alone keeps it open", Run: b.onRow(b.closePR)},
+		gotermboard.Action{Keys: []string{"m"}, Label: "merge, after asking, and enter alone merges", Run: b.onRow(b.merge)},
 	)
 }
 
-// notBuilt is a key whose action prs does not run yet. It keeps its letter and its place in
-// ? so the key means one thing from the start.
-func notBuilt(key, name string) gotermboard.Action {
-	return gotermboard.Action{
-		Keys: []string{key}, Label: name + " (not built yet)",
-		Run: func(m *gotermboard.Model) tea.Cmd {
-			m.Say(name + " is not built into prs yet; o opens the pull request's page, which can " + name + " it")
-			return nil
-		},
-	}
-}
-
-// open is enter: a pull request's description full screen where it runs past the screen,
-// named by its title, and otherwise what enter does on the table.
-func (b *Board) open(m *gotermboard.Model) tea.Cmd {
-	pr, ok := b.shown[m.Cursor()]
-	if !ok {
-		return m.Toggle()
-	}
-	if document := b.description(pr, false); m.Tall(document) {
-		m.Read(pr.Title, document)
-		return nil
-	}
-	return m.Toggle()
-}
-
-// onCursor runs act on the pull request under the cursor, and says what it did or why it
-// could not.
-func (b *Board) onCursor(act func(pullrequests.PullRequest) (string, error)) func(*gotermboard.Model) tea.Cmd {
+// onRow runs act on the pull request under the cursor.
+func (b *Board) onRow(act func(*gotermboard.Model, pullrequests.PullRequest) tea.Cmd) func(*gotermboard.Model) tea.Cmd {
 	return func(m *gotermboard.Model) tea.Cmd {
 		pr, ok := b.shown[m.Cursor()]
 		if !ok {
 			m.Say("put the cursor on a pull request first")
 			return nil
 		}
+		return act(m, pr)
+	}
+}
+
+// onCursor runs act on the pull request under the cursor, and says what it did or why it
+// could not.
+func (b *Board) onCursor(act func(pullrequests.PullRequest) (string, error)) func(*gotermboard.Model) tea.Cmd {
+	return b.onRow(func(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 		done, err := act(pr)
 		if err != nil {
 			m.Say(err.Error())
@@ -125,56 +94,218 @@ func (b *Board) onCursor(act func(pullrequests.PullRequest) (string, error)) fun
 		}
 		m.Say(done)
 		return nil
-	}
+	})
 }
 
-// diff fetches the pull request's head into its own ref and opens nvim's diff against the
-// base it targets, in a tmux window in the checkout. It never checks the branch out, which
-// would abort on uncommitted work and disturb the tree where there is none.
+// diff fetches the pull request's head into its own ref in the background, then hands prs's
+// terminal to nvim's diff against the base it targets, run in the checkout. Quitting nvim
+// gives the terminal back to the board, with the cursor where it was, and every provider is
+// read again. It never checks the branch out, which would abort on uncommitted work and
+// disturb the tree where there is none.
 //
 // The base is the one the listing reports, because a pull request stacked on another
 // targets its parent, and a diff against main would show both as one change. The diff is
 // three-dot, from where the branch left the base, which is what the provider shows.
 //
-// nvim listens on a socket named for the window, so another program in the window can ask
-// it what is under the cursor.
-func (b *Board) diff(pr pullrequests.PullRequest) (string, error) {
+// nvim listens on a socket named for the pull request, so another program in the tmux
+// window can ask it what is under the cursor.
+func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
+	refuse := func(err error) tea.Cmd {
+		m.Say(err.Error())
+		return nil
+	}
 	provider, err := pullrequests.ProviderOf(pr.Provider)
 	if err != nil {
-		return "", err
+		return refuse(err)
 	}
 	checkout, err := checkoutOf(pr)
 	if err != nil {
-		return "", err
+		return refuse(err)
+	}
+	if missing := config.MissingPrograms([]string{"git", "nvim"}); len(missing) > 0 {
+		return refuse(fmt.Errorf("the diff needs %s, which is not installed here", strings.Join(missing, " and ")))
 	}
 	base := pr.Base
 	if base == "" {
 		base = defaultBranch(checkout)
 	}
 	if base == "" {
-		return "", fmt.Errorf("could not work out what #%d is based on", pr.Number)
+		return refuse(fmt.Errorf("could not work out what #%d is based on", pr.Number))
 	}
-	ref := "refs/remotes/origin/pr/" + strconv.Itoa(pr.Number)
 	head := provider.Head(pr)
 	if head == "" {
-		return "", fmt.Errorf("#%d in %s names no source branch to fetch", pr.Number, pr.Repo)
+		return refuse(fmt.Errorf("#%d in %s names no source branch to fetch", pr.Number, pr.Repo))
 	}
-	socket := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d.sock", pr.Repo, pr.Number))
-	_ = os.Remove(socket)
-	script := strings.Join([]string{
-		`fail() { printf 'prs: %s\npress enter to close ' "$1"; read -r answer; exit 1; }`,
-		fmt.Sprintf("git fetch --quiet --force origin %s || fail %s",
-			quote(head+":"+ref), quote(fmt.Sprintf("could not fetch #%d in %s", pr.Number, pr.Repo))),
-		"git fetch --quiet origin " + quote(base),
-		fmt.Sprintf("git rev-parse --verify --quiet %s >/dev/null || fail %s",
-			quote("origin/"+base), quote(fmt.Sprintf("%s has no origin/%s to diff against", pr.Repo, base))),
-		fmt.Sprintf("exec nvim --listen %s -c %s", quote(socket), quote(fmt.Sprintf("DiffviewOpen origin/%s...%s", base, ref))),
-	}, "; ")
-	name := fmt.Sprintf("diff %s #%d", pr.Repo, pr.Number)
-	if err := openWindow(name, script, checkout, "git", "nvim"); err != nil {
-		return "", err
+	ref := "refs/remotes/origin/pr/" + strconv.Itoa(pr.Number)
+	return b.start(work{
+		doing: fmt.Sprintf("fetching %s #%d", pr.Repo, pr.Number),
+		run: func(ctx context.Context) error {
+			if out, err := git(ctx, checkout, "fetch", "--quiet", "--force", "origin", head+":"+ref); err != nil {
+				return fmt.Errorf("could not fetch #%d in %s: %s", pr.Number, pr.Repo, firstLine(out, err))
+			}
+			// A base that failed to fetch still diffs against the origin/<base> fetched last,
+			// and the check below refuses where there is none.
+			_, _ = git(ctx, checkout, "fetch", "--quiet", "origin", base)
+			if _, err := git(ctx, checkout, "rev-parse", "--verify", "--quiet", "origin/"+base); err != nil {
+				return fmt.Errorf("%s has no origin/%s to diff against", pr.Repo, base)
+			}
+			return nil
+		},
+		done: func(*gotermboard.Model) tea.Cmd {
+			socket := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d.sock", pr.Repo, pr.Number))
+			_ = os.Remove(socket)
+			nvim := exec.Command("nvim", "--listen", socket, "-c", fmt.Sprintf("DiffviewOpen origin/%s...%s", base, ref))
+			nvim.Dir = checkout
+			return handOver(nvim, func(m *gotermboard.Model, err error) tea.Cmd {
+				b.readAgain()
+				if err != nil {
+					m.Say(fmt.Sprintf("nvim ended the diff of #%d with %v", pr.Number, err))
+					return nil
+				}
+				m.Say(fmt.Sprintf("closed the diff of %s #%d, and reading every provider again", pr.Repo, pr.Number))
+				return nil
+			})
+		},
+	})
+}
+
+// merge asks first, and enter alone merges. A merge confirmed by reflex lands work that was
+// landing anyway, and the question is there to show which pull request lands. Anything typed
+// but y or yes leaves it, so a stray key still stops it.
+func (b *Board) merge(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
+	provider, err := b.writable(pr, "merge")
+	if err != nil {
+		m.Say(err.Error())
+		return nil
 	}
-	return "opened " + name + " in a tmux window", nil
+	argv, inCheckout := provider.Merge(pr)
+	b.ask(m, pr, "merge", true, work{
+		doing: fmt.Sprintf("merging %s #%d", pr.Slug, pr.Number),
+		run:   runClient(pr, "merge", argv, inCheckout),
+		done: func(m *gotermboard.Model) tea.Cmd {
+			b.settle(m, pr, "merged")
+			m.Say(fmt.Sprintf("merged %s #%d", pr.Slug, pr.Number))
+			return nil
+		},
+	})
+	return nil
+}
+
+// closePR asks first, and enter alone keeps it open. A close confirmed by reflex discards a
+// branch nobody read, and the pull request reopens but the moment someone would have read it
+// does not.
+func (b *Board) closePR(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
+	provider, err := b.writable(pr, "close")
+	if err != nil {
+		m.Say(err.Error())
+		return nil
+	}
+	if provider.Close == nil {
+		m.Say(fmt.Sprintf("prs cannot close a pull request on %s, because its client has no verb for it; o opens its page", pr.Provider))
+		return nil
+	}
+	argv, inCheckout := provider.Close(pr)
+	b.ask(m, pr, "close", false, work{
+		doing: fmt.Sprintf("closing %s #%d", pr.Slug, pr.Number),
+		run:   runClient(pr, "close", argv, inCheckout),
+		done: func(m *gotermboard.Model) tea.Cmd {
+			b.settle(m, pr, "closed")
+			m.Say(fmt.Sprintf("closed %s #%d without merging", pr.Slug, pr.Number))
+			return nil
+		},
+	})
+	return nil
+}
+
+// writable is the provider of a pull request a key may change, and refuses one a merge or a
+// close already settled.
+func (b *Board) writable(pr pullrequests.PullRequest, verb string) (pullrequests.Provider, error) {
+	if settled := b.settled[pr.Key()]; settled != "" {
+		return pullrequests.Provider{}, fmt.Errorf("%s #%d is %s already, so there is nothing to %s", pr.Slug, pr.Number, settled, verb)
+	}
+	return pullrequests.ProviderOf(pr.Provider)
+}
+
+// ask puts the question for verb on the footer, naming the pull request it acts on, and
+// starts w on yes. Enter alone answers yes where yesByDefault says so.
+func (b *Board) ask(m *gotermboard.Model, pr pullrequests.PullRequest, verb string, yesByDefault bool, w work) {
+	choices, yes := "[y/N]", []string{"y", "yes"}
+	if yesByDefault {
+		choices, yes = "[Y/n]", []string{"", "y", "yes"}
+	}
+	left := func() tea.Cmd {
+		m.Say(fmt.Sprintf("did not %s %s #%d", verb, pr.Slug, pr.Number))
+		return nil
+	}
+	m.Ask(gotermboard.Question{
+		Text:  fmt.Sprintf("%s %s #%d — %s? %s", verb, pr.Slug, pr.Number, pr.Title, choices),
+		Typed: true,
+		Answer: func(typed string) tea.Cmd {
+			if !slices.Contains(yes, strings.ToLower(typed)) {
+				return left()
+			}
+			return b.start(w)
+		},
+		Cancel: left,
+	})
+}
+
+// comment hands the terminal to the editor on an empty file, and posts what was written when
+// it exits. An empty file posts nothing. A post that fails keeps the file and names it, so
+// the comment is not lost.
+func (b *Board) comment(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
+	provider, err := pullrequests.ProviderOf(pr.Provider)
+	if err != nil {
+		m.Say(err.Error())
+		return nil
+	}
+	file, err := os.CreateTemp("", fmt.Sprintf("prs-comment-%s-%d-*.md", pr.Repo, pr.Number))
+	if err != nil {
+		m.Say("could not make a file to write the comment in: " + err.Error())
+		return nil
+	}
+	path := file.Name()
+	_ = file.Close()
+	return handOver(editor(path), func(m *gotermboard.Model, err error) tea.Cmd {
+		body, readErr := os.ReadFile(path)
+		switch {
+		case err != nil:
+			m.Say(fmt.Sprintf("the editor ended with %v, so nothing was posted; what it wrote is in %s", err, path))
+			return nil
+		case readErr != nil || strings.TrimSpace(string(body)) == "":
+			_ = os.Remove(path)
+			m.Say(fmt.Sprintf("the comment was empty, so nothing was posted to #%d", pr.Number))
+			return nil
+		}
+		argv, inCheckout := provider.Comment(pr, path)
+		post := runClient(pr, "comment on", argv, inCheckout)
+		return b.start(work{
+			doing: fmt.Sprintf("commenting on %s #%d", pr.Slug, pr.Number),
+			run: func(ctx context.Context) error {
+				if err := post(ctx); err != nil {
+					return fmt.Errorf("%w; the comment is kept in %s", err, path)
+				}
+				return os.Remove(path)
+			},
+			done: func(m *gotermboard.Model) tea.Cmd {
+				m.Say(fmt.Sprintf("commented on %s #%d", pr.Slug, pr.Number))
+				return nil
+			},
+		})
+	})
+}
+
+// editor is $VISUAL, then $EDITOR, then vi, on path, split as a shell would split it, so
+// EDITOR="code --wait" works.
+func editor(path string) *exec.Cmd {
+	command := []string{"vi"}
+	for _, variable := range []string{"VISUAL", "EDITOR"} {
+		if configured := strings.Fields(os.Getenv(variable)); len(configured) > 0 {
+			command = configured
+			break
+		}
+	}
+	return exec.Command(command[0], append(command[1:], path)...)
 }
 
 // page is the provider's own rendering of the pull request and its comments, which the
@@ -215,25 +346,23 @@ func (b *Board) windowAction(window config.WindowAction) func(pullrequests.PullR
 	}
 }
 
-// browse hands the pull request's page to the browser, through the provider's client.
-func (b *Board) browse(pr pullrequests.PullRequest) (string, error) {
+// browse hands the pull request's page to the browser through the provider's client, in the
+// background, because the client asks the provider for the page's address first.
+func (b *Board) browse(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 	provider, err := pullrequests.ProviderOf(pr.Provider)
 	if err != nil {
-		return "", err
+		m.Say(err.Error())
+		return nil
 	}
 	argv, inCheckout := provider.Browse(pr)
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	if inCheckout {
-		if cmd.Dir, err = checkoutOf(pr); err != nil {
-			return "", err
-		}
-	}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("%s could not open #%d: %s", cmd.Args[0], pr.Number, lastLine(out, err))
-	}
-	return fmt.Sprintf("opened #%d in the browser", pr.Number), nil
+	return b.start(work{
+		doing: fmt.Sprintf("opening #%d in the browser", pr.Number),
+		run:   runClient(pr, "open", argv, inCheckout),
+		done: func(m *gotermboard.Model) tea.Cmd {
+			m.Say(fmt.Sprintf("opened #%d in the browser", pr.Number))
+			return nil
+		},
+	})
 }
 
 // copyBranch copies the branch rather than the number, because a number is a per-repo
@@ -303,11 +432,6 @@ func defaultBranch(checkout string) string {
 		return ""
 	}
 	return strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
-}
-
-// quote makes text one shell word.
-func quote(text string) string {
-	return "'" + strings.ReplaceAll(text, "'", `'\''`) + "'"
 }
 
 // lastLine is the last thing a failed command said, or its exit status where it said nothing.

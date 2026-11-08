@@ -33,6 +33,11 @@ type Board struct {
 	actions  []gotermboard.Action
 	// shown is the last frame's pull requests by key, for a key to find the cursor's.
 	shown map[string]pullrequests.PullRequest
+	// settled is the state a merge or close left a pull request in, by key.
+	settled map[string]string
+	// working is every command a key started that has not ended, oldest first.
+	working   []underWay
+	workCount int
 }
 
 // New is a board over the repos read from the registry at registryPath, with the window
@@ -48,6 +53,7 @@ func New(registryPath string, repos []registry.Repo, windows []config.WindowActi
 		repos:    repos,
 		renderer: markdown.New(nil),
 		shown:    map[string]pullrequests.PullRequest{},
+		settled:  map[string]string{},
 	}
 	for _, provider := range pullrequests.Providers {
 		hosted := registry.Hosted(repos, provider.Name)
@@ -128,6 +134,11 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 	for _, pr := range prs {
 		b.shown[pr.Key()] = pr
 		group.Rows = append(group.Rows, b.row(pr, parents, now))
+	}
+	for key := range b.settled {
+		if _, listed := b.shown[key]; !listed {
+			delete(b.settled, key)
+		}
 	}
 	if len(prs) == 0 {
 		group.Below = []gotermboard.Line{{gotermboard.C(b.emptyReason(), dim)}}

@@ -41,9 +41,12 @@ review in words, its age, its diff, its repo and number, and its title. f shows 
 branch and checkout under it.
 
 enter opens a pull request's description, full screen where it runs past the screen.
-A letter acts on the pull request under the cursor, and ? lists every key. d opens its
-diff in nvim and p its page and comments, each in a tmux window. The config can add
-keys of its own, each a command in a tmux window. esc backs out one level, and q quits.
+A letter acts on the pull request under the cursor, and ? lists every key. d hands the
+terminal to its diff in nvim, and :qa comes back to the list. m merges and x closes,
+each after asking, and c posts what $EDITOR wrote. Each runs while the list stays
+usable, named on the footer until it ends. p opens its page and comments in a tmux
+window, and the config can add keys of its own, each a command in a tmux window. esc
+backs out one level, and q quits.
 
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
 so an agent reads what a person reads. Either exits 1 after printing when a provider

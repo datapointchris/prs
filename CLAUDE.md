@@ -2,7 +2,8 @@
 
 A Go command whose board is a view on gotermboard. `cmd/prs` holds the commands.
 `internal/board` is the view: `rows.go` the row grammar, `actions.go` the key table,
-`board.go` the sources, the frame and the `--json` snapshot. `internal/pullrequests` reads
+`work.go` what a key runs in the background or hands the terminal to, and `board.go` the
+sources, the frame and the `--json` snapshot. `internal/pullrequests` reads
 each provider through its own client, and `provider.go` holds everything prs does
 differently by host. `internal/registry` reads the registry file, and `internal/config`
 reads `$XDG_CONFIG_HOME/prs/config.yml` and resolves the registry's path.
@@ -32,7 +33,12 @@ reads `$XDG_CONFIG_HOME/prs/config.yml` and resolves the registry's path.
 - **A diff count the provider did not report is null, never 0.** Bitbucket's listing
   carries none, and a zero would read as a pull request that changed nothing.
 - **A key that changes a pull request acts only on the row under the cursor, or asks
-  first.**
+  first.** Merge asks with enter meaning yes, and close with enter meaning no, because a
+  reflex merge lands work that was landing anyway and a reflex close discards a branch
+  nobody read.
+- **A key that waits on the network runs in the background**, through `work` in
+  `work.go`, so the list stays usable and the footer names it until it ends. Its client
+  runs with stdin closed and a timeout, as a read's does.
 - **No test reads a real account or starts a real program a key runs.** `cmd/prs/tui_test.go`
   puts a stand-in on `PATH` for every program a read or a key in the test runs, and its
   testdata answers in each provider's published shape.
@@ -41,14 +47,18 @@ reads `$XDG_CONFIG_HOME/prs/config.yml` and resolves the registry's path.
 
 - **A board's key takes that key from the table even where it does nothing**, so prs's `p`
   hides the table's side-panel toggle. A window action on a bound key would take it the
-  same way, so `board.Refused` refuses one. Its list of the table's keys is kept by hand,
-  because gotermboard does not export it.
-- **enter is prs's own key**, because the table's enter opens a reader titled with a row's
-  cells, which here are its state words. prs's enter opens it titled with the pull
-  request's title, and otherwise does what the table's enter does.
+  same way, so `board.Refused` refuses one, reading the table's keys from
+  `gotermboard.TableKeys()` and adding esc.
+- **A row's `ReaderTitle` is its pull request's title**, because the table's enter would
+  otherwise title the Reader with the row's first cells, which here are its state words.
 - **A row's `Under` line shows only once `f` turns summaries on.**
-- **A board hears no message back from a command a key started**, so every key here runs
-  to its end before it says what it did.
+- **The message a key's command ends in reaches `Board.Receive`**, gotermboard's
+  `ReceivingBoard`, and `Board.UnderWay`, its `BusyBoard`, puts the work under way on the
+  footer after a spinner. A key's own `m.Say` shows until the next key, and the under-way
+  line until the work ends.
+- **`tea.ExecProcess` holds Bubble Tea's event loop until the program exits**, so no read
+  lands while nvim or the editor has the terminal. The diff reads every provider again
+  once nvim exits.
 
 ## Never write the breaking-change trailer in a commit message
 
