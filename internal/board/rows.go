@@ -244,8 +244,10 @@ func (b *Board) description(pr pullrequests.PullRequest, titled bool) gotermboar
 			{},
 		}...)
 		if strings.TrimSpace(pr.Body) == "" {
-			return append(lines, gotermboard.Line{gotermboard.C("No description.", dim)})
+			lines = append(lines, gotermboard.Line{gotermboard.C("No description.", dim)})
+		} else {
+			lines = append(lines, b.renderer.Lines(pr.Body, min(width, gotermboard.ReadingWidth))...)
 		}
-		return append(lines, b.renderer.Lines(pr.Body, min(width, gotermboard.ReadingWidth))...)
+		return append(lines, b.detailLines(pr)...)
 	}
 }

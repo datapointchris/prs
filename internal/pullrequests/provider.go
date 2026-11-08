@@ -13,9 +13,14 @@ import (
 // a nil verb says the host cannot do it.
 type Provider struct {
 	Name string
-	// Read lists the open pull requests on the repos it hosts. last is the previous good
-	// listing, for a reader that can keep one repo's rows when only that repo failed.
-	Read func(ctx context.Context, repos []registry.Repo, last Listing) (Listing, error)
+	// Read lists the open pull requests in the scope. last is the previous good listing,
+	// for a reader that can keep one repo's rows when only that repo failed.
+	Read func(ctx context.Context, scope Scope, last Listing) (Listing, error)
+	// Detail reads what the listing leaves out of one pull request. Nil where the host's
+	// client reads no more than its listing.
+	Detail func(ctx context.Context, pr PullRequest) (Detail, error)
+	// ReadsOwners says Read can read an owner whole, for a config that names owners.
+	ReadsOwners bool
 	// Head is what git fetches from origin as the pull request's head.
 	Head func(PullRequest) string
 	// Browse is the command that opens the pull request in the browser, and whether it
@@ -36,9 +41,11 @@ type Provider struct {
 // Providers is a Provider for each name registry.Providers holds.
 var Providers = []Provider{
 	{
-		Name: registry.GitHub,
-		Read: ReadGitHub,
-		Head: func(pr PullRequest) string { return fmt.Sprintf("pull/%d/head", pr.Number) },
+		Name:        registry.GitHub,
+		Read:        ReadGitHub,
+		Detail:      readGitHubDetail,
+		ReadsOwners: true,
+		Head:        func(pr PullRequest) string { return fmt.Sprintf("pull/%d/head", pr.Number) },
 		Browse: func(pr PullRequest) ([]string, bool) {
 			return []string{"gh", "pr", "view", strconv.Itoa(pr.Number), "--repo", pr.Slug, "--web"}, false
 		},

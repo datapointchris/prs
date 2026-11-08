@@ -1,0 +1,126 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 12,
+        "title": "Cache the widget lookups",
+        "author": { "__typename": "User", "login": "octo" },
+        "body": "Caches the widget lookups for a minute.",
+        "url": "https://github.com/acme/widget/pull/12",
+        "headRefName": "add-cache",
+        "headRefOid": "4f9c2a1d8e7b6c5a4f3e2d1c0b9a8f7e6d5c4b3a",
+        "baseRefName": "main",
+        "isDraft": false,
+        "state": "OPEN",
+        "createdAt": "2026-11-01T09:00:00Z",
+        "updatedAt": "2026-11-02T10:15:00Z",
+        "mergedAt": null,
+        "closedAt": null,
+        "additions": 76,
+        "deletions": 941,
+        "changedFiles": 12,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BEHIND",
+        "isInMergeQueue": false,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "reviews": { "totalCount": 1 },
+        "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+        "repository": { "name": "widget", "nameWithOwner": "acme/widget" },
+        "reviewRequests": {
+          "nodes": [
+            { "requestedReviewer": { "__typename": "Team", "slug": "widget-owners" } }
+          ]
+        },
+        "submittedReviews": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "author": { "login": "mona" },
+              "state": "APPROVED",
+              "body": "Looks right.",
+              "submittedAt": "2026-11-02T10:15:00Z",
+              "url": "https://github.com/acme/widget/pull/12#pullrequestreview-1",
+              "commit": { "oid": "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a291807" }
+            }
+          ]
+        },
+        "comments": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "author": { "login": "mona" },
+              "body": "Does a minute cover the slow lookups?",
+              "createdAt": "2026-11-01T12:00:00Z",
+              "url": "https://github.com/acme/widget/pull/12#issuecomment-1"
+            }
+          ]
+        },
+        "reviewThreads": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "path": "cache/cache.go",
+              "line": 14,
+              "isResolved": false,
+              "isOutdated": false,
+              "comments": {
+                "totalCount": 1,
+                "nodes": [
+                  {
+                    "author": { "login": "mona" },
+                    "body": "This expiry reads the wall clock.",
+                    "createdAt": "2026-11-02T10:14:00Z",
+                    "url": "https://github.com/acme/widget/pull/12#discussion_r1"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "files": {
+          "totalCount": 12,
+          "nodes": [
+            { "path": "cache/cache.go", "additions": 60, "deletions": 0, "changeType": "ADDED" }
+          ]
+        },
+        "history": {
+          "totalCount": 2,
+          "nodes": [
+            {
+              "commit": {
+                "oid": "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a291807",
+                "messageHeadline": "feat: cache the widget lookups",
+                "committedDate": "2026-11-01T08:55:00Z",
+                "author": { "name": "Octo Cat", "user": { "login": "octo" } }
+              }
+            },
+            {
+              "commit": {
+                "oid": "4f9c2a1d8e7b6c5a4f3e2d1c0b9a8f7e6d5c4b3a",
+                "messageHeadline": "fix: expire on the monotonic clock",
+                "committedDate": "2026-11-02T10:10:00Z",
+                "author": { "name": "Octo Cat", "user": null }
+              }
+            }
+          ]
+        },
+        "head": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "contexts": {
+                    "nodes": [
+                      { "__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://github.com/acme/widget/actions/runs/1" },
+                      { "__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SKIPPED", "detailsUrl": "https://github.com/acme/widget/actions/runs/2" }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

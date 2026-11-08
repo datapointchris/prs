@@ -24,10 +24,19 @@ const View = "pull-requests"
 // minute stays well inside GitHub's hourly allowance.
 const readEvery = time.Minute
 
+// Repos is what the board reads: the repos the registry at Registry names, or with no
+// registry, Owners whole.
+type Repos struct {
+	Registry string
+	Repos    []registry.Repo
+	Owners   []string
+}
+
 // Board is the open pull requests of the repos a registry names, read from each provider
 // that hosts one.
 type Board struct {
 	registry string
+	owners   []string
 	sources  []*gotermboard.Source[pullrequests.Listing]
 	repos    []registry.Repo
 	renderer *markdown.Renderer
@@ -42,33 +51,44 @@ type Board struct {
 	// working is every command a key started that has not ended, oldest first.
 	working   []underWay
 	workCount int
+	// details holds each row's detail, read after each listing once ReadDetails is called.
+	details     *pullrequests.Details
+	readDetails bool
 }
 
-// New is a board over the repos read from the registry at registryPath, with the window
-// actions the config adds. It refuses a window action on a key the board already binds.
-func New(registryPath string, repos []registry.Repo, windows []config.WindowAction) (*Board, error) {
+// New is a board over repos, with the window actions the config adds. It refuses a window
+// action on a key the board already binds.
+func New(repos Repos, windows []config.WindowAction) (*Board, error) {
 	for _, window := range windows {
 		if err := Refused(window); err != nil {
 			return nil, fmt.Errorf("window action %q: %w", window.Label, err)
 		}
 	}
 	b := &Board{
-		registry: registryPath,
-		repos:    repos,
+		registry: repos.Registry,
+		owners:   repos.Owners,
+		repos:    repos.Repos,
 		renderer: markdown.New(nil),
 		shown:    map[string]pullrequests.PullRequest{},
 		settled:  map[string]settledState{},
 		diffed:   map[string]string{},
+		details:  pullrequests.NewDetails(),
 	}
 	for _, provider := range pullrequests.Providers {
-		hosted := registry.Hosted(repos, provider.Name)
-		if len(hosted) == 0 {
+		scope := pullrequests.Scope{Repos: registry.Hosted(repos.Repos, provider.Name)}
+		if provider.ReadsOwners {
+			scope.Owners = repos.Owners
+		}
+		if scope.Empty() {
 			continue
 		}
 		var source *gotermboard.Source[pullrequests.Listing]
 		source = gotermboard.NewSource(provider.Name, readEvery,
 			func(ctx context.Context) (pullrequests.Listing, string, error) {
-				listing, err := provider.Read(ctx, hosted, source.Value())
+				listing, err := provider.Read(ctx, scope, source.Value())
+				if err == nil && b.readDetails {
+					b.details.Prefetch(ctx, provider, listing.PullRequests)
+				}
 				return listing, listing.Note(), err
 			})
 		b.sources = append(b.sources, source)
@@ -76,6 +96,10 @@ func New(registryPath string, repos []registry.Repo, windows []config.WindowActi
 	b.actions = b.keyTable(windows)
 	return b, nil
 }
+
+// ReadDetails has each listing that lands read its rows' details in the background, for
+// the description to show. A board printed once leaves it off, since nothing waits for them.
+func (b *Board) ReadDetails() { b.readDetails = true }
 
 // Sources is gotermboard.Board's.
 func (b *Board) Sources() []gotermboard.Refresher {
@@ -89,8 +113,8 @@ func (b *Board) Sources() []gotermboard.Refresher {
 // Groupings is gotermboard.Board's. The board has one.
 func (b *Board) Groupings() []string { return nil }
 
-// pullRequests is every provider's last good read, oldest first.
-func (b *Board) pullRequests(now time.Time) []pullrequests.PullRequest {
+// PullRequests is every provider's last good read, oldest first.
+func (b *Board) PullRequests(now time.Time) []pullrequests.PullRequest {
 	var prs []pullrequests.PullRequest
 	for _, source := range b.sources {
 		prs = append(prs, source.Value().PullRequests...)
@@ -129,7 +153,7 @@ func (b *Board) unread() bool {
 
 // Frame is gotermboard.Board's: one group of every open pull request, oldest first.
 func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
-	prs := b.pullRequests(now)
+	prs := b.PullRequests(now)
 	parents := stackParents(prs)
 	clear(b.shown)
 	group := gotermboard.Group{
@@ -164,14 +188,19 @@ func (b *Board) emptyReason() string {
 		return "The registry names no active repo."
 	case b.unread():
 		return "Reading the open pull requests."
+	case b.registry == "":
+		return "No open pull requests on the owners' repos."
 	}
 	return "No open pull requests on the registry's repos."
 }
 
 // Snapshot is what --json prints: the rows the board draws, and how each read stands.
+// Registry is empty where the board reads owners whole, and Owners names them, with @me
+// for the token's own account.
 type Snapshot struct {
 	View         string               `json:"view"`
 	Registry     string               `json:"registry"`
+	Owners       []string             `json:"owners,omitempty"`
 	PullRequests []SnapshotRow        `json:"pull_requests"`
 	Sources      []gotermboard.Status `json:"sources"`
 }
@@ -184,9 +213,9 @@ type SnapshotRow struct {
 
 // Snapshot reads what the board holds now.
 func (b *Board) Snapshot(now time.Time) Snapshot {
-	prs := b.pullRequests(now)
+	prs := b.PullRequests(now)
 	parents := stackParents(prs)
-	snap := Snapshot{View: View, Registry: b.registry, PullRequests: []SnapshotRow{}, Sources: b.statuses()}
+	snap := Snapshot{View: View, Registry: b.registry, Owners: b.owners, PullRequests: []SnapshotRow{}, Sources: b.statuses()}
 	for _, pr := range prs {
 		row := SnapshotRow{PullRequest: pr}
 		if parent := parentOf(pr, parents); parent != 0 {

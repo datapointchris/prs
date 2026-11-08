@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/datapointchris/prs/internal/board"
 	"github.com/datapointchris/prs/internal/config"
+	"github.com/datapointchris/prs/internal/pullrequests"
 	"github.com/datapointchris/prs/internal/registry"
 )
 
@@ -72,6 +72,7 @@ could not be read. With no terminal and neither flag it refuses.`,
 			}
 			pal := gotermstyle.PaletteFor(os.Stdout)
 			if !printing {
+				b.ReadDetails()
 				tabs, err := gotermboard.NewTabs([]gotermboard.Tab{{Name: board.View, Board: b}}, pal, view)
 				if err != nil {
 					return err
@@ -106,21 +107,23 @@ could not be read. With no terminal and neither flag it refuses.`,
 	return cmd
 }
 
-// loadBoard reads the config and the registry it resolves to.
+// loadBoard reads the config and the repos it chooses: the registry's, the owners', or
+// with neither, the token's own account's.
 func loadBoard() (*board.Board, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(cfg.Registry); errors.Is(err, fs.ErrNotExist) && cfg.RegistryFrom == config.FromDefault {
-		return nil, fmt.Errorf("prs reads its repos from a registry, and none is at the default %s: "+
-			"set %s, or repos_registry in %s", cfg.Registry, config.RegistryVariable, cfg.File)
+	repos := board.Repos{Registry: cfg.Registry, Owners: cfg.Owners}
+	switch {
+	case cfg.Registry != "":
+		if repos.Repos, err = registry.Load(cfg.Registry); err != nil {
+			return nil, err
+		}
+	case len(cfg.Owners) == 0:
+		repos.Owners = []string{pullrequests.ViewerOwner}
 	}
-	repos, err := registry.Load(cfg.Registry)
-	if err != nil {
-		return nil, err
-	}
-	b, err := board.New(cfg.Registry, repos, cfg.WindowActions)
+	b, err := board.New(repos, cfg.WindowActions)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", cfg.File, err)
 	}

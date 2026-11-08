@@ -2,7 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,18 +14,24 @@ import (
 	"testing"
 
 	"github.com/datapointchris/tuidrive"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/datapointchris/prs/internal/board"
 )
 
-// standIn is prs run against a stand-in gh answering testdata/search.json, a stand-in bbkt
-// answering testdata/bbkt-list.json, and a stand-in tmux, claude, git, nvim and editor. Each
-// records its arguments, and a client records the body it was handed to post, so no test
-// reads a real account, changes a real pull request or starts a real Claude.
+// standInToken is the token the stand-in GitHub takes, so a request carrying none is refused
+// as GitHub refuses it.
+const standInToken = "stand-in-token"
+
+// standIn is prs run against a stand-in GitHub answering the listing with
+// testdata/search.json and one pull request with testdata/pull-request.json, a stand-in
+// bbkt answering testdata/bbkt-list.json, and a stand-in gh, tmux, claude, git, nvim and
+// editor. Each records its arguments, and a client records the body it was handed to post,
+// so no test reads a real account, changes a real pull request or starts a real Claude.
 //
-// The stand-in gh takes a second to merge, so the work shows under way, and refuses to merge
-// #13 in gh's own words. The stand-in git names fetchedHead as any ref's commit, and the
-// stand-in tmux names prs's window prs.
+// The stand-in gh holds no login, takes a second to merge, so the work shows under way, and
+// refuses to merge #13 in gh's own words. The stand-in git names fetchedHead as any ref's
+// commit, and the stand-in tmux names prs's window prs.
 type standIn struct {
 	env      map[string]string
 	checkout string
@@ -33,13 +43,59 @@ type standIn struct {
 // fetchedHead is the commit the stand-in git names for any ref.
 const fetchedHead = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
 
-func newStandIn(t *testing.T) standIn {
+// gitHubStandIn serves GitHub's GraphQL endpoint on a unix socket and returns a gh config
+// directory whose http_unix_socket names it, which go-gh then sends every request through.
+// The socket sits under a short temporary directory, because a socket's path has a length
+// limit that a test's own temporary directory can pass.
+func gitHubStandIn(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	answer, err := filepath.Abs(filepath.Join("testdata", "search.json"))
+	dir, err := os.MkdirTemp("", "prs-gh")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "gh.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "token "+standInToken {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message": "Bad credentials"}`))
+			return
+		}
+		var request struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		answer := "search.json"
+		if strings.Contains(request.Query, "pullRequest(number:") {
+			answer = "pull-request.json"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		http.ServeFile(w, r, filepath.Join("testdata", answer))
+	}))
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+	config := filepath.Join(dir, "gh")
+	if err := os.MkdirAll(config, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "config.yml"), []byte("http_unix_socket: "+socket+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return config
+}
+
+func newStandIn(t *testing.T) standIn {
+	t.Helper()
+	dir := t.TempDir()
 	listed, err := filepath.Abs(filepath.Join("testdata", "bbkt-list.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +121,9 @@ func newStandIn(t *testing.T) standIn {
 'pr close') exit 0 ;;
 'pr comment') ` + posted + ` exit 0 ;;
 esac
-` + fmt.Sprintf("cat %q\n", answer),
+echo 'no oauth token found for github.com' >&2
+exit 1
+`,
 		"bbkt": "#!/bin/sh\n" + record + `case "$1 $2" in
 'pr merge') exit 0 ;;
 'pr comment') ` + posted + ` exit 0 ;;
@@ -109,6 +167,8 @@ window_actions:
 		"TMUX_PANE":       "%1",
 		"EDITOR":          filepath.Join(bin, "editor"),
 		"TMPDIR":          s.tmp,
+		"GH_CONFIG_DIR":   gitHubStandIn(t),
+		"GH_TOKEN":        standInToken,
 	}
 	return s
 }
@@ -123,19 +183,33 @@ func (s standIn) ran(t *testing.T, lines ...string) bool {
 	return strings.Contains(string(recorded), strings.Join(lines, "\n")+"\n")
 }
 
-func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.T) {
-	s := newStandIn(t)
-	cmd := exec.Command(tuidrive.Build(t, "."), "tui", "--json")
+// run runs the built prs with args in the stand-in's environment, and returns its stdout,
+// its stderr and its exit status.
+func (s standIn) run(t *testing.T, args ...string) (string, string, int) {
+	t.Helper()
+	cmd := exec.Command(tuidrive.Build(t, "."), args...)
+	cmd.Env = []string{"HOME=" + t.TempDir()}
 	for name, value := range s.env {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
-	cmd.Env = append(cmd.Env, "HOME="+t.TempDir())
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("prs tui --json: %v", err)
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		t.Fatal(err)
+	}
+	return stdout.String(), stderr.String(), cmd.ProcessState.ExitCode()
+}
+
+func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.T) {
+	s := newStandIn(t)
+	out, said, code := s.run(t, "tui", "--json")
+	if code != 0 {
+		t.Fatalf("prs tui --json exited %d: %s", code, said)
 	}
 	var snap board.Snapshot
-	if err := json.Unmarshal(out, &snap); err != nil {
+	if err := json.Unmarshal([]byte(out), &snap); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
@@ -162,6 +236,53 @@ func TestTheSnapshotReadsBothProvidersAndFindsAParentByRepoAndBranch(t *testing.
 	}
 }
 
+// The schema is what a program reading --json is pointed at, so the rows must fit it. A
+// provider that cannot be read must say so on the table's first line without taking the
+// other provider's rows with it.
+func TestListPrintsRowsTheSchemaHoldsAndNamesAProviderItCouldNotRead(t *testing.T) {
+	s := newStandIn(t)
+	out, said, code := s.run(t, "list", "--json")
+	if code != 0 {
+		t.Fatalf("prs list --json exited %d: %s", code, said)
+	}
+	raw, err := os.Open("list.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close() }()
+	document, err := jsonschema.UnmarshalJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.AssertFormat()
+	if err := compiler.AddResource("list.schema.json", document); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile("list.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := jsonschema.UnmarshalJSON(strings.NewReader(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Validate(rows); err != nil {
+		t.Errorf("prs list --json breaks list.schema.json: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, `"merge_state_status": "BEHIND"`) || !strings.Contains(out, `"merge_state_status": null`) {
+		t.Errorf("want GitHub's merge state on its rows and null on bbkt's:\n%s", out)
+	}
+
+	s.env["GH_TOKEN"] = ""
+	out, _, code = s.run(t, "list")
+	first, rest, _ := strings.Cut(out, "\n")
+	if code != 1 || !strings.Contains(first, "github unread: gh is not logged in to github.com") ||
+		!strings.Contains(rest, "ledger") || strings.Contains(rest, "widget") {
+		t.Errorf("logged out, prs list exited %d and printed:\n%s", code, out)
+	}
+}
+
 func TestTheBoardSaysEachStateInWordsOpensADescriptionAndRunsAKeyTheConfigAdds(t *testing.T) {
 	s := newStandIn(t)
 	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 30})
@@ -175,6 +296,8 @@ func TestTheBoardSaysEachStateInWordsOpensADescriptionAndRunsAKeyTheConfigAdds(t
 	term.Press("j")
 	term.Press("enter")
 	term.WaitFor("Caches the widget lookups for a minute.")
+	// The board read the pull request's own detail after its listing landed.
+	term.WaitFor("approved   mona  at 9e8d7c6")
 
 	term.Press("r")
 	term.WaitFor("opened review widget #12 in a tmux window")

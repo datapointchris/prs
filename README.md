@@ -5,9 +5,9 @@ itself current: each one's checks and review in words, its description a key awa
 key per action.
 
 It is for reading a backlog of pull requests, yours and the ones an app opens for you,
-and acting on each one without leaving the terminal. It reads GitHub through
-[`gh`](https://cli.github.com) and Bitbucket through `bbkt`, so it holds no credentials
-of its own.
+and acting on each one without leaving the terminal. It reads GitHub with the login
+[`gh`](https://cli.github.com) already holds, and Bitbucket through `bbkt`, so it keeps
+no credentials of its own.
 
 ## First run
 
@@ -17,49 +17,85 @@ of its own.
    go install github.com/datapointchris/prs/cmd/prs@latest
    ```
 
-2. **Log `gh` in**, if it is not already. prs runs it for every read.
+2. **Log `gh` in**, if it is not already. prs reads GitHub with gh's token, the way gh
+   finds it: `GH_TOKEN`, then gh's own config, then the system keyring. `GH_HOST` points
+   both at a GitHub Enterprise host.
 
    ```bash
    gh auth login
    ```
 
-3. **Write a registry of your repos.** It is a JSON file naming each repo you want on the
-   board. `status` and `owner` are required, because prs filters on both. `provider` is
-   `github` unless the entry or the file says `bitbucket`, whose `owner` is the project key.
-
-   ```json
-   {
-     "repos": [
-       { "name": "widget", "owner": "acme", "path": "~/code/widget", "status": "active" }
-     ]
-   }
-   ```
-
-4. **Put it where prs looks.** That is `$XDG_DATA_HOME/prs/repos.json`, which is
-   `~/.local/share/prs/repos.json` by default. Or name it elsewhere in prs's config, the
-   YAML file `prs config path` prints:
-
-   ```yaml
-   repos_registry: ~/repos.json
-   ```
-
-   `PRS_REPOS_REGISTRY` names it for one shell, ahead of the config. `prs config show`
-   prints the path prs resolved and which of the three named it.
-
-5. **Open the board.**
+3. **Open the board.** With nothing else set up, it lists the open pull requests on
+   every repo your GitHub login owns.
 
    ```bash
    prs tui
    ```
 
-   `?` lists every key. `q` quits.
+   `?` lists every key. `q` quits. `prs config show` says which repos prs is reading,
+   and why.
+
+4. **Name the repos you work on**, once your own repos are not the set you want. A
+   registry names each repo, on GitHub or Bitbucket, and where it is checked out.
+   `owners` in the config reads every repo of some GitHub users or organizations instead.
+
+## Which repos prs reads
+
+prs asks these in order, and the first that answers wins:
+
+1. `PRS_REPOS_REGISTRY`, naming a registry for one shell.
+2. `repos_registry` in prs's config, the YAML file `prs config path` prints.
+3. `owners` in that config. A config naming both `repos_registry` and `owners` is refused.
+4. A registry at `$XDG_DATA_HOME/prs/repos.json`, which is `~/.local/share/prs/repos.json`
+   by default.
+5. Every repo your GitHub login owns.
+
+```yaml
+repos_registry: ~/repos.json
+# or, in its place:
+owners: [acme, octo]
+```
+
+`owners` reads each owner whole, so a large organization's search can fill its page of 100
+with repos you never touch, or fail outright. A registry names each repo instead, and a
+search names 20 of them at a time.
+
+### The registry
+
+The registry is a JSON object holding `repos`, an array with one entry per repo. prs reads
+these fields of an entry and ignores the rest:
+
+| Field | Required | What prs does with it |
+| --- | --- | --- |
+| `name` | yes | The repo's name on its provider. |
+| `owner` | yes | The GitHub owner, or the Bitbucket project key. |
+| `status` | yes | Only `active` repos are read. Every other value skips the entry. |
+| `path` | no | Where it is checked out, `~`-rooted or absolute. `d` and your own keys run there, and bbkt reads a Bitbucket repo there. |
+| `provider` | no | `github` or `bitbucket`. An entry without one takes the file's top-level `provider`, and `github` where the file names none. |
+
+`status` and `owner` are required rather than defaulted, because a reader that defaults a
+field it filters on drops a repo silently, and every list it prints still looks plausible.
+
+```json
+{
+  "repos": [
+    { "name": "widget", "owner": "acme", "path": "~/code/widget", "status": "active" },
+    { "name": "ledger", "owner": "FIN", "path": "~/work/ledger", "status": "active", "provider": "bitbucket" }
+  ]
+}
+```
 
 ## How the board reads
 
 - **The rows are every open pull request on a repo the registry names, whoever opened
   it**, oldest first, because a backlog is a gauge and age is what it measures. One GitHub
   request asks for the registry's repos by name, and `bbkt` lists each Bitbucket repo in
-  its checkout.
+  its checkout, several repos at once.
+- **Each GitHub row's reviews, checks and conversation are read after the list lands**,
+  four pull requests at a time, so the list never waits on them. The description shows
+  each review and the commit it was against, who is still asked, each check not passing,
+  and how many comments, threads, files and commits there are. A pull request is read
+  again only once its head commit or its update time moves.
 - **Each provider is read again every minute while the board is open.** The line at the
   top says how old the newest read is, and names a read that failed. A failed read keeps
   the last good rows, and so does one Bitbucket repo that failed while the rest read.
@@ -117,11 +153,21 @@ and `{slug}` are filled in. Quote a value holding ` #`, which YAML reads as a co
 
 ## Reading it from a program
 
-`prs tui --json` prints what the board shows, so a script or another tool reads what a
-person reads. `prs tui --once` prints one frame at `COLUMNS` by `LINES`. Both exit 1 after
-printing when a provider could not be read, and `sources[].note` in the snapshot names
-what a read that succeeded could not cover.
+`prs list` reads each provider once and prints the board's rows as a table, under a line
+naming any provider it could not read. `prs list --json` prints them as a JSON array, one
+object per pull request, in the shape [`cmd/prs/list.schema.json`](cmd/prs/list.schema.json)
+gives. Beside the row's columns it carries each pull request's state, its merge state and
+its head commit.
+
+`prs tui --json` prints the board's snapshot instead: the same rows with the open pull
+request each is stacked on, and how each read stands. `prs tui --once` prints one frame at
+`COLUMNS` by `LINES`.
+
+Each of these exits 1 after printing when a provider could not be read, because a failed
+read and a repo with no open pull requests otherwise print the same rows. The other
+provider's rows still print.
 
 ```bash
-prs tui --json | jq '.pull_requests[] | {slug, number, checks, review}'
+prs list --json | jq -r '.[] | select(.merge_state_status == "BEHIND") | .url'
+prs tui --json | jq '.pull_requests[] | {slug, number, checks, review, stacked_on}'
 ```
