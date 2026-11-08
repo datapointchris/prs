@@ -9,8 +9,11 @@ closed groups, one record per pull request and the row held under the cursor,
 disk for the next start, `table.go` what `prs list` prints, `document.go` each pull
 request's markdown document, a section per heading, `review_rounds.go` the round's cell,
 the Review section and the tmux windows that run a round, `diff_files.go` the document and
-review threads a diff in nvim is handed, and `opened_on.go` the pull request `prs tui --pr`
-names. `internal/reviewrounds` reads a pull request's Claude review rounds out of its
+review threads a diff in nvim is handed, `opened_on.go` the pull request `prs tui --pr`
+names, and `summary_tab.go` and `summary_charts.go` the Summary tab and its charts.
+`internal/summary` counts a window's pull requests, and keeps the merged and closed ones in
+SQLite, brought up to date through `pullrequests`' `github_history.go`.
+`internal/reviewrounds` reads a pull request's Claude review rounds out of its
 detail read. `internal/pullrequests` reads each provider: GitHub in-process
 through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
 differently by host, `detail.go` the per-PR detail cache, `diff.go` the per-PR diff cache
@@ -21,7 +24,13 @@ read, and `since.go` what `--since` takes.
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
 `prs tui --json`, and a test holds both outputs to it. `cmd/prs/diff-threads.schema.json`
-is the shape of the threads file a diff in nvim is handed, held the same way.
+is the shape of the threads file a diff in nvim is handed, held the same way, and
+`cmd/prs/summary.schema.json` the shape of `prs summary --json`.
+
+A tab is a `gotermboard.Tab` in the list `prs tui` hands `gotermboard.NewTabs` in
+`cmd/prs/tui.go`, and a name `--view` takes. The pull requests' board is `board.View` and the
+Summary tab `board.SummaryView`. A tab reading what the board reads lists the board's
+sources in its own `Sources`, as the Summary tab does, so a read is not made twice.
 
 ## Constraints that must not regress
 
@@ -174,6 +183,17 @@ is the shape of the threads file a diff in nvim is handed, held the same way.
   in the checkout a merged branch diffs as nothing against its base. A diff the listing's
   counts put past `diff_section_max_lines` is never read, and a failed read waits a minute,
   doubling to half an hour, before it is read again for the same head.
+- **The closed history's coverage moves only when every search of a read answered.** The
+  store's coverage claims every pull request closed since its start, so `Keep` writes the
+  rows and the coverage in one transaction, and a read with one failed search keeps
+  nothing. After the first read of a window, a read asks only for what was updated since
+  the last, and one reaching past the coverage's start reads back to it.
+- **A history search past GitHub's 1,000-result cap splits its stretch in halves**, as
+  often as it takes, because the search returns no more than that however many pages
+  are read. A pull request on a split's middle instant is read by both halves, and the
+  store keeps one row of it.
+- **The closed history is a cache.** A file of another schema version is emptied and read
+  again rather than migrated, and one per set of repos, so a registry edit starts a new one.
 - **No test reads a real account or starts a real program a key runs.** `cmd/prs/tui_test.go`
   puts a stand-in on `PATH` for every program a read or a key in the test runs, and its
   testdata answers in each provider's published shape. GitHub's stand-in is an HTTP server

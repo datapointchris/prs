@@ -317,6 +317,33 @@ prs tui --pr https://bitbucket.example.com/projects/FIN/repos/ledger/pull-reques
   stderr and exit 1. So is a URL on a host other than the one prs read the pull request
   from, because a repo of the same name there holds a different pull request.
 
+## The Summary tab
+
+`tab` moves from the board to the Summary tab, and `prs tui --view summary` opens on it. It
+counts the pull requests over a window, 30 days at first, and `w` and `W` step it through
+1d, 7d, 2w, 30d and 90d.
+
+- **The counts split each number into all, those a person opened and those an app
+  opened**: the pull requests open now, those opened, merged and closed unmerged within the
+  window, the median and 90th percentile time from opening to merging, and the share of
+  merges whose first review was a Claude review round's. Under them, each repo's merges,
+  the most first, and the side panel says what the row under the cursor counts.
+- **Three charts sit above the counts**: the merges per day as columns, per hour for a
+  window of two days or less, the open pull requests across the window as a sparkline,
+  and the merges by how long each took, in buckets from under 10 minutes to over a week.
+  An app's merges draw in their own color, under a person's.
+- **The merged and closed pull requests are kept in SQLite** under
+  `$XDG_CACHE_HOME/prs/closed-pull-requests/`, a file for each set of repos, so the tab
+  opens on what the last run kept. The first read of a window reads every pull request
+  closed within it, a few search pages for a month. Each read after asks only for those
+  updated since the last, every `closed_refresh_every_seconds`. A window reaching past
+  what the file holds reads back to its start, and the line at the top says so until it
+  lands. A search GitHub caps at 1,000 results is split in halves of its stretch until
+  each fits.
+- **The open pull requests are the board's own listings**, read on the board's timer
+  whichever tab shows. Bitbucket's count among the open only, because bbkt says no time a
+  pull request closed.
+
 ## Reading it from a program
 
 `prs list` reads each provider once and prints the board's open rows as a table, one line
@@ -334,6 +361,11 @@ shape. With `--pr`, `opened_on` is that pull request in the shape of one of thos
 merged or closed where it is, and null without `--pr`. Either array holds it only where a
 listing does. `prs tui --once` prints one frame at `COLUMNS` by `LINES`.
 
+`prs summary` prints the Summary tab's counts for `--since` up to `--until`, 30 days to
+now by default, and `prs summary --json` prints them as one object in the shape
+[`cmd/prs/summary.schema.json`](cmd/prs/summary.schema.json) gives, with the series each
+chart draws. `prs tui --view summary` takes `--once` and `--json` the same way.
+
 Each of these exits 1 after printing when a read failed or left open pull requests out,
 because a failed read and a repo with no open pull requests otherwise print the same rows.
 A refused search, a Bitbucket repo that failed or is not checked out, and a search past
@@ -344,4 +376,5 @@ says how many it left out.
 ```bash
 prs list --json | jq -r '.[] | select(.merge_state_status == "BEHIND") | .url'
 prs tui --json | jq '.pull_requests[] | {slug, number, checks, review, stacked_on}'
+prs summary --since 7d --json | jq '{merged, median_seconds_to_merge}'
 ```

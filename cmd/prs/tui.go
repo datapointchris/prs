@@ -105,6 +105,11 @@ where the list puts it, and a merged or closed one sits above the list. One no l
 holds is read again on the same timer. A pull request prs cannot read is refused before
 the board draws.
 
+tab moves to the Summary tab, and --view summary opens on it. It counts the pull requests
+opened, merged and closed over a window, 30d at first, which w and W step through 1d, 7d,
+2w, 30d and 90d, and charts the merges per day, the open pull requests and the times to
+merge. prs summary --help says what each count is and where they are kept.
+
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
 so an agent reads what a person reads. Neither reads a pull request's own detail, so both
 leave out what the open board fills in from it: the Claude review round, the commits
@@ -112,7 +117,8 @@ since review, and the document's review, checks, files and comments. The snapsho
 the open pull requests under pull_requests and the recently closed under recently_closed.
 Either exits 1 after printing when a read failed, or when the open pull requests' read
 left some out. A recently closed read past its page keeps the newest, and says so on the
-first line. With no terminal and neither flag it refuses.`,
+first line. With --view summary, the frame is the Summary tab's and the snapshot is what
+prs summary --json prints for 30d. With no terminal and neither flag it refuses.`,
 		Example: `  prs tui
   prs tui --pr 'acme/widget#12'
   prs tui --pr https://github.com/acme/widget/pull/12
@@ -121,8 +127,8 @@ first line. With no terminal and neither flag it refuses.`,
   prs tui --json | jq '.pull_requests[] | {slug, number, checks}'`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if view != "" && view != board.View {
-				return goclikit.UsageError(fmt.Errorf("--view takes %s, not %q", board.View, view))
+			if view != "" && view != board.View && view != board.SummaryView {
+				return goclikit.UsageError(fmt.Errorf("--view takes %s or %s, not %q", board.View, board.SummaryView, view))
 			}
 			if once && asJSON {
 				return goclikit.UsageError(errors.New("--once prints a frame and --json a snapshot, so give one of them"))
@@ -154,6 +160,7 @@ first line. With no terminal and neither flag it refuses.`,
 				}
 			}
 			pal := gotermstyle.PaletteFor(os.Stdout)
+			summaryWindow, _ := pullrequests.ParseSince(board.DefaultSummaryWindow, time.Local)
 			if !printing {
 				b.ReadDetails()
 				b.ReadDiffs(cfg.DiffSectionMaxLines)
@@ -162,12 +169,20 @@ first line. With no terminal and neither flag it refuses.`,
 				if kept, err := config.ListingCacheDir(); err == nil {
 					b.KeepListings(kept)
 				}
-				tabs, err := gotermboard.NewTabs([]gotermboard.Tab{{Name: board.View, Board: b}}, pal, view)
+				summaryTab := openSummary(b, cfg, summaryWindow)
+				defer func() { _ = summaryTab.Close() }()
+				tabs, err := gotermboard.NewTabs([]gotermboard.Tab{
+					{Name: board.View, Board: b},
+					{Name: board.SummaryView, Board: summaryTab},
+				}, pal, view)
 				if err != nil {
 					return err
 				}
 				_, err = tea.NewProgram(reportsFocus{tabs}).Run()
 				return err
+			}
+			if view == board.SummaryView {
+				return printSummaryTab(cmd, openSummary(b, cfg, summaryWindow), pal, asJSON)
 			}
 			gotermboard.RefreshAll(cmd.Context(), b.Sources()...)
 			if asJSON {
@@ -197,13 +212,31 @@ first line. With no terminal and neither flag it refuses.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&view, "view", "", "Open on this tab: "+board.View)
+	cmd.Flags().StringVar(&view, "view", "", "Open on this tab: "+board.View+" or "+board.SummaryView)
 	cmd.Flags().StringVar(&openOn, "pr", "", "Open on this pull request, as owner/name#number or its URL")
 	cmd.Flags().StringVar(&since, "since", "2d",
 		"Hold in recently closed what closed at or after then: a span back from each read (30m, 12h, 2d, 1w), a day (2026-10-01) or an RFC 3339 instant")
 	cmd.Flags().BoolVar(&once, "once", false, "Print one frame of the tab at COLUMNS by LINES, then exit")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output the tab's snapshot as JSON to stdout")
 	return cmd
+}
+
+// printSummaryTab prints the Summary tab once, as --once's frame or --json's snapshot, after
+// its reads, and fails where one failed or left open pull requests out.
+func printSummaryTab(cmd *cobra.Command, s *board.Summary, pal gotermstyle.Palette, asJSON bool) error {
+	defer func() { _ = s.Close() }()
+	gotermboard.RefreshAll(cmd.Context(), s.Sources()...)
+	var err error
+	if asJSON {
+		err = printSummaryJSON(cmd.OutOrStdout(), s)
+	} else {
+		width, height := gotermboard.OnceSize(onceFallbackWidth, onceFallbackHeight)
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), gotermboard.Once(s, pal, width, height))
+	}
+	if err != nil {
+		return err
+	}
+	return summaryFaults(s)
 }
 
 // loadBoard reads the config and the repos it chooses: the registry's, the owners', or

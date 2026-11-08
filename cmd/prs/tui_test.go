@@ -79,6 +79,10 @@ type gitHub struct {
 	recorded    string
 	rounds      bool
 	pushed      bool
+	// history is the merged and closed pull requests the history search finds, and
+	// historyQueries each query it was asked, in order.
+	history        []map[string]any
+	historyQueries []string
 }
 
 // readsAs has one pull request read on its own carry state as its merge state, whatever the
@@ -324,6 +328,10 @@ func gitHubStandIn(t *testing.T, listing *gitHub) string {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.Contains(request.Query, "fragment HistoryRow") {
+			listing.serveHistory(w, request.Variables)
 			return
 		}
 		if !strings.Contains(request.Query, "pullRequest(number:") {

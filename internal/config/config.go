@@ -168,6 +168,13 @@ func ListingCacheDir() (string, error) {
 	return xdgPath("XDG_CACHE_HOME", ".cache", "listings")
 }
 
+// ClosedPullRequestsDir is where the Summary tab and prs summary keep the merged and closed
+// pull requests they count, a SQLite file for each set of repos: closed-pull-requests under
+// $XDG_CACHE_HOME/prs, or ~/.cache/prs where that is unset.
+func ClosedPullRequestsDir() (string, error) {
+	return xdgPath("XDG_CACHE_HOME", ".cache", "closed-pull-requests")
+}
+
 func xdgPath(variable, fallback, name string) (string, error) {
 	dir := os.Getenv(variable)
 	if dir == "" {
