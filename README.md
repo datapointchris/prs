@@ -122,7 +122,8 @@ A pull request's document is markdown, under a line naming its repo, author and 
 
 - **Description** is its body, drawn as soon as the list lands.
 - **Checks** is each check on its head commit and its state, those not passing first.
-- **Files** is each changed path with its lines added and removed, for the first 20.
+- **Files** is each changed path with its lines added and removed, and says how many more
+  the read left out.
 - **Comments** names who is still asked to review, then the conversation oldest first with
   each submitted review in it, then each review thread, unresolved first.
 
@@ -130,10 +131,11 @@ Checks, Files and Comments fill in once the pull request's own read lands, and s
 are reading until then. Bitbucket's client reads no more than its listing, so a Bitbucket
 pull request's document is its description alone.
 
-From 160 columns a side panel beside the list shows the document of the row under the
-cursor, and `p` hides or shows it. `enter` opens the document full screen, where `[` and
-`]` jump between its headings and `/` searches it. On a narrower terminal `enter` opens it
-in place under the row where it fits on the screen, and full screen where it runs past.
+On a wide terminal a side panel beside the list shows the document of the row under the
+cursor, under its title, and `p` hides or shows it. `enter` opens the document full screen,
+where `[` and `]` jump between its headings and `/` searches it. On a narrower terminal
+`enter` opens it in place under the row where it fits on the screen, and full screen where
+it runs past.
 
 ## Keys
 
@@ -179,8 +181,9 @@ and `{slug}` are filled in. Quote a value holding ` #`, which YAML reads as a co
 ## Opening on one pull request
 
 `prs tui --pr` opens the board on one pull request, named as `owner/name#number` or by its
-URL. The cursor starts on it with its document open, and `q` exits 0, so another
-terminal program can run prs to show a pull request and get its screen back.
+URL. The cursor starts on it with its document showing, in the side panel on a wide
+terminal and open under its row otherwise, and `q` exits 0, so another terminal program
+can run prs to show a pull request and get its screen back.
 
 ```bash
 prs tui --pr 'acme/widget#12'

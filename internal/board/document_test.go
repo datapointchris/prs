@@ -7,7 +7,8 @@ import "testing"
 func TestNestedAtMovesEveryHeadingUnderTheSectionItIsWrittenIn(t *testing.T) {
 	cases := []struct{ source, want string }{
 		{"# Findings\n\ntext\n\n> ## Quoted\n\n```\n# not a heading\n```", "#### Findings\n\ntext\n\n> ##### Quoted\n\n```\n# not a heading\n```"},
-		{"Round one\n---\n\nbody", "#### Round one\n\nbody"},
+		{"Thanks, two notes on the cache\nexpiry before this merges.\n---\n\n# Findings", "##### Thanks, two notes on the cache expiry before this merges.\n\n#### Findings"},
+		{"#\n\ntext", "####\n\ntext"},
 		{"#### Deep enough\n\nbody", "#### Deep enough\n\nbody"},
 	}
 	for _, c := range cases {

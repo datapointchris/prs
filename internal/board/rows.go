@@ -142,10 +142,9 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 		Cells:       cells,
 		WrapLast:    titleLine(pr, parentOf(pr, parents), b.stateOf(pr)),
 		Under:       gotermboard.C(identity(pr), dim),
-		Document:    b.document(pr, false),
+		Document:    b.document(pr),
 		ReaderTitle: pr.Title,
 		StartsOpen:  b.isOpenedOn(pr),
-		Panel:       b.document(pr, true),
 		Text:        strings.Join([]string{pr.Body, pr.Author, pr.Branch, pr.Slug}, " "),
 	}
 }
@@ -270,22 +269,55 @@ func orDash(text string) string {
 	return text
 }
 
-// document is the pull request's MarkdownDocument laid out at the width it is drawn at.
-// Enter opens it under the row or on a reader, each of which already shows the title, so
-// only the side panel's copy carries the title too. A row gone from the listing says why its
-// detail is not read, which is the board's to say rather than the pull request's.
-func (b *Board) document(pr pullrequests.PullRequest, titled bool) gotermboard.Document {
+// document is the pull request's MarkdownDocument laid out at the width it is drawn at. The
+// side panel heads it with the row's ReaderTitle, and the Reader and the row each name the
+// title already. A row gone from the listing says why its detail is not read, which is the
+// board's to say rather than the pull request's.
+func (b *Board) document(pr pullrequests.PullRequest) gotermboard.Document {
 	return func(width int) []gotermboard.Line {
 		var lines []gotermboard.Line
-		if titled {
-			lines = append(lines, gotermboard.Line{gotermboard.C(pr.Title, gotermboard.Bold)})
-		}
 		if b.stateOf(pr) == gone {
-			lines = append(lines, gotermboard.Line{gotermboard.C("It is gone from the open pull requests, so its checks, files and comments are not read.", dim)}, gotermboard.Line{})
+			lines = append(lines, gotermboard.Line{gotermboard.C(
+				"It is gone from the open pull requests, so its "+detailSectionNames()+" are not read.", dim)}, gotermboard.Line{})
 		}
-		markdown := MarkdownDocument(pr, b.detailOf(pr), time.Now())
+		markdown := b.markdownOf(pr, time.Now())
 		return append(lines, b.renderer.Lines(markdown, min(width, gotermboard.ReadingWidth))...)
 	}
+}
+
+// documentMemo is a pull request's MarkdownDocument and what it was built from. The panel
+// draws it on every frame, and building it parses every body and comment, so it is built
+// again only when one of those moves. The renderer keeps what it laid out the same way.
+type documentMemo struct {
+	from     documentFrom
+	markdown string
+}
+
+// documentFrom is every input of a MarkdownDocument. A listing read makes new rows, and a
+// minute passing moves each age the document writes.
+type documentFrom struct {
+	pr            pullrequests.PullRequest
+	readsDetail   bool
+	readAt        time.Time
+	held, reading bool
+	fault         string
+	minute        time.Time
+}
+
+// markdownOf is the pull request's MarkdownDocument at now, built again only where its
+// inputs moved since the last frame drew it.
+func (b *Board) markdownOf(pr pullrequests.PullRequest, now time.Time) string {
+	detail := b.detailOf(pr)
+	from := documentFrom{pr: pr, minute: now.Truncate(time.Minute)}
+	if detail != nil {
+		from.readsDetail, from.readAt, from.held, from.reading, from.fault = true, detail.Detail.ReadAt, detail.Held, detail.Reading, detail.Fault
+	}
+	if memo, ok := b.documents[pr.Key()]; ok && memo.from == from {
+		return memo.markdown
+	}
+	markdown := MarkdownDocument(pr, detail, now)
+	b.documents[pr.Key()] = documentMemo{from: from, markdown: markdown}
+	return markdown
 }
 
 // detailOf is how the pull request's detail stands for its document, and nil where its host

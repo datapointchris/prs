@@ -26,27 +26,49 @@ type documentInput struct {
 }
 
 // documentSection is one level-1 heading of the document and what goes under it. A section
-// whose write returns nothing is left out, heading and all.
+// whose write returns nothing is left out, heading and all. fromDetail says the pull
+// request's own detail read fills it, rather than its listing.
 type documentSection struct {
-	heading string
-	write   func(documentInput) string
+	heading    string
+	fromDetail bool
+	write      func(documentInput) string
 }
 
-// documentSections are the document's headings in the order they draw. A section is added
-// here, and it reaches the side panel, the Reader and every file the document is written to.
+// documentSections are the document's headings in the order they draw. A section added here
+// reaches every place MarkdownDocument is drawn, and every sentence that names the sections.
 var documentSections = []documentSection{
-	{"Description", describe},
-	{"Checks", checkSection},
-	{"Files", fileSection},
-	{"Comments", commentSection},
+	{heading: "Description", write: describe},
+	{heading: "Checks", fromDetail: true, write: checkSection},
+	{heading: "Files", fromDetail: true, write: fileSection},
+	{heading: "Comments", fromDetail: true, write: commentSection},
+}
+
+// DocumentSectionNames is every section's heading, lowercased and joined as prose joins a list.
+func DocumentSectionNames() string { return sectionNames(func(documentSection) bool { return true }) }
+
+// detailSectionNames is the heading of each section the detail read fills, joined the same way.
+func detailSectionNames() string {
+	return sectionNames(func(section documentSection) bool { return section.fromDetail })
+}
+
+func sectionNames(keep func(documentSection) bool) string {
+	var names []string
+	for _, section := range documentSections {
+		if keep(section) {
+			names = append(names, strings.ToLower(section.heading))
+		}
+	}
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // MarkdownDocument is the pull request as one markdown document: a line naming it, then a
 // level-1 heading per section. Description is the listing's body, so it is whole at once.
-// Checks, Files and Comments come from detail, and say they are reading until it lands. A
-// nil detail is a host that reads none, whose document is its Description alone. now is
-// what each age counts from. The title is not in it, since every place it shows names the
-// title already.
+// The sections the detail read fills say they are reading until it lands. A nil detail is a
+// host that reads none, whose document is its Description alone. now is what each age
+// counts from. The title is not in it, since every place it shows names the title already.
 func MarkdownDocument(pr pullrequests.PullRequest, detail *pullrequests.DetailState, now time.Time) string {
 	in := documentInput{pr: pr, detail: detail, now: now}
 	parts := []string{preamble(in)}
@@ -67,8 +89,8 @@ func preamble(in documentInput) string {
 		line += " · draft"
 	}
 	if d := in.detail; d != nil && d.Held && d.Fault != "" {
-		line += fmt.Sprintf("\n\n_Its checks, files and comments were read %s ago, and the newest read failed: %s_",
-			gotermboard.Ago(in.now.Sub(d.Detail.ReadAt)), d.Fault)
+		line += fmt.Sprintf("\n\n_Its %s were read %s ago, and the newest read failed: %s_",
+			detailSectionNames(), gotermboard.Ago(in.now.Sub(d.Detail.ReadAt)), d.Fault)
 	}
 	return line
 }
@@ -304,7 +326,7 @@ func nestedAt(source string, depth int) string {
 	src := []byte(source)
 	var headings []*ast.Heading
 	_ = ast.Walk(headingParser.Parse(text.NewReader(src)), func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if h, ok := n.(*ast.Heading); ok && entering && h.Lines().Len() > 0 {
+		if h, ok := n.(*ast.Heading); ok && entering && h.Pos() >= 0 {
 			headings = append(headings, h)
 		}
 		return ast.WalkContinue, nil
@@ -324,34 +346,38 @@ func nestedAt(source string, depth int) string {
 	return string(src)
 }
 
-// deepened writes heading h at level. An ATX heading's run of # grows. A one-line setext
-// heading becomes an ATX one and loses its underline, and one of several lines stays,
-// since an ATX heading holds one line.
+// deepened writes heading h at level. goldmark puts an ATX heading's position on its run of
+// #, which grows, empty heading or not, and a setext heading's on its first word. A setext
+// heading becomes one ATX line, its lines joined by a space as they render, and loses its
+// underline.
 func deepened(src []byte, h *ast.Heading, level int) []byte {
-	words := h.Lines().At(0).Start
-	marks := words
-	for marks > 0 && (src[marks-1] == ' ' || src[marks-1] == '\t') {
-		marks--
+	at := h.Pos()
+	hashes := at
+	for hashes < len(src) && src[hashes] == '#' {
+		hashes++
 	}
-	hashes := marks
-	for hashes > 0 && src[hashes-1] == '#' {
-		hashes--
+	if hashes > at && (hashes == len(src) || strings.ContainsRune(" \t\r\n", rune(src[hashes]))) {
+		return slices.Concat(src[:at], []byte(strings.Repeat("#", level)), src[hashes:])
 	}
-	if hashes < marks {
-		return slices.Concat(src[:hashes], []byte(strings.Repeat("#", level)), src[marks:])
-	}
-	if h.Lines().Len() != 1 {
+	lines := h.Lines()
+	if lines.Len() == 0 {
 		return src
 	}
+	words := make([]string, 0, lines.Len())
+	for i := range lines.Len() {
+		line := lines.At(i)
+		words = append(words, strings.TrimSpace(string(line.Value(src))))
+	}
+	lastLine := lines.At(lines.Len() - 1).Start
 	lineEnd := len(src)
-	if at := slices.Index(src[words:], '\n'); at >= 0 {
-		lineEnd = words + at
+	if i := slices.Index(src[lastLine:], '\n'); i >= 0 {
+		lineEnd = lastLine + i
 	}
 	underlineEnd := len(src)
 	if lineEnd < len(src) {
-		if at := slices.Index(src[lineEnd+1:], '\n'); at >= 0 {
-			underlineEnd = lineEnd + 1 + at
+		if i := slices.Index(src[lineEnd+1:], '\n'); i >= 0 {
+			underlineEnd = lineEnd + 1 + i
 		}
 	}
-	return slices.Concat(src[:words], []byte(strings.Repeat("#", level)+" "), src[words:lineEnd], src[underlineEnd:])
+	return slices.Concat(src[:at], []byte(strings.Repeat("#", level)+" "+strings.Join(words, " ")), src[underlineEnd:])
 }

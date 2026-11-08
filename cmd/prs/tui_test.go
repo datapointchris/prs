@@ -387,7 +387,7 @@ func TestListPrintsAnEmptyArrayAndExits1WhenARepoIsLeftOut(t *testing.T) {
 }
 
 // On a wide screen the cursor's document sits beside the list and follows the cursor, and
-// enter opens it full screen rather than draw it a second time under the row.
+// enter opens it full screen.
 func TestTheBoardSaysEachStateInWordsShowsTheDocumentBesideTheListAndRunsAKeyTheConfigAdds(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
@@ -498,11 +498,21 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *tes
 // Another program jumps to a pull request with --pr and gets its screen back on q. A listed
 // pull request opens where the list puts it, and a merged one is read on its own and opens
 // above the list. Each opens with its document showing and the cursor on it, which a key's
-// question naming it proves.
+// question naming it proves. On a wide screen the side panel shows it, and the row stays shut.
 func TestTuiOpensOnTheNamedPullRequestWithItsDocumentAndQExits0(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
-	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "acme/widget#12"}, Env: s.env, Cols: 140, Rows: 40})
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "acme/widget#12"}, Env: s.env, Cols: 378, Rows: 91})
+	term.WaitFor("mona approved at 9e8d7c6")
+	if n := strings.Count(term.Frame().Text(), "acme/widget #12 · opened by octo"); n != 1 {
+		t.Errorf("#12's document should show once, in the side panel, not %d times:\n%s", n, term.Frame().Text())
+	}
+	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+
+	term = tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "acme/widget#12"}, Env: s.env, Cols: 140, Rows: 40})
 	term.WaitFor("open · 4")
 	term.WaitFor("Caches the widget lookups for a minute.")
 	// With no side panel, a document running past the screen reads full screen, and ] brings

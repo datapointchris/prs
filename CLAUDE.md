@@ -88,11 +88,14 @@ takes and how it is read.
   action on a bound key would take it the same way, such as `p`, the side panel's toggle,
   so `board.Refused` refuses one, reading the table's keys from `gotermboard.TableKeys()`
   and adding esc.
-- **The side panel and the Reader draw one document, `MarkdownDocument`.** gotermboard
-  shows a row's `Panel` beside the list from `PanelFrom` columns, and enter opens its
-  `Document` on the Reader wherever the panel shows it, so the two are the same markdown.
-  The Reader's `[` and `]` land on each heading, so text written under a section goes
-  through `nestedAt`, which keeps its own headings inside that section.
+- **The side panel and the Reader draw one document, `MarkdownDocument`.** A row sets
+  `Document` and no `Panel`, so from `PanelFrom` columns gotermboard's panel draws the
+  `Document` under the row's `ReaderTitle`. Such a row then starts folded beside the panel
+  rather than open from `StartsOpen`, and enter opens it on the Reader. A `Panel` would end
+  all three. The Reader's `[` and `]` land on each heading, so text written under a section
+  goes through `nestedAt`, which keeps its own headings inside that section.
+- **The panel calls a row's `Document` on every frame**, so `markdownOf` keeps each pull
+  request's markdown until its row, its detail state or the minute moves.
 - **A row's `ReaderTitle` is its pull request's title**, because the table's enter would
   otherwise title the Reader with the row's first cells, which here are its state words.
 - **A row's `Under` line shows only once `f` turns summaries on.**
