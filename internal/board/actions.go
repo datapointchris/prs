@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -139,40 +138,27 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 	if head == "" {
 		return refuse(fmt.Errorf("#%d in %s names no source branch to fetch", pr.Number, pr.Repo))
 	}
-	ref := "refs/remotes/origin/pr/" + strconv.Itoa(pr.Number)
-	// run writes these and done reads them, after the message that ends the work.
-	var fetched, baseFailed string
+	// run writes this and done reads it, after the message that ends the work. A base that
+	// failed to fetch still diffs against the origin/<base> fetched earlier, and the footer
+	// says so once nvim exits.
+	var got pullrequests.Fetched
 	return b.start(work{
 		pr:    pr,
 		doing: fmt.Sprintf("fetching %s #%d", pr.Repo, pr.Number),
 		run: func(ctx context.Context) error {
-			if _, err := pullrequests.Run(ctx, checkout, "git", "fetch", "--quiet", "--force", "origin", head+":"+ref); err != nil {
-				return fmt.Errorf("could not fetch #%d in %s: %w", pr.Number, pr.Repo, err)
-			}
-			// A base that failed to fetch still diffs against the origin/<base> fetched
-			// earlier, and the footer says so once nvim exits.
-			if _, err := pullrequests.Run(ctx, checkout, "git", "fetch", "--quiet", "origin", base); err != nil {
-				baseFailed = err.Error()
-			}
-			if _, err := pullrequests.Run(ctx, checkout, "git", "rev-parse", "--verify", "--quiet", "origin/"+base); err != nil {
-				return fmt.Errorf("%s has no origin/%s to diff against: %s", pr.Repo, base, orDash(baseFailed))
-			}
-			out, err := pullrequests.Run(ctx, checkout, "git", "rev-parse", "--verify", ref)
-			if err != nil {
-				return fmt.Errorf("could not read the head fetched for #%d: %w", pr.Number, err)
-			}
-			fetched = strings.TrimSpace(string(out))
-			return nil
+			var err error
+			got, err = pullrequests.Fetch(ctx, pr, checkout, head, base)
+			return err
 		},
 		done: func(*gotermboard.Model) tea.Cmd {
-			b.diffed[pr.Key()] = fetched
+			b.diffed[pr.Key()] = got.Head
 			stem := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d", pr.Repo, pr.Number))
 			socket := stem + ".sock"
 			_ = os.Remove(socket)
-			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview("origin/"+base+"..."+ref))
+			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview("origin/"+base+"..."+got.Ref))
 			nvim.Dir = checkout
 			files := diffFilesAt(stem)
-			unwritten := files.write(pr, b.detailOf(pr), "origin/"+base, fetched, time.Now())
+			unwritten := files.write(pr, b.detailOf(pr), "origin/"+base, got.Head, time.Now())
 			if unwritten == nil {
 				nvim.Env = append(os.Environ(), files.env()...)
 			}
@@ -187,9 +173,9 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 					said = "nvim has no :DiffviewOpen, and the diff needs the diffview.nvim plugin"
 				case err != nil:
 					said = fmt.Sprintf("nvim ended the diff of #%d with %v", pr.Number, err)
-				case baseFailed != "":
+				case got.BaseFault != "":
 					said = fmt.Sprintf("closed the diff of %s #%d, which ran against the origin/%s fetched earlier, because fetching it again failed: %s",
-						pr.Repo, pr.Number, base, baseFailed)
+						pr.Repo, pr.Number, base, got.BaseFault)
 				default:
 					said = fmt.Sprintf("closed the diff of %s #%d", pr.Repo, pr.Number)
 				}

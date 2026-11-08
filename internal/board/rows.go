@@ -357,23 +357,48 @@ type documentFrom struct {
 	readAt        time.Time
 	held, reading bool
 	fault         string
+	diff          diffFrom
 	minute        time.Time
+}
+
+// diffFrom is what of a DiffState moves the document: a new read, or a read starting,
+// failing or found impossible.
+type diffFrom struct {
+	readAt        time.Time
+	held, reading bool
+	fault, cannot string
 }
 
 // markdownOf is the pull request's MarkdownDocument at now, built again only where its
 // inputs moved since the last frame drew it.
 func (b *Board) markdownOf(pr pullrequests.PullRequest, now time.Time) string {
-	detail := b.detailOf(pr)
-	from := documentFrom{pr: pr, minute: now.Truncate(time.Minute)}
+	detail, diff := b.detailOf(pr), b.diffOf(pr)
+	from := documentFrom{
+		pr: pr, minute: now.Truncate(time.Minute),
+		diff: diffFrom{readAt: diff.Diff.ReadAt, held: diff.Held, reading: diff.Reading, fault: diff.Fault, cannot: diff.Cannot},
+	}
 	if detail != nil {
 		from.readsDetail, from.readAt, from.held, from.reading, from.fault = true, detail.Detail.ReadAt, detail.Held, detail.Reading, detail.Fault
 	}
 	if memo, ok := b.documents[pr.Key()]; ok && memo.from == from {
 		return memo.markdown
 	}
-	markdown := MarkdownDocument(pr, detail, now)
+	markdown := MarkdownDocument(pr, detail, &diff, now)
 	b.documents[pr.Key()] = documentMemo{from: from, markdown: markdown}
 	return markdown
+}
+
+// diffOf is how the pull request's diff stands for its document. A row drawn before its
+// listing claims its read is due one, as in detailOf.
+func (b *Board) diffOf(pr pullrequests.PullRequest) pullrequests.DiffState {
+	if b.diffs == nil {
+		return pullrequests.DiffState{}
+	}
+	state := b.diffs.Of(pr)
+	if !state.Held && state.Fault == "" && state.Cannot == "" && b.stateOf(pr) != gone {
+		state.Reading = true
+	}
+	return state
 }
 
 // detailOf is how the pull request's detail stands for its document, and nil where its host

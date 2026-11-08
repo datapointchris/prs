@@ -11,8 +11,10 @@ request's markdown document, a section per heading, `diff_files.go` the document
 review threads `d` writes for nvim, and `opened_on.go` the pull request `prs tui --pr`
 names. `internal/pullrequests` reads each provider: GitHub in-process
 through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
-differently by host, `detail.go` the per-PR detail cache, `reference.go` what `--pr`
-takes and how it is read, and `since.go` what `--since` takes.
+differently by host, `detail.go` the per-PR detail cache, `diff.go` the per-PR diff cache
+the Diff section reads, `fetch.go` the fetch of a pull request's head that `d` and the diff
+share, `reference.go` what `--pr` takes and how it is read, and `since.go` what `--since`
+takes.
 `internal/registry` reads the registry file, and `internal/config` reads
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
@@ -103,11 +105,17 @@ is the shape of the threads file `d` hands nvim, held the same way.
 - **A pull request's detail never holds up its row.** The board reads each GitHub row's
   detail in the background after the listing lands, a few at a time. It reads one again
   when its head commit, update time or checks state moves, or when its last read failed.
+- **A pull request's diff is read in its checkout where its repo is cloned, and from the
+  host otherwise.** `Fetch` takes the same head and base `d` does, one fetch at a time per
+  checkout, because two at once contend for its ref locks. A merged one is read from the
+  host, because in the checkout a merged branch diffs as nothing against its base. A diff
+  the listing's counts put past `diff_section_max_lines` is never fetched.
 - **No test reads a real account or starts a real program a key runs.** `cmd/prs/tui_test.go`
   puts a stand-in on `PATH` for every program a read or a key in the test runs, and its
   testdata answers in each provider's published shape. GitHub's stand-in is an HTTP server
   on a unix socket, named by `http_unix_socket` in a gh config the test writes, so go-gh
-  sends every request there and none reaches GitHub.
+  sends every request there and none reaches GitHub. It answers GraphQL and REST's diff
+  media type, and the stand-in git answers a diff from the same testdata file.
 
 ## gotermboard facts the board relies on
 

@@ -18,10 +18,12 @@ import (
 )
 
 // documentInput is what each section of a pull request's document is written from. detail
-// is how its detail read stands, and nil where its host reads no detail.
+// is how its detail read stands, and nil where its host reads no detail. diff is how its
+// diff read stands, and nil where the reader has the diff in front of them already.
 type documentInput struct {
 	pr     pullrequests.PullRequest
 	detail *pullrequests.DetailState
+	diff   *pullrequests.DiffState
 	now    time.Time
 }
 
@@ -40,6 +42,7 @@ var documentSections = []documentSection{
 	{heading: "Description", write: describe},
 	{heading: "Checks", fromDetail: true, write: checkSection},
 	{heading: "Files", fromDetail: true, write: fileSection},
+	{heading: "Diff", write: diffSection},
 	{heading: "Comments", fromDetail: true, write: commentSection},
 }
 
@@ -66,11 +69,13 @@ func sectionNames(keep func(documentSection) bool) string {
 
 // MarkdownDocument is the pull request as one markdown document: a line naming it, then a
 // level-1 heading per section. Description is the listing's body, so it is whole at once.
-// The sections the detail read fills say they are reading until it lands. A nil detail is a
-// host that reads none, whose document is its Description alone. now is what each age
-// counts from. The title is not in it, since every place it shows names the title already.
-func MarkdownDocument(pr pullrequests.PullRequest, detail *pullrequests.DetailState, now time.Time) string {
-	in := documentInput{pr: pr, detail: detail, now: now}
+// The sections the detail read fills say they are reading until it lands, and so does Diff
+// until its own read does. A nil detail is a host that reads none, whose document has no
+// detail section, and a nil diff leaves Diff out, as beside d's diff in nvim. now is what
+// each age counts from. The title is not in it, since every place it shows names the title
+// already.
+func MarkdownDocument(pr pullrequests.PullRequest, detail *pullrequests.DetailState, diff *pullrequests.DiffState, now time.Time) string {
+	in := documentInput{pr: pr, detail: detail, diff: diff, now: now}
 	parts := []string{preamble(in)}
 	for _, section := range documentSections {
 		if body := section.write(in); body != "" {
@@ -157,7 +162,7 @@ func fileSection(in documentInput) string {
 	pr := in.pr
 	total := ""
 	if pr.ChangedFiles != nil && pr.Additions != nil && pr.Deletions != nil {
-		total = fmt.Sprintf("%d files, %d lines added and %d removed.", *pr.ChangedFiles, *pr.Additions, *pr.Deletions)
+		total = fmt.Sprintf("%s, %s added and %d removed.", counted(*pr.ChangedFiles, "file"), counted(*pr.Additions, "line"), *pr.Deletions)
 	}
 	if !d.Held {
 		return strings.TrimSpace(total + "\n\n" + unread(d))
@@ -172,9 +177,119 @@ func fileSection(in documentInput) string {
 	}
 	parts := []string{total, strings.Join(rows, "\n")}
 	if more := d.Detail.FileCount - len(files); more > 0 {
-		parts = append(parts, fmt.Sprintf("%d more files are left out here, and d opens the whole diff.", more))
+		var where string
+		switch {
+		case in.diff == nil:
+			where = "the diff beside this shows every one."
+		case in.diff.Held && in.diff.Diff.Whole:
+			where = "the Diff section below holds every one."
+		default:
+			where = opener(*in.diff) + "."
+		}
+		parts = append(parts, fmt.Sprintf("%d more files are left out here, and %s", more, where))
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+// diffSection is each changed file under a level-2 heading of its own, its hunks in a diff
+// fence, so the Reader's section keys move between files. A diff past the limit is its size
+// alone, and the key that opens it whole.
+func diffSection(in documentInput) string {
+	if in.diff == nil {
+		return ""
+	}
+	state := *in.diff
+	switch {
+	case state.Cannot != "":
+		return "_" + state.Cannot + "_"
+	case !state.Held && state.Fault != "":
+		return "_Could not read it: " + state.Fault + "_"
+	case !state.Held && state.Reading:
+		return "_Reading._"
+	case !state.Held:
+		return "_Not read._"
+	}
+	diff := state.Diff
+	var parts []string
+	if state.Fault != "" {
+		parts = append(parts, fmt.Sprintf("_Read %s ago, and the newest read failed: %s_", gotermboard.Ago(in.now.Sub(diff.ReadAt)), state.Fault))
+	}
+	if !diff.Whole {
+		return strings.Join(append(parts, fmt.Sprintf("%s changed, more than the %d this section shows whole. %s.",
+			counted(diff.Lines, "line"), state.Limit, opener(state))), "\n\n")
+	}
+	if len(diff.Files) == 0 {
+		return strings.Join(append(parts, "No line changed."), "\n\n")
+	}
+	source := "read from " + in.pr.Provider
+	if state.InCheckout {
+		source = "read in the checkout here"
+	}
+	at := ""
+	if diff.Head != "" {
+		at = fmt.Sprintf(" at %#q", short(diff.Head))
+	}
+	parts = append(parts, fmt.Sprintf("%s changed in %s%s, %s.", counted(diff.Lines, "line"), counted(len(diff.Files), "file"), at, source))
+	if diff.BaseFault != "" {
+		parts = append(parts, fmt.Sprintf("_It runs against the `origin/%s` fetched earlier, because fetching it again failed: %s_", in.pr.Base, diff.BaseFault))
+	}
+	for _, file := range diff.Files {
+		parts = append(parts, "## "+fileHeading(file))
+		switch {
+		case file.Binary:
+			parts = append(parts, "_A binary file, which a diff does not show._")
+		case strings.TrimSpace(file.Hunks) == "":
+			parts = append(parts, "_Its lines are unchanged._")
+		default:
+			parts = append(parts, fenced("diff", file.Hunks))
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// opener is the key that opens the whole diff: d needs the checkout, and o does not.
+func opener(state pullrequests.DiffState) string {
+	if state.InCheckout {
+		return "d opens the whole diff in nvim"
+	}
+	return "o opens it in the browser"
+}
+
+// fileHeading is the file's path, where it came from when it moved, and how it changed
+// where it was more than modified.
+func fileHeading(file pullrequests.FileDiff) string {
+	heading := fmt.Sprintf("%#q", file.Path)
+	if file.OldPath != "" && file.OldPath != file.Path {
+		heading = fmt.Sprintf("%#q → %#q", file.OldPath, file.Path)
+	}
+	if file.Change != "modified" {
+		heading += " · " + file.Change
+	}
+	return heading
+}
+
+// fenced is body in a fence of language one backtick longer than the longest run in body,
+// so no line of it closes the fence early.
+func fenced(language, body string) string {
+	longest, run := 0, 0
+	for _, r := range body {
+		if r != '`' {
+			run = 0
+			continue
+		}
+		run++
+		longest = max(longest, run)
+	}
+	fence := strings.Repeat("`", max(3, longest+1))
+	return fence + language + "\n" + strings.TrimRight(body, "\n") + "\n" + fence
+}
+
+// counted is n and the noun, plural where n is not 1.
+func counted(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return strconv.Itoa(n) + " " + noun + "s"
 }
 
 // commentSection is who is still asked to review, the conversation oldest first with each

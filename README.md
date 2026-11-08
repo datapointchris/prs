@@ -141,12 +141,21 @@ A pull request's document is markdown, under a line naming its repo, author and 
 - **Checks** is each check on its head commit and its state, those not passing first.
 - **Files** is each changed path with its lines added and removed, and says how many more
   the read left out.
+- **Diff** is the diff itself, each file under a heading of its own, so `[` and `]` move
+  between files. A pull request changing more lines than `diff_section_max_lines` in the
+  config, 300 by default, gets its size and the key that opens it instead.
 - **Comments** names who is still asked to review, then the conversation oldest first with
   each submitted review in it, then each review thread, unresolved first.
 
 Checks, Files and Comments fill in once the pull request's own read lands, and say they
 are reading until then. Bitbucket's client reads no more than its listing, so a Bitbucket
-pull request's document is its description alone.
+pull request's document holds its description and its diff.
+
+Each open pull request's diff is read once the list lands, a few at a time, and again when
+its head commit moves. Where its repo is checked out, prs fetches its head into
+`refs/remotes/origin/pr/<number>` there, as `d` does, and diffs it against the base it
+targets. Where it is not, GitHub sends the diff. Bitbucket's client has no diff, so a
+Bitbucket pull request's Diff says it needs a checkout.
 
 On a wide terminal a side panel beside the list shows the document of the row under the
 cursor, under its title, and `p` hides or shows it. `enter` opens the document full screen,
@@ -164,7 +173,8 @@ nvim listens on `$TMPDIR/prs-diff-<repo>-<number>.sock`, so another program can 
 what is under the cursor. Inside tmux, prs's window is named `diff <repo> #<number>` while
 nvim has it.
 Beside the socket, prs writes the pull request as `prs-diff-<repo>-<number>.md`, its title
-over the document the side panel shows, and its review threads as
+over the document the side panel shows less its Diff, which nvim shows already, and its
+review threads as
 `prs-diff-<repo>-<number>.threads.json`, in the shape `cmd/prs/diff-threads.schema.json`
 gives. nvim starts with `PRS_DIFF_DOCUMENT` and `PRS_DIFF_THREADS` naming them, so an nvim
 config can show the description beside the diff and each thread on its line. prs removes

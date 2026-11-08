@@ -1,5 +1,6 @@
 // Package config reads prs's config file, which names the registry of repos or the owners
-// read in its place, how often the board reads them, and the keys a person adds to it.
+// read in its place, how often the board reads them, how large a diff a pull request's
+// document shows whole, and the keys a person adds to it.
 package config
 
 import (
@@ -53,6 +54,11 @@ type Config struct {
 	// again, and ClosedRefreshFrom names the layer that set it.
 	ClosedRefreshEvery time.Duration
 	ClosedRefreshFrom  string
+	// DiffSectionMaxLines is the most lines a pull request may change for its document's Diff
+	// section to show its diff whole. A larger one's section names its size instead.
+	// DiffSectionFrom names the layer that set it.
+	DiffSectionMaxLines int
+	DiffSectionFrom     string
 	// WindowActions are the keys the file adds, each opening a tmux window on a pull request.
 	WindowActions []WindowAction
 }
@@ -65,6 +71,11 @@ const DefaultRefreshEvery = time.Minute
 // where the file does not say. That read costs GitHub as much as the open one, and what it
 // finds changes only when a pull request closes, which the open read already shows.
 const DefaultClosedRefreshEvery = 5 * time.Minute
+
+// DefaultDiffSectionMaxLines is DiffSectionMaxLines where the file does not say: about three
+// screens of the side panel, past which nvim's diff, with its file tree, reads faster than
+// scrolling.
+const DefaultDiffSectionMaxLines = 300
 
 // WindowAction is a key that runs a command in a new tmux window, started in the pull
 // request's checkout. It is offered only where every program it needs is on PATH.
@@ -89,6 +100,7 @@ type file struct {
 	Owners                    []string       `yaml:"owners"`
 	RefreshEverySeconds       yaml.Node      `yaml:"refresh_every_seconds"`
 	ClosedRefreshEverySeconds yaml.Node      `yaml:"closed_refresh_every_seconds"`
+	DiffSectionMaxLines       yaml.Node      `yaml:"diff_section_max_lines"`
 	WindowActions             []WindowAction `yaml:"window_actions"`
 }
 
@@ -197,6 +209,14 @@ func Load() (Config, error) {
 	if cfg.ClosedRefreshEvery, cfg.ClosedRefreshFrom, err = interval(doc.ClosedRefreshEverySeconds, "closed_refresh_every_seconds", DefaultClosedRefreshEvery); err != nil {
 		return cfg, fmt.Errorf("%s: %w", path, err)
 	}
+	cfg.DiffSectionMaxLines, cfg.DiffSectionFrom = DefaultDiffSectionMaxLines, FromDefault
+	if node := doc.DiffSectionMaxLines; node.Kind != 0 {
+		lines, err := wholeNumber("diff_section_max_lines", "lines", node)
+		if err != nil {
+			return cfg, fmt.Errorf("%s: %w", path, err)
+		}
+		cfg.DiffSectionMaxLines, cfg.DiffSectionFrom = lines, "diff_section_max_lines in the config file"
+	}
 	for i, action := range doc.WindowActions {
 		if err := action.check(); err != nil {
 			return cfg, fmt.Errorf("%s: window_actions[%d]: %w", path, i, err)
@@ -210,17 +230,27 @@ func Load() (Config, error) {
 }
 
 // interval reads a key of whole seconds as written, and the layer that set it: the file, or
-// fallback where the file does not say. yaml would truncate 0.5 into an int without a word,
-// so anything not tagged an integer is refused with the value it held.
+// fallback where the file does not say.
 func interval(node yaml.Node, key string, fallback time.Duration) (time.Duration, string, error) {
 	if node.Kind == 0 {
 		return fallback, FromDefault, nil
 	}
-	var seconds int
-	if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" || node.Decode(&seconds) != nil || seconds < 1 {
-		return 0, "", fmt.Errorf("%s is %q, and it takes a whole number of seconds, 1 or more", key, node.Value)
+	seconds, err := wholeNumber(key, "seconds", node)
+	if err != nil {
+		return 0, "", err
 	}
 	return time.Duration(seconds) * time.Second, key + " in the config file", nil
+}
+
+// wholeNumber reads the key's value as written, a whole number of units, 1 or more. yaml
+// would truncate 0.5 into an int without a word, so anything not tagged an integer is
+// refused with the value it held.
+func wholeNumber(key, units string, node yaml.Node) (int, error) {
+	var n int
+	if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" || node.Decode(&n) != nil || n < 1 {
+		return 0, fmt.Errorf("%s is %q, and it takes a whole number of %s, 1 or more", key, node.Value, units)
+	}
+	return n, nil
 }
 
 // ownerName is what GitHub allows in a user or organization's login.

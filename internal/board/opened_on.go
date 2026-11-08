@@ -33,18 +33,29 @@ func (b *Board) OpenOn(ctx context.Context, ref pullrequests.Reference) error {
 	}
 	on := &openedOn{key: launch.PullRequest.Key(), launch: launch}
 	on.source = gotermboard.NewSource(ref.String(), b.every, func(ctx context.Context) (pullrequests.Named, string, error) {
+		named := launch
 		switch {
 		case on.source.Status().ReadAt.IsZero():
-			return launch, "", nil
 		case b.inListing(on.key):
 			return on.source.Value(), "", nil
+		default:
+			var err error
+			if named, err = pullrequests.ReadReference(ctx, ref, b.repos); err != nil {
+				return named, "", err
+			}
 		}
-		named, err := pullrequests.ReadReference(ctx, ref, b.repos)
-		return named, "", err
+		if b.diffs != nil {
+			b.diffs.Prefetch(ctx, openedOnRead, pullrequests.Finish([]pullrequests.PullRequest{named.PullRequest}, b.repos, time.Now()))
+		}
+		return named, "", nil
 	})
 	b.openedOn = on
 	return nil
 }
+
+// openedOnRead names the read of the pull request the board opened on among those that list
+// diffs, so a provider's listing never drops its diff.
+const openedOnRead = "--pr"
 
 // named is the newest read of the pull request the board opened on, and false where it
 // opened on none.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"slices"
@@ -284,42 +285,90 @@ func githubPullRequest(node githubNode) PullRequest {
 	return pr
 }
 
-// githubClients holds the one GraphQL client every read shares, built on the first read
-// that finds a token and dropped when GitHub refuses that token, so a login made while the
-// board is open is picked up on the next read.
+// githubClients holds the clients every read shares, built on the first read that finds a
+// token and dropped when GitHub refuses that token, so a login made while the board is open
+// is picked up on the next read. graphQL reads the listings and each pull request's detail,
+// and diff asks REST for a pull request's diff, which only the diff media type gives.
 var githubClients struct {
 	sync.Mutex
-	client *api.GraphQLClient
-	host   string
+	graphQL *api.GraphQLClient
+	diff    *api.RESTClient
+	host    string
 }
 
-// githubClient is the shared client, and the host it reads. The host is gh's: GH_HOST, or
-// the one host gh is logged in to, or github.com.
+// diffMediaType is the media type under which GitHub's REST API answers a pull request's
+// read with its diff rather than its JSON.
+const diffMediaType = "application/vnd.github.diff"
+
+// githubClient is the shared GraphQL client, and the host it reads.
 func githubClient(ctx context.Context) (*api.GraphQLClient, string, error) {
 	githubClients.Lock()
 	defer githubClients.Unlock()
-	if githubClients.client != nil {
-		return githubClients.client, githubClients.host, nil
+	host, err := connectGitHub(ctx)
+	return githubClients.graphQL, host, err
+}
+
+// githubDiffClient is the shared REST client asking for diffs, and the host it reads.
+func githubDiffClient(ctx context.Context) (*api.RESTClient, string, error) {
+	githubClients.Lock()
+	defer githubClients.Unlock()
+	host, err := connectGitHub(ctx)
+	return githubClients.diff, host, err
+}
+
+// connectGitHub builds the shared clients where none are held, and returns the host they
+// read. The host is gh's: GH_HOST, or the one host gh is logged in to, or github.com. The
+// caller holds githubClients' lock.
+func connectGitHub(ctx context.Context) (string, error) {
+	if githubClients.graphQL != nil {
+		return githubClients.host, nil
 	}
 	host, _ := auth.DefaultHost()
 	token, err := githubToken(ctx, host)
 	if err != nil {
-		return nil, host, err
+		return host, err
 	}
 	// Host and token are given, so go-gh reads only the rest of gh's config, such as
 	// http_unix_socket.
-	client, err := api.NewGraphQLClient(api.ClientOptions{Host: host, AuthToken: token, Timeout: readTimeout})
+	options := api.ClientOptions{Host: host, AuthToken: token, Timeout: readTimeout}
+	graphQL, err := api.NewGraphQLClient(options)
 	if err != nil {
-		return nil, host, fmt.Errorf("could not reach GitHub at %s: %w", host, err)
+		return host, fmt.Errorf("could not reach GitHub at %s: %w", host, err)
 	}
-	githubClients.client, githubClients.host = client, host
-	return client, host, nil
+	options.Headers = map[string]string{"Accept": diffMediaType}
+	diff, err := api.NewRESTClient(options)
+	if err != nil {
+		return host, fmt.Errorf("could not reach GitHub at %s: %w", host, err)
+	}
+	githubClients.graphQL, githubClients.diff, githubClients.host = graphQL, diff, host
+	return host, nil
 }
 
 func forgetGitHubClient() {
 	githubClients.Lock()
 	defer githubClients.Unlock()
-	githubClients.client = nil
+	githubClients.graphQL, githubClients.diff = nil, nil
+}
+
+// readGitHubDiff is Provider.Diff for GitHub: the pull request's diff from where its branch
+// left its base, as GitHub's REST API sends it under the diff media type.
+func readGitHubDiff(ctx context.Context, pr PullRequest) (string, error) {
+	client, host, err := githubDiffClient(ctx)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, readTimeout)
+	defer cancel()
+	response, err := client.RequestWithContext(ctx, http.MethodGet, fmt.Sprintf("repos/%s/pulls/%d", pr.Slug, pr.Number), nil)
+	if err != nil {
+		return "", githubFault(host, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	diff, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", fmt.Errorf("could not read the diff of %s#%d from GitHub at %s: %w", pr.Slug, pr.Number, host, err)
+	}
+	return string(diff), nil
 }
 
 // githubToken is the token gh would use for host: the one go-gh finds in the environment or
