@@ -44,6 +44,11 @@ func sectionOf(pr pullrequests.PullRequest) section {
 	return people
 }
 
+// readsDetail says the board reads the pull request's checks, files and comments: an open
+// one's. A merged or closed one's is not read, because the window holds as many as --since
+// reaches and each detail read costs GitHub a point.
+func readsDetail(pr pullrequests.PullRequest) bool { return sectionOf(pr) != recentlyClosed }
+
 // placed is a pull request and the section its row draws in.
 type placed struct {
 	pr pullrequests.PullRequest
@@ -66,15 +71,30 @@ func (b *Board) inWindow(pr pullrequests.PullRequest, now time.Time) bool {
 	return b.since != nil && !closedAt(pr).Before(b.since.From(now))
 }
 
+// closeMadeHere is a pull request a key merged or closed, as the key left it, and when the
+// key's command ended.
+type closeMadeHere struct {
+	pr pullrequests.PullRequest
+	at time.Time
+}
+
 // records is one record of each pull request the board holds: each listing's, the closed
-// ones only within the window, then extra, the newer of two that read one pull request. A
-// merge or close a key made here stands over a record still reading open, as GitHub's
-// search does for a while after a merge, until the window passes it.
+// ones only within the window, then extra, the newer of two that read one pull request.
+//
+// A merge or close a key made here stands over the record a listing read before the key,
+// which still reads open. A listing read that started after the key reads the pull request's
+// state as it is, so once one holds the pull request, its record stands instead. That shows a
+// merge a queue only accepted, or a close reopened on the page, for what it is.
 func (b *Board) records(now time.Time, extra ...pullrequests.PullRequest) []pullrequests.PullRequest {
 	byKey := map[string]pullrequests.PullRequest{}
 	var order []string
-	add := func(pr pullrequests.PullRequest) {
+	// readFrom is when the newest good read holding each pull request started.
+	readFrom := map[string]time.Time{}
+	add := func(pr pullrequests.PullRequest, started time.Time) {
 		key := pr.Key()
+		if started.After(readFrom[key]) {
+			readFrom[key] = started
+		}
 		if have, ok := byKey[key]; ok {
 			byKey[key] = newer(have, pr)
 			return
@@ -82,23 +102,23 @@ func (b *Board) records(now time.Time, extra ...pullrequests.PullRequest) []pull
 		byKey[key] = pr
 		order = append(order, key)
 	}
-	for _, source := range b.sources {
-		for _, pr := range b.listing(source).PullRequests {
-			add(pr)
+	for _, source := range b.listingSources() {
+		var started time.Time
+		if status := source.Status(); status.Fault == "" && !status.ReadAt.IsZero() {
+			started = status.TriedAt
 		}
-	}
-	for _, source := range b.closedSources {
+		closed := slices.Contains(b.closedSources, source)
 		for _, pr := range b.listing(source).PullRequests {
-			if b.inWindow(pr, now) {
-				add(pr)
+			if !closed || b.inWindow(pr, now) {
+				add(pr, started)
 			}
 		}
 	}
 	for _, pr := range extra {
-		add(pr)
+		add(pr, time.Time{})
 	}
-	for key, pr := range b.closedHere {
-		if !b.inWindow(pr, now) {
+	for key, here := range b.closedHere {
+		if !b.inWindow(here.pr, now) || !readFrom[key].Before(here.at) {
 			delete(b.closedHere, key)
 			continue
 		}
@@ -109,7 +129,7 @@ func (b *Board) records(now time.Time, extra ...pullrequests.PullRequest) []pull
 		case sectionOf(have) == recentlyClosed:
 			continue
 		}
-		byKey[key] = pr
+		byKey[key] = here.pr
 	}
 	prs := make([]pullrequests.PullRequest, 0, len(order))
 	for _, key := range order {

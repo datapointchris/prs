@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "urn:prs:list:v1",
   "title": "The pull requests on the repos prs reads",
-  "description": "What `prs list --json` prints, and `pull_requests` in `prs tui --json`: one object per pull request, and [] where there are none. Both list the open ones a person opened, then those an app opened, each oldest first. `prs tui --json` then lists those merged or closed within its --since window, newest first. Every field is always present. A field the provider's listing does not carry is null rather than a zero, so a pull request nobody counted never reads as one that changed nothing.",
+  "description": "What `prs list --json` prints, and `pull_requests` and `recently_closed` in `prs tui --json`: one object per pull request, and [] where there are none. `prs list --json` and `pull_requests` list the open ones a person opened, then those an app opened, each oldest first. `recently_closed` lists those merged or closed within the --since window, newest first. Every field is always present. A field the provider's listing does not carry is null rather than a zero, so a pull request nobody counted never reads as one that changed nothing.",
   "type": "array",
   "items": {
     "type": "object",

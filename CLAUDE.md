@@ -49,15 +49,19 @@ takes and how it is read, and `since.go` what `--since` takes.
   merged or closed, whichever listing read it, then bots where `bot` is true, then people.
   Where two listings read one pull request, the record updated last stands, because
   GitHub's open search still finds a pull request for a while after it merges. A merge or
-  close a key made here stands over a record still reading open.
+  close a key made here stands over a record read before the key, and gives way once a
+  listing read that started after the key holds the pull request, because that read is
+  the evidence the change took.
 - **The recently closed read runs on its own timer**, `closed_refresh_every_seconds`,
   because it costs GitHub as much as the open one. Focus and a handover reread only the
-  open listings. Its rows read no detail, because the window holds dozens and each detail
-  read costs a point.
-- **`prs list`, `--json` and `--once` exit 1 when a read failed or left a pull request
-  out**, because a failed read and a repo with no open pull requests otherwise print the
-  same rows. A note leaves one out: a refused search, a Bitbucket repo that failed or is
-  not checked out, a search past its page.
+  open listings. Its rows read no detail, because each detail read costs a point and the
+  window holds as many rows as `--since` reaches. `readsDetail` decides which rows read
+  one, for the prefetch and the document alike.
+- **`prs list`, `--json` and `--once` exit 1 when a read failed or left an open pull
+  request out**, because a failed read and a repo with no open pull requests otherwise
+  print the same rows. A note leaves one out: a refused search, a Bitbucket repo that
+  failed or is not checked out, a search past its page. A recently closed read past its
+  page is not a gap, because it sorts the newest first so its page keeps them.
 - **A stacked pull request finds its parent by repo and branch together.** Branch names
   recur across repos.
 - **State is a word on the row, and a glyph never changes with state.** Two glyphs are not
@@ -84,8 +88,9 @@ takes and how it is read, and `since.go` what `--since` takes.
 - **A per-host fact lives in the Provider table**: the state words a client prints, mapped
   to `Standing`, and the path of a pull request's page, read by `PagePath`. The board
   switches over `Standing` rather than over a host's words.
-- **`pull_requests` in `--json` holds only what the listings read**, the closed listing
-  included. The pull request `--pr` names is `opened_on`, and the board draws its own read
+- **`pull_requests` in `--json` holds only the open pull requests the listings read**, the
+  set `prs list --json` prints, and `recently_closed` those merged or closed within the
+  window. The pull request `--pr` names is `opened_on`, and the board draws its own read
   only where no listing holds it. Once merged or closed it sits in its own group above the
   others, never under recently closed.
 - **A pull request's detail never holds up its row.** The board reads each GitHub row's

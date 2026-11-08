@@ -12,7 +12,10 @@ import (
 // board left open keeps the same stretch behind it, or a fixed instant.
 type Since struct {
 	text string
+	// span is a span's clock part, and days its calendar part, which steps the calendar so
+	// 1d at 09:00 is 09:00 the day before across a change of offset too.
 	span time.Duration
+	days int
 	at   time.Time
 }
 
@@ -37,6 +40,9 @@ func ParseSince(text string, loc *time.Location) (Since, error) {
 		if err != nil || n > math.MaxInt64/int64(unit) {
 			return Since{}, fmt.Errorf("%s is longer than a span can count; write a day instead", text)
 		}
+		if day := 24 * time.Hour; unit%day == 0 {
+			return Since{text: text, days: int(n) * int(unit/day)}, nil
+		}
 		return Since{text: text, span: time.Duration(n) * unit}, nil
 	}
 	if day, err := time.ParseInLocation(time.DateOnly, text, loc); err == nil {
@@ -51,7 +57,7 @@ func ParseSince(text string, loc *time.Location) (Since, error) {
 // From is the first instant inside the window for a read at now.
 func (s Since) From(now time.Time) time.Time {
 	if s.at.IsZero() {
-		return now.Add(-s.span)
+		return now.AddDate(0, 0, -s.days).Add(-s.span)
 	}
 	return s.at
 }

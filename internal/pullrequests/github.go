@@ -17,9 +17,9 @@ import (
 	"github.com/datapointchris/prs/internal/registry"
 )
 
-// reposPerSearch is how many repos one search names. Each search has its own page of 100,
+// ReposPerSearch is how many repos one search names. Each search has its own page of 100,
 // so a few busy repos fill their own page rather than every repo's.
-const reposPerSearch = 20
+const ReposPerSearch = 20
 
 // githubRow is what both the listing and the one-pull-request read take of a pull
 // request, so a row reads the same from either.
@@ -133,7 +133,7 @@ func githubSearches(scope Scope, which string) []githubSearch {
 	slices.Sort(slugs)
 	slugs = slices.Compact(slugs)
 	var searches []githubSearch
-	for chunk := range slices.Chunk(slugs, reposPerSearch) {
+	for chunk := range slices.Chunk(slugs, ReposPerSearch) {
 		qualifiers := make([]string, len(chunk))
 		for i, slug := range chunk {
 			qualifiers[i] = "repo:" + slug

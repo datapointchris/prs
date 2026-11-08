@@ -51,8 +51,8 @@ type Board struct {
 	// drawnIn the section each was drawn in.
 	shown   map[string]pullrequests.PullRequest
 	drawnIn map[string]section
-	// closedHere is each pull request a key merged or closed, as the key left it, by key.
-	closedHere map[string]pullrequests.PullRequest
+	// closedHere is each pull request a key merged or closed, by key.
+	closedHere map[string]closeMadeHere
 	// diffed is the head commit d last fetched for a pull request, by key, which its merge
 	// pins.
 	diffed map[string]string
@@ -94,7 +94,7 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 		every:      every,
 		shown:      map[string]pullrequests.PullRequest{},
 		drawnIn:    map[string]section{},
-		closedHere: map[string]pullrequests.PullRequest{},
+		closedHere: map[string]closeMadeHere{},
 		diffed:     map[string]string{},
 		documents:  map[string]documentMemo{},
 		details:    pullrequests.NewDetails(),
@@ -109,31 +109,43 @@ func New(repos Repos, every time.Duration, windows []config.WindowAction) (*Boar
 			continue
 		}
 		b.scopes[provider.Name] = scope
-		var source *gotermboard.Source[pullrequests.Listing]
-		source = gotermboard.NewSource(provider.Name, every,
-			func(ctx context.Context) (pullrequests.Listing, string, error) {
-				listing, err := provider.Read(ctx, scope, b.listing(source))
-				if err != nil {
-					return listing, "", err
-				}
-				if b.readDetails {
-					b.details.Prefetch(ctx, provider, listing.PullRequests)
-				}
-				if b.listings != nil {
-					b.listings.keep(provider.Name, listing, time.Now())
-				}
-				return listing, listing.Note(), nil
-			})
-		b.sources = append(b.sources, source)
+		b.sources = append(b.sources, b.listingSource(provider, provider.Name, every,
+			func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error) {
+				return provider.Read(ctx, scope, last)
+			}))
 	}
 	b.actions = b.keyTable(windows)
 	return b, nil
 }
 
+// listingSource reads a provider's listing with read every interval, from its last good
+// one, under name. Each listing that lands has its open rows' details read, once
+// ReadDetails is called, and is kept under name for the next start, once KeepListings is.
+func (b *Board) listingSource(provider pullrequests.Provider, name string, every time.Duration,
+	read func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error),
+) *gotermboard.Source[pullrequests.Listing] {
+	var source *gotermboard.Source[pullrequests.Listing]
+	source = gotermboard.NewSource(name, every, func(ctx context.Context) (pullrequests.Listing, string, error) {
+		listing, err := read(ctx, b.listing(source))
+		if err != nil {
+			return listing, "", err
+		}
+		if b.readDetails {
+			b.details.Prefetch(ctx, provider, slices.DeleteFunc(slices.Clone(listing.PullRequests), func(pr pullrequests.PullRequest) bool {
+				return !readsDetail(pr)
+			}))
+		}
+		if b.listings != nil {
+			b.listings.keep(name, listing, time.Now())
+		}
+		return listing, listing.Note(), nil
+	})
+	return source
+}
+
 // ReadClosed has the board read, every interval, the pull requests merged or closed within
 // since, from each provider whose client can say when one closed, for the recently closed
-// group. prs list leaves it off, because it prints the open pull requests only. Their rows
-// read no detail, because the window holds many and each detail read costs GitHub a point.
+// group. prs list leaves it off, because it prints the open pull requests only.
 func (b *Board) ReadClosed(since pullrequests.Since, every time.Duration) {
 	b.since = &since
 	for _, provider := range pullrequests.Providers {
@@ -141,20 +153,10 @@ func (b *Board) ReadClosed(since pullrequests.Since, every time.Duration) {
 		if !ok || provider.ReadClosed == nil {
 			continue
 		}
-		name := provider.Name + " closed"
-		var source *gotermboard.Source[pullrequests.Listing]
-		source = gotermboard.NewSource(name, every,
-			func(ctx context.Context) (pullrequests.Listing, string, error) {
-				listing, err := provider.ReadClosed(ctx, scope, since.From(time.Now()), b.listing(source))
-				if err != nil {
-					return listing, "", err
-				}
-				if b.listings != nil {
-					b.listings.keep(name, listing, time.Now())
-				}
-				return listing, listing.Note(), nil
-			})
-		b.closedSources = append(b.closedSources, source)
+		b.closedSources = append(b.closedSources, b.listingSource(provider, provider.Name+" closed", every,
+			func(ctx context.Context, last pullrequests.Listing) (pullrequests.Listing, error) {
+				return provider.ReadClosed(ctx, scope, since.From(time.Now()), last)
+			}))
 	}
 }
 
@@ -265,11 +267,19 @@ func (b *Board) reading() bool {
 	})
 }
 
-// Gaps names each read whose newest attempt failed, or read and noted pull requests it
-// left out, with why. A note leaves rows out as a failure does, so both count.
+// Gaps names each read of the open pull requests, or of the one the board opened on, whose
+// newest attempt failed, or that read and noted pull requests it left out, with why. A note
+// leaves rows out as a failure does, so both count.
 func (b *Board) Gaps() []string {
+	var statuses []gotermboard.Status
+	for _, source := range b.sources {
+		statuses = append(statuses, b.statusOf(source))
+	}
+	if b.openedOn != nil {
+		statuses = append(statuses, b.openedOn.source.Status())
+	}
 	var gaps []string
-	for _, status := range b.statuses() {
+	for _, status := range statuses {
 		switch {
 		case status.Fault != "":
 			gaps = append(gaps, status.Name+": "+status.Fault)
@@ -278,6 +288,18 @@ func (b *Board) Gaps() []string {
 		}
 	}
 	return gaps
+}
+
+// ClosedFaults names each read of the recently closed whose newest attempt failed, with why.
+// A full page is not one, because the read sorts the newest first so a page keeps them.
+func (b *Board) ClosedFaults() []string {
+	var faults []string
+	for _, source := range b.closedSources {
+		if status := source.Status(); status.Fault != "" {
+			faults = append(faults, status.Name+": "+status.Fault)
+		}
+	}
+	return faults
 }
 
 // unread says no provider's open pull requests have been read yet, here or in the run that
@@ -386,23 +408,31 @@ func (b *Board) emptyReason() string {
 }
 
 // Snapshot is what --json prints: the rows the board draws, and how each read stands.
-// Registry is empty where the board reads owners whole, and Owners names them, with @me
-// for the token's own account. OpenedOn is the pull request --pr named, which may be
-// merged or closed, and null without one.
+// PullRequests is the open ones, as prs list --json prints them, and RecentlyClosed those
+// merged or closed within --since, newest first, each a row of the same shape. Registry is
+// empty where the board reads owners whole, and Owners names them, with @me for the token's
+// own account. OpenedOn is the pull request --pr named, which may be merged or closed, and
+// null without one.
 type Snapshot struct {
-	View         string               `json:"view"`
-	Registry     string               `json:"registry"`
-	Owners       []string             `json:"owners,omitempty"`
-	PullRequests []Row                `json:"pull_requests"`
-	OpenedOn     *Row                 `json:"opened_on"`
-	Sources      []gotermboard.Status `json:"sources"`
+	View           string               `json:"view"`
+	Registry       string               `json:"registry"`
+	Owners         []string             `json:"owners,omitempty"`
+	PullRequests   []Row                `json:"pull_requests"`
+	RecentlyClosed []Row                `json:"recently_closed"`
+	OpenedOn       *Row                 `json:"opened_on"`
+	Sources        []gotermboard.Status `json:"sources"`
 }
 
 // Snapshot reads what the board holds now.
 func (b *Board) Snapshot(now time.Time) Snapshot {
 	rows := b.Rows(now)
+	at := slices.IndexFunc(rows, func(row Row) bool { return sectionOf(row.PullRequest) == recentlyClosed })
+	if at < 0 {
+		at = len(rows)
+	}
 	return Snapshot{
-		View: View, Registry: b.registry, Owners: b.owners, PullRequests: rows,
+		View: View, Registry: b.registry, Owners: b.owners,
+		PullRequests: rows[:at], RecentlyClosed: slices.Clip(rows[at:]),
 		OpenedOn: b.openedOnRow(rows, now), Sources: b.statuses(),
 	}
 }

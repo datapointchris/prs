@@ -331,7 +331,7 @@ func (b *Board) document(pr pullrequests.PullRequest) gotermboard.Document {
 		if detail := b.detailOf(pr); state != "" && detail != nil && !detail.Held {
 			why := "It is " + string(state)
 			if state == gone {
-				why = "It is gone from the open pull requests"
+				why = "No read lists it any more"
 			}
 			lines = append(lines, gotermboard.Line{gotermboard.C(
 				why+", so its "+detailSectionNames()+" are not read; o opens its page.", dim)}, gotermboard.Line{})
@@ -388,9 +388,9 @@ func (b *Board) detailOf(pr pullrequests.PullRequest) *pullrequests.DetailState 
 	if detail, own := b.openedOnDetail(pr); own && !state.Held {
 		state.Detail, state.Held = detail, true
 	}
-	// A listing claims its rows' reads once it lands, so a row drawn before that is due a read.
-	// Only the open pull requests' listings claim reads, so a row with a state is due none.
-	if !state.Held && state.Fault == "" && b.readDetails && b.stateOf(pr) == "" {
+	// A listing claims its rows' reads once it lands, so a row drawn before that is due a read,
+	// where readsDetail says its detail is read and it is not gone.
+	if !state.Held && state.Fault == "" && b.readDetails && readsDetail(pr) && b.stateOf(pr) != gone {
 		state.Reading = true
 	}
 	return &state

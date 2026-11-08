@@ -10,6 +10,7 @@ import (
 
 	"github.com/datapointchris/prs/internal/board"
 	"github.com/datapointchris/prs/internal/config"
+	"github.com/datapointchris/prs/internal/pullrequests"
 )
 
 func configCommand() *cobra.Command {
@@ -49,13 +50,14 @@ refresh_every_seconds is how often prs tui reads each provider's open pull reque
 while it is open, a whole number of seconds, 1 or more, and %[1]d where the file does not
 say. closed_refresh_every_seconds is the same for the recently closed, and %[2]d where the
 file does not say. Each GitHub read spends points from the token's hourly GraphQL
-allowance, about a point for every 20 repos whichever it reads, so a shorter interval spends them
-faster. gh api rate_limit shows what is left.
+allowance, about a point for every %[3]d repos whichever it reads, so a shorter interval spends
+them faster. gh api rate_limit shows what is left.
 
 Each window action is a key that runs its command in a new tmux window in the pull
 request's checkout. needs are the programs it runs, and a machine missing one is not
 offered the key. {number}, {repo} and {slug} are filled in. Quote a value holding " #",
-which YAML otherwise reads as a comment.`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds())),
+which YAML otherwise reads as a comment.`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds()),
+			pullrequests.ReposPerSearch),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := config.Path()

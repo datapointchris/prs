@@ -259,7 +259,7 @@ func (b *Board) writable(pr pullrequests.PullRequest, verb string) (pullrequests
 	case merged, closed:
 		return pullrequests.Provider{}, fmt.Errorf("%s #%d is %s already, so there is nothing to %s", pr.Slug, pr.Number, state, verb)
 	case gone:
-		return pullrequests.Provider{}, fmt.Errorf("%s #%d is gone from the open pull requests since the last read, so prs will not %s it; o opens its page",
+		return pullrequests.Provider{}, fmt.Errorf("%s #%d is in no listing since the last read, so prs will not %s it; o opens its page",
 			pr.Slug, pr.Number, verb)
 	}
 	if doing := b.busy(pr); doing != "" {

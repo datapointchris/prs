@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -298,7 +299,7 @@ func (s standIn) run(t *testing.T, args ...string) (string, string, int) {
 }
 
 // The snapshot holds what the board draws: the people's open pull requests, then the bots',
-// then those closed within --since, newest first.
+// under pull_requests, and those closed within --since, newest first, under recently_closed.
 func TestTheSnapshotReadsBothProvidersSortsPeopleFirstAndFindsAParentByRepoAndBranch(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
@@ -310,17 +311,21 @@ func TestTheSnapshotReadsBothProvidersSortsPeopleFirstAndFindsAParentByRepoAndBr
 	if err := json.Unmarshal([]byte(out), &snap); err != nil {
 		t.Fatal(err)
 	}
-	var rows struct {
-		PullRequests json.RawMessage `json:"pull_requests"`
-	}
+	var rows map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(out), &rows); err != nil {
 		t.Fatal(err)
 	}
-	if err := listSchema(t).Validate(decoded(t, string(rows.PullRequests))); err != nil {
-		t.Errorf("prs tui --json's pull_requests break list.schema.json: %v", err)
+	for _, key := range []string{"pull_requests", "recently_closed"} {
+		if err := listSchema(t).Validate(decoded(t, string(rows[key]))); err != nil {
+			t.Errorf("prs tui --json's %s break list.schema.json: %v", key, err)
+		}
 	}
 	var got []string
-	for _, row := range snap.PullRequests {
+	for _, row := range slices.Concat(snap.PullRequests, []board.Row{{}}, snap.RecentlyClosed) {
+		if row.Number == 0 {
+			got = append(got, "recently_closed:")
+			continue
+		}
 		stacked := 0
 		if row.StackedOn != nil {
 			stacked = *row.StackedOn
@@ -338,6 +343,7 @@ func TestTheSnapshotReadsBothProvidersSortsPeopleFirstAndFindsAParentByRepoAndBr
 		"acme/widget#12 OPEN add-cache into main bot=false stacked_on=0",
 		"acme/gadget#5 OPEN tidy into add-cache bot=false stacked_on=0",
 		"acme/widget#13 OPEN cache-metrics into add-cache bot=true stacked_on=12",
+		"recently_closed:",
 		"acme/widget#9 MERGED log-misses into main bot=false stacked_on=0",
 		"acme/gadget#8 CLOSED bump-linter into main bot=true stacked_on=0",
 	}
@@ -710,8 +716,9 @@ func editedSearch(t *testing.T, edit func(pr map[string]any) []any) []byte {
 
 // A read lands on the timer and on focus with no key pressed. A pull request a read moves to
 // another group, or drops, stays under the cursor in its group until the cursor leaves it,
-// named merged or gone. A start whose read fails draws the rows the last run on the same
-// repos kept, and names why the read failed.
+// named merged or gone. One closed here goes back to its group once a later read lists it
+// open. A start whose read fails draws the rows the last run on the same repos kept, and
+// names why the read failed.
 func TestTheBoardDrawsTheLastListingOfTheSameReposAtOnceThenRereadsOnItsTimerAndOnFocus(t *testing.T) {
 	t.Parallel()
 	s := newStandIn(t)
@@ -724,6 +731,15 @@ func TestTheBoardDrawsTheLastListingOfTheSameReposAtOnceThenRereadsOnItsTimerAnd
 	// The rows run ledger #4, widget #12 and gadget #5 under the people's header, then widget
 	// #13 under the bots'.
 	term.Press("g", "j", "j")
+	// x closes #12, then someone reopens it on its page, so the next read lists it open. That
+	// read started after the close, so it stands, and #12 returns to the people's group once
+	// the cursor leaves it.
+	term.Press("x", "y", "enter")
+	term.WaitFor("closed acme/widget #12")
+	term.WaitFor("people · 2")
+	term.Press("k")
+	term.WaitFor("people · 3")
+	term.Press("g", "j", "j")
 	s.github.answer(widget12Merged(t))
 	term.WaitForPattern("merged .*Cache the widget lookups")
 	term.WaitFor("people · 3")
@@ -734,7 +750,7 @@ func TestTheBoardDrawsTheLastListingOfTheSameReposAtOnceThenRereadsOnItsTimerAnd
 	term.WaitFor("Expire the widget cache")
 	term.WaitForPattern("gone .*Count cache hits")
 	term.Press("m")
-	term.WaitFor("acme/widget #13 is gone from the open pull requests since the last read, so prs will not merge it")
+	term.WaitFor("acme/widget #13 is in no listing since the last read, so prs will not merge it")
 	term.Press("k")
 	term.WaitGone("Count cache hits")
 	term.Press("q")

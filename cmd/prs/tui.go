@@ -44,8 +44,8 @@ Each row gives where it stands in one word: ready, behind, conflicts, blocked, m
 with checks not passing, draft or unknown while open, and merged or closed after. Then its
 checks and review in words, its age, or how long ago it closed, its diff, its repo and
 number, and its title. f shows its branch and checkout under it. A Bitbucket row reads
-open, because bbkt carries no merge state, and only one merged here reaches recently
-closed, because bbkt carries no time a pull request closed.
+open, and only one merged here reaches recently closed, because prs reads no merge state
+or close time from Bitbucket.
 
 It opens on the rows the last run on the same repos read, kept under $XDG_CACHE_HOME/prs,
 with their age on the first line, and reads each provider behind them. It reads the open
@@ -77,9 +77,11 @@ holds is read again on the same timer. A pull request prs cannot read is refused
 the board draws.
 
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
-so an agent reads what a person reads. Either exits 1 after printing when a provider
-could not be read or left pull requests out. With no terminal and neither flag it
-refuses.`,
+so an agent reads what a person reads. The snapshot holds the open pull requests under
+pull_requests and the recently closed under recently_closed. Either exits 1 after printing
+when a read failed, or when the open pull requests' read left some out. A recently closed
+read past its page keeps the newest, and says so on the first line. With no terminal and
+neither flag it refuses.`,
 		Example: `  prs tui
   prs tui --pr 'acme/widget#12'
   prs tui --pr https://github.com/acme/widget/pull/12
@@ -150,8 +152,15 @@ refuses.`,
 			}
 			// A failed read and a repo with no open pull requests print the same rows, so
 			// the exit status is what tells a script the two apart.
+			var missed []string
 			if gaps := b.Gaps(); len(gaps) > 0 {
-				return fmt.Errorf("could not read every open pull request: %s", strings.Join(gaps, "; "))
+				missed = append(missed, "could not read every open pull request: "+strings.Join(gaps, "; "))
+			}
+			if faults := b.ClosedFaults(); len(faults) > 0 {
+				missed = append(missed, "could not read the recently closed pull requests: "+strings.Join(faults, "; "))
+			}
+			if len(missed) > 0 {
+				return errors.New(strings.Join(missed, "; "))
 			}
 			return nil
 		},
