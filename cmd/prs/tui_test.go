@@ -543,7 +543,14 @@ func TestTheDiffSectionShowsASmallDiffWholeAndNamesALargeOnesSize(t *testing.T) 
 	term.Press("]")
 	term.WaitGone("c.stats.hits.Add(1)")
 	term.WaitFor("HitRate is the share of reads the cache answered")
-	term.Press("esc", "q")
+	term.Press("esc", "m")
+	term.WaitFor("merge acme/widget #13 — Count cache hits? [Y/n]")
+	term.Press("enter")
+	term.WaitFor("gh could not merge #13")
+	if !s.ran(t, "pr", "merge", "13", "--repo", "acme/widget", "--merge", "--match-head-commit", "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678") {
+		t.Error("a merge after reading the Diff section should pin the head that section showed")
+	}
+	term.Press("q")
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
 	}

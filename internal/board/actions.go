@@ -180,6 +180,21 @@ func openDiffview(revisions string) string {
 	return fmt.Sprintf("if exists(':DiffviewOpen') == 2 | execute %s | else | cquit %d | endif", quoted, noDiffview)
 }
 
+// shownHead is the commit the reader last saw the pull request at: the head d fetched, or else
+// the head its Diff section was read at. A merge pinned to it fails once someone pushes past it.
+func (b *Board) shownHead(pr pullrequests.PullRequest) string {
+	if head := b.diffed[pr.Key()]; head != "" {
+		return head
+	}
+	if b.diffs == nil {
+		return ""
+	}
+	if state := b.diffs.Of(pr); state.Held {
+		return state.Diff.Head
+	}
+	return ""
+}
+
 // merge asks first, and enter alone merges. A merge confirmed by reflex lands work that was
 // landing anyway, and the question is there to show which pull request lands. Anything typed
 // but y or yes leaves it, so a stray key still stops it.
@@ -192,7 +207,7 @@ func (b *Board) merge(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd
 		m.Say(err.Error())
 		return nil
 	}
-	argv, inCheckout := provider.Merge(pr, b.diffed[pr.Key()])
+	argv, inCheckout := provider.Merge(pr, b.shownHead(pr))
 	b.ask(m, pr, "merge", true, work{
 		pr:    pr,
 		doing: fmt.Sprintf("merging %s #%d", pr.Slug, pr.Number),
