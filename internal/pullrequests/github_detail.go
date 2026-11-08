@@ -23,12 +23,12 @@ query($owner: String!, $name: String!, $number: Int!) {
       }
       submittedReviews: reviews(last: 100) {
         totalCount
-        nodes { author { login } state body submittedAt url commit { oid } }
+        nodes { author { __typename login } authorAssociation state body submittedAt url commit { oid } }
       }
-      comments(last: 50) { totalCount nodes { author { login } body createdAt url } }
+      comments(last: 50) { totalCount nodes { author { __typename login } authorAssociation body createdAt url } }
       reviewThreads(last: 50) {
         totalCount
-        nodes { path line diffSide isResolved isOutdated comments(first: 30) { totalCount nodes { author { login } body createdAt url } } }
+        nodes { path line diffSide isResolved isOutdated comments(first: 30) { totalCount nodes { author { __typename login } authorAssociation body createdAt url } } }
       }
       files(first: 20) { totalCount nodes { path additions deletions changeType } }
       history: commits(last: 100) {
@@ -47,6 +47,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 }` + githubRow
 
 type githubActor struct {
+	Type  string `json:"__typename"`
 	Login string `json:"login"`
 }
 
@@ -57,13 +58,22 @@ func (a *githubActor) login() string {
 	return a.Login
 }
 
+// kind is the actor's type, such as User or Bot, and empty for a deleted account.
+func (a *githubActor) kind() string {
+	if a == nil {
+		return ""
+	}
+	return a.Type
+}
+
 type githubComments struct {
 	TotalCount int `json:"totalCount"`
 	Nodes      []struct {
-		Author    *githubActor `json:"author"`
-		Body      string       `json:"body"`
-		CreatedAt time.Time    `json:"createdAt"`
-		URL       string       `json:"url"`
+		Author      *githubActor `json:"author"`
+		Association string       `json:"authorAssociation"`
+		Body        string       `json:"body"`
+		CreatedAt   time.Time    `json:"createdAt"`
+		URL         string       `json:"url"`
 	} `json:"nodes"`
 }
 
@@ -81,6 +91,7 @@ type githubDetailNode struct {
 		TotalCount int `json:"totalCount"`
 		Nodes      []struct {
 			Author      *githubActor `json:"author"`
+			Association string       `json:"authorAssociation"`
 			State       string       `json:"state"`
 			Body        string       `json:"body"`
 			SubmittedAt *time.Time   `json:"submittedAt"`
@@ -216,7 +227,10 @@ func githubDetail(node githubDetailNode) Detail {
 		}
 	}
 	for _, review := range node.SubmittedReviews.Nodes {
-		r := Review{Author: review.Author.login(), State: review.State, Body: review.Body, SubmittedAt: review.SubmittedAt, URL: review.URL}
+		r := Review{
+			Author: review.Author.login(), AuthorType: review.Author.kind(), AuthorAssociation: review.Association,
+			State: review.State, Body: review.Body, SubmittedAt: review.SubmittedAt, URL: review.URL,
+		}
 		if review.Commit != nil {
 			r.CommitOID = review.Commit.OID
 		}
@@ -257,7 +271,10 @@ func githubDetail(node githubDetailNode) Detail {
 func githubCommentList(connection githubComments) []Comment {
 	comments := make([]Comment, 0, len(connection.Nodes))
 	for _, node := range connection.Nodes {
-		comments = append(comments, Comment{Author: node.Author.login(), Body: node.Body, CreatedAt: node.CreatedAt, URL: node.URL})
+		comments = append(comments, Comment{
+			Author: node.Author.login(), AuthorType: node.Author.kind(), AuthorAssociation: node.Association,
+			Body: node.Body, CreatedAt: node.CreatedAt, URL: node.URL,
+		})
 	}
 	return comments
 }

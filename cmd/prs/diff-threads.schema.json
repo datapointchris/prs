@@ -33,9 +33,11 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["author", "body", "created_at", "url"],
+              "required": ["author", "author_type", "author_association", "body", "created_at", "url"],
               "properties": {
                 "author": {"description": "The login that wrote it, and empty for a deleted account.", "type": "string"},
+                "author_type": {"description": "The author's kind, such as User or Bot, in the provider's words, and empty where it does not say.", "type": "string"},
+                "author_association": {"description": "What the author is to the repo, such as OWNER, COLLABORATOR or NONE, in the provider's words, and empty where it does not say.", "type": "string"},
                 "body": {"description": "The comment as markdown.", "type": "string"},
                 "created_at": {"type": "string", "format": "date-time"},
                 "url": {"type": "string"}
