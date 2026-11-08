@@ -50,8 +50,8 @@ With no registry anywhere and no owners, prs reads the repos your GitHub login o
 
 refresh_every_seconds is how often prs tui reads each provider's open pull requests again
 while it is open, a whole number of seconds, 1 or more, and %[1]d where the file does not
-say. closed_refresh_every_seconds is the same for the recently closed, and %[2]d where the
-file does not say. Each GitHub read spends points from the token's hourly GraphQL
+say. closed_refresh_every_seconds is the same for the recently closed and for what changed in
+the Summary tab's history, and %[2]d where the file does not say. Each GitHub read spends points from the token's hourly GraphQL
 allowance, about a point for every %[3]d repos whichever it reads, so a shorter interval spends
 them faster. gh api rate_limit shows what is left.
 
@@ -111,7 +111,7 @@ round finishes after the key opened it.`, int(config.DefaultRefreshEvery.Seconds
 				_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("registry"), registry, cfg.ReposFrom)
 			}
 			_, _ = fmt.Fprintf(out, "%s  open every %d seconds  from %s\n", pal.Bold("refresh "), int(cfg.RefreshEvery.Seconds()), cfg.RefreshFrom)
-			_, _ = fmt.Fprintf(out, "%s  closed every %d seconds  from %s\n", pal.Bold("        "), int(cfg.ClosedRefreshEvery.Seconds()), cfg.ClosedRefreshFrom)
+			_, _ = fmt.Fprintf(out, "%s  closed and the summary's history every %d seconds  from %s\n", pal.Bold("        "), int(cfg.ClosedRefreshEvery.Seconds()), cfg.ClosedRefreshFrom)
 			_, _ = fmt.Fprintf(out, "%s  shown whole up to %d changed lines  from %s\n", pal.Bold("diff    "), cfg.DiffSectionMaxLines, cfg.DiffSectionFrom)
 			kept, err := config.ListingCacheDir()
 			if err != nil {

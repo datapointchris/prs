@@ -131,8 +131,8 @@ It opens on the rows the last run on the same repos read, kept under $XDG_CACHE_
 with their age on the first line, and reads each provider behind them. It reads the open
 pull requests again every refresh_every_seconds in the config, %d by default, whenever its
 terminal gains focus, and whenever a program a key handed the terminal to exits. It reads
-the recently closed every closed_refresh_every_seconds, %d by default, because that read
-costs GitHub as much again. A spinner follows the age while a read runs, and a read that
+the recently closed, and the Summary tab what changed in its history, every
+closed_refresh_every_seconds, %d by default, because each read costs GitHub as much again. A spinner follows the age while a read runs, and a read that
 fails keeps the rows and names why on that line. A refresh leaves the cursor on its pull
 request, in the group it was in, and one no read lists any more stays under the cursor,
 marked gone, until the cursor moves off it.`,

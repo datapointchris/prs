@@ -64,7 +64,7 @@
       }
     },
     "time_to_merge": {
-      "description": "The merges within the window by how long each took from opening: under 10 minutes, an hour, 4 hours, a day, 3 days, a week, and longer.",
+      "description": "The merges within the window by how long each took from opening, in buckets shortest first, each naming its own edges.",
       "type": "array",
       "items": {
         "type": "object",
@@ -78,7 +78,7 @@
         }
       }
     },
-    "merged_per": {"description": "The span each of merged_over counts: an hour for a window of two days or less, else a day.", "enum": ["hour", "day"]},
+    "merged_per": {"description": "The span each of merged_over counts: an hour for a short window, else a day.", "enum": ["hour", "day"]},
     "merged_over": {
       "description": "The merges in each hour or day, from the one holding since to the one holding until. A day starts at local midnight, so the first and last are partly outside the window and count only what falls inside it.",
       "type": "array",
@@ -93,7 +93,7 @@
       }
     },
     "open_over": {
-      "description": "The open pull requests at about 120 instants from since, a whole number of hours apart, then at until.",
+      "description": "The open pull requests at evenly spaced instants from since, a whole number of hours apart, then at until.",
       "type": "array",
       "items": {
         "type": "object",

@@ -51,7 +51,8 @@ type Config struct {
 	RefreshEvery time.Duration
 	RefreshFrom  string
 	// ClosedRefreshEvery is how often the board reads the recently closed pull requests
-	// again, and ClosedRefreshFrom names the layer that set it.
+	// again, and the Summary tab what changed in the history it counts from.
+	// ClosedRefreshFrom names the layer that set it.
 	ClosedRefreshEvery time.Duration
 	ClosedRefreshFrom  string
 	// DiffSectionMaxLines is the most lines a pull request may change for its document's Diff
@@ -68,8 +69,9 @@ type Config struct {
 const DefaultRefreshEvery = time.Minute
 
 // DefaultClosedRefreshEvery is how often the board reads the recently closed pull requests,
-// where the file does not say. That read costs GitHub as much as the open one, and what it
-// finds changes only when a pull request closes, which the open read already shows.
+// and the Summary tab its history, where the file does not say. Each read costs GitHub about
+// as much as the open one, and what it finds changes only when a pull request closes, which
+// the open read already shows.
 const DefaultClosedRefreshEvery = 5 * time.Minute
 
 // DefaultDiffSectionMaxLines is DiffSectionMaxLines where the file does not say: about three

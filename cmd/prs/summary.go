@@ -34,9 +34,9 @@ most first. It prints the numbers the Summary tab of prs tui shows.
 
 The merged and closed pull requests are GitHub's, kept in a SQLite file for each set of
 repos under $XDG_CACHE_HOME/prs/closed-pull-requests. The first run reads every pull request
-closed within the window, a few search pages for a month. Each run after reads those
-updated since the last, which is a page or so, and a window reaching further back than the
-file reads back to its start. Bitbucket's pull requests count among the open only, because
+updated within the window, which holds every one merged or closed within it, and one
+reopened reads open again. Each run after reads those updated since the last, and a window
+reaching further back than the file reads back to its start. Bitbucket's pull requests count among the open only, because
 bbkt says no time a pull request closed.
 
 --json prints the numbers as one JSON object, with the counts per hour or per day, the open

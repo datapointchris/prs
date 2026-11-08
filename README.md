@@ -99,7 +99,7 @@ field it filters on drops a repo silently, and every list it prints still looks 
   default. It takes a span such as `12h`, `2d` or `1w`, counted back from each read, or a
   day or an RFC 3339 instant. A second GitHub request reads the closed ones. It costs as
   much as the open one, so it runs on a timer of its own, `closed_refresh_every_seconds` in
-  the config. Its rows read no checks, files or comments, because each would cost a request
+  the config, which also paces the Summary tab's read of what changed. Its rows read no checks, files or comments, because each would cost a request
   of its own. prs reads no close time from Bitbucket, so a Bitbucket pull request reaches
   `recently closed` only when `m` here merged it.
 - **Each GitHub row's checks, files and conversation are read after the list lands**,
@@ -320,8 +320,8 @@ prs tui --pr https://bitbucket.example.com/projects/FIN/repos/ledger/pull-reques
 ## The Summary tab
 
 `tab` moves from the board to the Summary tab, and `prs tui --view summary` opens on it. It
-counts the pull requests over a window, 30 days at first, and `w` and `W` step it through
-1d, 7d, 2w, 30d and 90d.
+counts the pull requests over a window, and `w` and `W` step it shorter and longer. The
+line at the top lists the windows and lights the one counted.
 
 - **The counts split each number into all, those a person opened and those an app
   opened**: the pull requests open now, those opened, merged and closed unmerged within the
@@ -330,13 +330,14 @@ counts the pull requests over a window, 30 days at first, and `w` and `W` step i
   the most first, and the side panel says what the row under the cursor counts.
 - **Three charts sit above the counts**: the merges per day as columns, per hour for a
   window of two days or less, the open pull requests across the window as a sparkline,
-  and the merges by how long each took, in buckets from under 10 minutes to over a week.
+  and the merges by how long each took, in buckets from minutes to weeks.
   An app's merges draw in their own color, under a person's.
 - **The merged and closed pull requests are kept in SQLite** under
   `$XDG_CACHE_HOME/prs/closed-pull-requests/`, a file for each set of repos, so the tab
   opens on what the last run kept. The first read of a window reads every pull request
-  closed within it, a few search pages for a month. Each read after asks only for those
-  updated since the last, every `closed_refresh_every_seconds`. A window reaching past
+  updated within it, which holds every one merged or closed within it, because GitHub's
+  `closed:` search leaves some out. Each read after asks only for those updated since the
+  last, every `closed_refresh_every_seconds`, and a reopened one reads open again. A window reaching past
   what the file holds reads back to its start, and the line at the top says so until it
   lands. A search GitHub caps at 1,000 results is split in halves of its stretch until
   each fits.

@@ -27,10 +27,12 @@ read, and `since.go` what `--since` takes.
 is the shape of the threads file a diff in nvim is handed, held the same way, and
 `cmd/prs/summary.schema.json` the shape of `prs summary --json`.
 
-A tab is a `gotermboard.Tab` in the list `prs tui` hands `gotermboard.NewTabs` in
-`cmd/prs/tui.go`, and a name `--view` takes. The pull requests' board is `board.View` and the
-Summary tab `board.SummaryView`. A tab reading what the board reads lists the board's
-sources in its own `Sources`, as the Summary tab does, so a read is not made twice.
+A tab is an entry in `tuiTabs` in `cmd/prs/tui.go`: the name `--view` takes, the flags its
+`--once` and `--json` read, and how it opens on the board into what gotermboard draws,
+what `--json` prints and why either exits 1. `--view`, its help and `gotermboard.NewTabs`
+read that one list. The pull requests' board is `board.View` and the Summary tab
+`board.SummaryView`. A tab reading what the board reads lists the board's sources in its
+own `Sources`, as the Summary tab does, so a read is not made twice.
 
 ## Constraints that must not regress
 
@@ -71,7 +73,8 @@ sources in its own `Sources`, as the Summary tab does, so a read is not made twi
   listing read that started after the key holds the pull request, because that read is
   the evidence the change took.
 - **The recently closed read runs on its own timer**, `closed_refresh_every_seconds`,
-  because it costs GitHub as much as the open one. Focus and a handover reread only the
+  because it costs GitHub as much as the open one. The Summary tab's history read shares
+  it. Focus and a handover reread only the
   open listings. Its rows read no detail, because each detail read costs a point and the
   window holds as many rows as `--since` reaches. `readsDetail` decides which rows read
   one, for the prefetch and the document alike.
@@ -183,17 +186,24 @@ sources in its own `Sources`, as the Summary tab does, so a read is not made twi
   in the checkout a merged branch diffs as nothing against its base. A diff the listing's
   counts put past `diff_section_max_lines` is never read, and a failed read waits a minute,
   doubling to half an hour, before it is read again for the same head.
+- **A closed pull request is searched for by `updated:`, never `closed:`.** GitHub's
+  `closed:` leaves out some pull requests that closed within its range, and a pull request
+  is never last updated before it closed. The history reads every state, so a reopened
+  one's newer open record stands over its closed row, and the recently closed read drops
+  what closed before `--since`.
 - **The closed history's coverage moves only when every search of a read answered.** The
-  store's coverage claims every pull request closed since its start, so `Keep` writes the
+  store's coverage claims every pull request updated since its start, so `Keep` writes the
   rows and the coverage in one transaction, and a read with one failed search keeps
   nothing. After the first read of a window, a read asks only for what was updated since
-  the last, and one reaching past the coverage's start reads back to it.
+  the last, and one reaching past the coverage's start reads back to it. The coverage only
+  widens, because a board and a `prs summary` can sync one file at once.
 - **A history search past GitHub's 1,000-result cap splits its stretch in halves**, as
   often as it takes, because the search returns no more than that however many pages
   are read. A pull request on a split's middle instant is read by both halves, and the
   store keeps one row of it.
-- **The closed history is a cache.** A file of another schema version is emptied and read
-  again rather than migrated, and one per set of repos, so a registry edit starts a new one.
+- **The closed history is a cache.** Its version is a digest of its schema, so a file of
+  another shape is emptied and read again rather than migrated. There is one per set of
+  repos, named by `Scope.Names`, so a registry edit starts a new one.
 - **No test reads a real account or starts a real program a key runs.** `cmd/prs/tui_test.go`
   puts a stand-in on `PATH` for every program a read or a key in the test runs, and its
   testdata answers in each provider's published shape. GitHub's stand-in is an HTTP server
