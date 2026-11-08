@@ -40,14 +40,58 @@ const (
 	stale = 7
 )
 
-// The state in words, because a legend made the reader carry a color from the foot of the
-// screen back up to a glyph.
-var (
-	checkWords  = map[string]string{"SUCCESS": "passing", "FAILURE": "failing", "ERROR": "failing", "": "not run"}
-	checkCodes  = map[string]string{"SUCCESS": gotermboard.Green, "FAILURE": gotermboard.Red, "ERROR": gotermboard.Red, "": dim}
-	reviewWords = map[string]string{"APPROVED": "approved", "CHANGES_REQUESTED": "changes", "REVIEW_REQUIRED": "required", "": "none"}
-	reviewCodes = map[string]string{"APPROVED": gotermboard.Green, "CHANGES_REQUESTED": gotermboard.Red, "REVIEW_REQUIRED": gotermboard.Cyan, "": dim}
-)
+// meaning is what a GitHub state says on the board. A state is a word, because a legend
+// made the reader carry a color from the foot of the screen back up to a glyph. Each state
+// the board gives a meaning has one entry, which a row's cell and the description's
+// detail both read.
+type meaning struct {
+	// word is the row's, after "checks" or "review". The description writes the state itself.
+	word string
+	code string
+	// passed is a check that needs nothing from anyone, which the description leaves out.
+	passed bool
+}
+
+// checkMeanings covers a rollup on a row and one check run or commit status in the
+// description.
+var checkMeanings = map[string]meaning{
+	"SUCCESS":   {word: "passing", code: gotermboard.Green, passed: true},
+	"NEUTRAL":   {word: "neutral", code: gotermboard.Green, passed: true},
+	"SKIPPED":   {word: "skipped", code: dim, passed: true},
+	"FAILURE":   {word: "failing", code: gotermboard.Red},
+	"ERROR":     {word: "failing", code: gotermboard.Red},
+	"TIMED_OUT": {word: "timed out", code: gotermboard.Red},
+	"":          {word: "not run", code: dim},
+}
+
+// reviewMeanings covers a decision on a row and one submitted review in the description.
+var reviewMeanings = map[string]meaning{
+	"APPROVED":          {word: "approved", code: gotermboard.Green},
+	"CHANGES_REQUESTED": {word: "changes", code: gotermboard.Red},
+	"REVIEW_REQUIRED":   {word: "required", code: gotermboard.Cyan},
+	"":                  {word: "none", code: dim},
+}
+
+// checkMeaning is a check state's entry. One not there is yellow, because GitHub adds
+// states and a new one is in flight rather than absent.
+func checkMeaning(state string) meaning {
+	if m, known := checkMeanings[state]; known {
+		return m
+	}
+	return meaning{word: words(state), code: gotermboard.Yellow}
+}
+
+// reviewMeaning is a review state's entry. One not there, such as a review that only
+// commented, is cyan.
+func reviewMeaning(state string) meaning {
+	if m, known := reviewMeanings[state]; known {
+		return m
+	}
+	return meaning{word: words(state), code: gotermboard.Cyan}
+}
+
+// words is an enum as words, CHANGES_REQUESTED as "changes requested".
+func words(enum string) string { return strings.ToLower(strings.ReplaceAll(enum, "_", " ")) }
 
 // columns carry the state, the age and the sizes, then the repo and the number, then the
 // title wrapping under itself. The three diff counts each right-align in a column of their
@@ -117,35 +161,20 @@ const (
 // settledCodes color each settled state as GitHub does.
 var settledCodes = map[settledState]string{merged: gotermboard.Magenta, closed: gotermboard.Red}
 
-// checksCell is the CI state. A rollup state this does not know is yellow rather than
-// dim, because GitHub adds states and a new one is in flight rather than absent.
+// checksCell is the CI state.
 func checksCell(pr pullrequests.PullRequest) gotermboard.Cell {
-	word, known := checkWords[pr.Checks]
-	if !known {
-		word = strings.ToLower(pr.Checks)
-	}
-	code, known := checkCodes[pr.Checks]
-	if !known {
-		code = gotermboard.Yellow
-	}
-	return gotermboard.C(checksGlyph+"  checks "+word, code)
+	s := checkMeaning(pr.Checks)
+	return gotermboard.C(checksGlyph+"  checks "+s.word, s.code)
 }
 
 // reviewCell is the provider's decision, which gates the merge, and otherwise how many
 // reviews were posted without one.
 func reviewCell(pr pullrequests.PullRequest) gotermboard.Cell {
 	if pr.Review == "" && pr.Reviews > 0 {
-		return gotermboard.C(fmt.Sprintf("%s  review %d posted", reviewGlyph, pr.Reviews), reviewCodes["REVIEW_REQUIRED"])
+		return gotermboard.C(fmt.Sprintf("%s  review %d posted", reviewGlyph, pr.Reviews), reviewMeaning("REVIEW_REQUIRED").code)
 	}
-	word, known := reviewWords[pr.Review]
-	if !known {
-		word = strings.ToLower(pr.Review)
-	}
-	code, known := reviewCodes[pr.Review]
-	if !known {
-		code = dim
-	}
-	return gotermboard.C(reviewGlyph+"  review "+word, code)
+	s := reviewMeaning(pr.Review)
+	return gotermboard.C(reviewGlyph+"  review "+s.word, s.code)
 }
 
 func ageCell(pr pullrequests.PullRequest, now time.Time) gotermboard.Cell {
@@ -244,8 +273,10 @@ func (b *Board) description(pr pullrequests.PullRequest, titled bool) gotermboar
 			{},
 		}...)
 		if strings.TrimSpace(pr.Body) == "" {
-			return append(lines, gotermboard.Line{gotermboard.C("No description.", dim)})
+			lines = append(lines, gotermboard.Line{gotermboard.C("No description.", dim)})
+		} else {
+			lines = append(lines, b.renderer.Lines(pr.Body, min(width, gotermboard.ReadingWidth))...)
 		}
-		return append(lines, b.renderer.Lines(pr.Body, min(width, gotermboard.ReadingWidth))...)
+		return append(lines, b.detailLines(pr)...)
 	}
 }

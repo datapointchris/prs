@@ -1,5 +1,5 @@
-// Package config reads prs's config file, which names the registry of repos and the
-// keys a person adds to the board.
+// Package config reads prs's config file, which names the registry of repos or the owners
+// read in its place, and the keys a person adds to the board.
 package config
 
 import (
@@ -23,11 +23,13 @@ import (
 // RegistryVariable names the registry for one shell, ahead of the config file.
 const RegistryVariable = "PRS_REPOS_REGISTRY"
 
-// Where the registry's path came from, in the order they are asked.
+// Which layer chose the repos prs reads, in the order they are asked.
 const (
 	FromVariable = RegistryVariable
 	FromFile     = "repos_registry in the config file"
+	FromOwners   = "owners in the config file"
 	FromDefault  = "the default"
+	FromViewer   = "no registry at the default, so your own repos on GitHub"
 )
 
 // Config is what the environment and the file say, with each path expanded.
@@ -36,9 +38,12 @@ type Config struct {
 	File string
 	// Exists says the file was there to read.
 	Exists bool
-	// Registry is the repo registry's path, and RegistryFrom the layer that named it.
-	Registry     string
-	RegistryFrom string
+	// Registry is the repo registry's path. Where it is empty, prs reads Owners whole, and
+	// with no Owners either, the repos the GitHub token's own account holds. ReposFrom is
+	// the layer that chose.
+	Registry  string
+	Owners    []string
+	ReposFrom string
 	// WindowActions are the keys the file adds, each opening a tmux window on a pull request.
 	WindowActions []WindowAction
 }
@@ -63,6 +68,7 @@ type WindowAction struct {
 // file is the document as written.
 type file struct {
 	Registry      string         `yaml:"repos_registry"`
+	Owners        []string       `yaml:"owners"`
 	WindowActions []WindowAction `yaml:"window_actions"`
 }
 
@@ -155,7 +161,7 @@ func Load() (Config, error) {
 			return cfg, fmt.Errorf("reading %s: %w", path, err)
 		}
 	}
-	if cfg.Registry, cfg.RegistryFrom, err = registryPath(doc.Registry); err != nil {
+	if cfg.Registry, cfg.Owners, cfg.ReposFrom, err = repos(doc); err != nil {
 		return cfg, fmt.Errorf("%s: %w", path, err)
 	}
 	for i, action := range doc.WindowActions {
@@ -170,25 +176,51 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// registryPath is the registry the variable names, else the file's repos_registry, else
-// the default, and which of them it was.
-func registryPath(fromFile string) (string, string, error) {
+// ownerName is what GitHub allows in a user or organization's login.
+var ownerName = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+
+// repos is the registry the variable names, else the file's repos_registry, else the
+// file's owners, else the registry at the default path, else nothing, which reads the
+// token's own account. It says which of them it was. A file naming both a registry and
+// owners is refused rather than one silently winning.
+func repos(doc file) (string, []string, string, error) {
 	if named := os.Getenv(RegistryVariable); named != "" {
 		path, err := expand(named)
 		if err != nil {
-			return "", "", fmt.Errorf("%s: %w", RegistryVariable, err)
+			return "", nil, "", fmt.Errorf("%s: %w", RegistryVariable, err)
 		}
-		return path, FromVariable, nil
+		return path, nil, FromVariable, nil
 	}
-	if fromFile != "" {
-		path, err := expand(fromFile)
+	if doc.Registry != "" && len(doc.Owners) > 0 {
+		return "", nil, "", errors.New("repos_registry and owners each say which repos to read, so name one of them")
+	}
+	if doc.Registry != "" {
+		path, err := expand(doc.Registry)
 		if err != nil {
-			return "", "", fmt.Errorf("repos_registry: %w", err)
+			return "", nil, "", fmt.Errorf("repos_registry: %w", err)
 		}
-		return path, FromFile, nil
+		return path, nil, FromFile, nil
+	}
+	if len(doc.Owners) > 0 {
+		for _, owner := range doc.Owners {
+			if !ownerName.MatchString(owner) {
+				return "", nil, "", fmt.Errorf("owners: %q is not a GitHub user or organization", owner)
+			}
+		}
+		return "", doc.Owners, FromOwners, nil
 	}
 	path, err := DefaultRegistry()
-	return path, FromDefault, err
+	if err != nil {
+		return "", nil, "", err
+	}
+	switch _, err := os.Stat(path); {
+	case err == nil:
+		return path, nil, FromDefault, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil, FromViewer, nil
+	default:
+		return "", nil, "", fmt.Errorf("reading the registry at the default %s: %w", path, err)
+	}
 }
 
 // expand turns a ~-rooted path absolute, and refuses one that is neither, because a

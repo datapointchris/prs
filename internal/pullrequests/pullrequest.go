@@ -1,8 +1,8 @@
 // Package pullrequests reads the open pull requests on the repos a registry names, from
-// each provider that hosts one, through the provider's own command-line client.
+// each provider that hosts one.
 //
-// gh and bbkt are run rather than replaced with an HTTP client, because they hold the
-// credentials.
+// GitHub is read in-process through go-gh, with the token gh holds or GH_TOKEN, so prs
+// keeps no credentials of its own. Bitbucket is read through bbkt, which holds its own.
 package pullrequests
 
 import (
@@ -19,7 +19,8 @@ import (
 	"github.com/datapointchris/prs/internal/registry"
 )
 
-// PullRequest is one open pull request, in the fields `prs tui --json` prints.
+// PullRequest is one pull request, in the fields `prs list --json` prints, in the order it
+// prints them. cmd/prs/list.schema.json is that shape.
 type PullRequest struct {
 	// Provider says who hosts it. Every action but the local diff dispatches on it.
 	Provider string `json:"provider"`
@@ -54,10 +55,26 @@ type PullRequest struct {
 	// AgeDays is how long it has been open, and Path where its repo is checked out here.
 	AgeDays int    `json:"age_days"`
 	Path    string `json:"path"`
+	// State is OPEN, MERGED or CLOSED on GitHub, and bbkt's word on Bitbucket.
+	State string `json:"state"`
+	// The times are null until they happen, and UpdatedAt where the listing omits it.
+	MergedAt  *time.Time `json:"merged_at"`
+	ClosedAt  *time.Time `json:"closed_at"`
+	UpdatedAt *time.Time `json:"updated_at"`
+	// Mergeable and MergeStateStatus are GitHub's enums, which read UNKNOWN until GitHub has
+	// computed them. They, InMergeQueue and HeadOID are null where the listing does not
+	// carry them, as bbkt's does not.
+	Mergeable        *string `json:"mergeable"`
+	MergeStateStatus *string `json:"merge_state_status"`
+	InMergeQueue     *bool   `json:"in_merge_queue"`
+	HeadOID          *string `json:"head_oid"`
 }
 
-// Key names a pull request across reads, when its position and every field can change.
-func (pr PullRequest) Key() string { return pr.Slug + "#" + strconv.Itoa(pr.Number) }
+// Key names a pull request across reads, when its position and every field can change. It
+// carries the provider, because a GitHub repo and a Bitbucket one can share owner/name.
+func (pr PullRequest) Key() string {
+	return pr.Provider + ":" + pr.Slug + "#" + strconv.Itoa(pr.Number)
+}
 
 // Listing is what one provider's read found: its pull requests, and what it could not
 // cover while still reading.
@@ -68,6 +85,20 @@ type Listing struct {
 
 // Note is the listing's notes as one line.
 func (l Listing) Note() string { return strings.Join(l.Notes, "; ") }
+
+// Scope is what one provider's read covers: the registry's repos it hosts, each asked for
+// by name, or with no registry the whole of some owners.
+type Scope struct {
+	Repos []registry.Repo
+	// Owners are GitHub owners searched whole. ViewerOwner stands for whoever the token is.
+	Owners []string
+}
+
+// ViewerOwner is the owner GitHub's search reads as the token's own account.
+const ViewerOwner = "@me"
+
+// Empty says the scope names nothing to read.
+func (s Scope) Empty() bool { return len(s.Repos) == 0 && len(s.Owners) == 0 }
 
 // readTimeout bounds one client call, so a hung network never holds a read forever.
 const readTimeout = 2 * time.Minute

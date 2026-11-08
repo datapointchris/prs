@@ -36,11 +36,17 @@ exists. The file is YAML:
 
 repos_registry names the repo registry, a JSON file of repos, each with a name, an owner,
 a path, a status and optionally a provider. PRS_REPOS_REGISTRY names it ahead of the
-file, and with neither prs reads $XDG_DATA_HOME/prs/repos.json. Each window action is a
-key that runs its
-command in a new tmux window in the pull request's checkout. needs are the programs it
-runs, and a machine missing one is not offered the key. {number}, {repo} and {slug} are
-filled in. Quote a value holding " #", which YAML otherwise reads as a comment.`,
+file, and with neither prs reads $XDG_DATA_HOME/prs/repos.json. In place of a registry,
+owners lists GitHub users and organizations whose every repo is read:
+
+  owners: [acme, octo]
+
+With no registry anywhere and no owners, prs reads the repos your GitHub login owns.
+
+Each window action is a key that runs its command in a new tmux window in the pull
+request's checkout. needs are the programs it runs, and a machine missing one is not
+offered the key. {number}, {repo} and {slug} are filled in. Quote a value holding " #",
+which YAML otherwise reads as a comment.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := config.Path()
@@ -66,12 +72,24 @@ filled in. Quote a value holding " #", which YAML otherwise reads as a comment.`
 			if !cfg.Exists {
 				file += pal.Paint(gotermstyle.CodeYellow, "  not there")
 			}
-			registry := cfg.Registry
-			if _, err := os.Stat(registry); err != nil {
-				registry += pal.Paint(gotermstyle.CodeRed, "  not there")
-			}
 			_, _ = fmt.Fprintf(out, "%s  %s\n", pal.Bold("config  "), file)
-			_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("registry"), registry, cfg.RegistryFrom)
+			switch cfg.ReposFrom {
+			case config.FromOwners:
+				_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("owners  "), strings.Join(cfg.Owners, ", "), cfg.ReposFrom)
+			case config.FromViewer:
+				where, err := config.DefaultRegistry()
+				if err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintf(out, "%s  your own on GitHub, because no registry is at %s and the config names no owners\n",
+					pal.Bold("repos   "), where)
+			default:
+				registry := cfg.Registry
+				if _, err := os.Stat(registry); err != nil {
+					registry += pal.Paint(gotermstyle.CodeRed, "  not there")
+				}
+				_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("registry"), registry, cfg.ReposFrom)
+			}
 			for _, action := range cfg.WindowActions {
 				state := pal.Paint(gotermstyle.CodeGreen, "offered")
 				if err := board.Refused(action); err != nil {

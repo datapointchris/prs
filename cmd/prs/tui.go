@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/datapointchris/prs/internal/board"
 	"github.com/datapointchris/prs/internal/config"
+	"github.com/datapointchris/prs/internal/pullrequests"
 	"github.com/datapointchris/prs/internal/registry"
 )
 
@@ -35,8 +35,8 @@ func tuiCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "Open the board of every open pull request",
-		Long: `The board lists every open pull request on the repos the registry names, oldest
-first, and reads each provider again while it is open. Each row gives its checks and
+		Long: `The board lists every open pull request on the repos prs reads, which prs config
+show names, oldest first, and reads each provider again while it is open. Each row gives its checks and
 review in words, its age, its diff, its repo and number, and its title. f shows its
 branch and checkout under it.
 
@@ -50,7 +50,8 @@ backs out one level, and q quits.
 
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
 so an agent reads what a person reads. Either exits 1 after printing when a provider
-could not be read. With no terminal and neither flag it refuses.`,
+could not be read or left pull requests out. With no terminal and neither flag it
+refuses.`,
 		Example: `  prs tui
   COLUMNS=160 LINES=50 prs tui --once > frame.txt
   prs tui --json | jq '.pull_requests[] | {slug, number, checks}'`,
@@ -72,6 +73,7 @@ could not be read. With no terminal and neither flag it refuses.`,
 			}
 			pal := gotermstyle.PaletteFor(os.Stdout)
 			if !printing {
+				b.ReadDetails()
 				tabs, err := gotermboard.NewTabs([]gotermboard.Tab{{Name: board.View, Board: b}}, pal, view)
 				if err != nil {
 					return err
@@ -94,8 +96,8 @@ could not be read. With no terminal and neither flag it refuses.`,
 			}
 			// A failed read and a repo with no open pull requests print the same rows, so
 			// the exit status is what tells a script the two apart.
-			if faults := b.Faults(); len(faults) > 0 {
-				return fmt.Errorf("could not read %s", strings.Join(faults, "; "))
+			if gaps := b.Gaps(); len(gaps) > 0 {
+				return fmt.Errorf("could not read every open pull request: %s", strings.Join(gaps, "; "))
 			}
 			return nil
 		},
@@ -106,21 +108,25 @@ could not be read. With no terminal and neither flag it refuses.`,
 	return cmd
 }
 
-// loadBoard reads the config and the registry it resolves to.
+// loadBoard reads the config and the repos it chooses: the registry's, the owners', or
+// with neither, the token's own account's.
 func loadBoard() (*board.Board, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(cfg.Registry); errors.Is(err, fs.ErrNotExist) && cfg.RegistryFrom == config.FromDefault {
-		return nil, fmt.Errorf("prs reads its repos from a registry, and none is at the default %s: "+
-			"set %s, or repos_registry in %s", cfg.Registry, config.RegistryVariable, cfg.File)
+	repos := board.Repos{From: cfg.ReposFrom, Registry: cfg.Registry}
+	switch cfg.ReposFrom {
+	case config.FromOwners:
+		repos.Owners = cfg.Owners
+	case config.FromViewer:
+		repos.Owners = []string{pullrequests.ViewerOwner}
+	default:
+		if repos.Repos, err = registry.Load(cfg.Registry); err != nil {
+			return nil, err
+		}
 	}
-	repos, err := registry.Load(cfg.Registry)
-	if err != nil {
-		return nil, err
-	}
-	b, err := board.New(cfg.Registry, repos, cfg.WindowActions)
+	b, err := board.New(repos, cfg.WindowActions)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", cfg.File, err)
 	}

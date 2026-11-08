@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:prs:list:v1",
+  "title": "Every open pull request on the repos prs reads",
+  "description": "What `prs list --json` prints, and `pull_requests` in `prs tui --json`: one object per open pull request, oldest first, and [] where there are none. Every field is always present. A field the provider's listing does not carry is null rather than a zero, so a pull request nobody counted never reads as one that changed nothing.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "provider", "repo", "slug", "number", "title", "author", "bot", "body", "url", "branch", "base",
+      "draft", "created_at", "additions", "deletions", "changed_files", "review", "reviews", "checks",
+      "age_days", "path", "state", "merged_at", "closed_at", "updated_at", "mergeable",
+      "merge_state_status", "in_merge_queue", "head_oid", "stacked_on"
+    ],
+    "properties": {
+      "provider": {"description": "Who hosts it. Every action but the local diff dispatches on it.", "enum": ["github", "bitbucket"]},
+      "repo": {"description": "The repository's bare name, which is only a label, since two repositories can share one.", "type": "string"},
+      "slug": {"description": "owner/name, which identifies the repository. A Bitbucket owner is the project key.", "type": "string"},
+      "number": {"type": "integer", "minimum": 1},
+      "title": {"type": "string"},
+      "author": {"description": "The login that opened it, and empty for a deleted account.", "type": "string"},
+      "bot": {"description": "True where the provider says an app opened it, and null where its listing does not say.", "type": ["boolean", "null"]},
+      "body": {"description": "The description as markdown, and empty where it has none.", "type": "string"},
+      "url": {"type": "string"},
+      "branch": {"description": "The head branch.", "type": "string"},
+      "base": {"description": "The branch it merges into.", "type": "string"},
+      "draft": {"type": "boolean"},
+      "created_at": {"type": "string", "format": "date-time"},
+      "additions": {"description": "Null, never 0, where the listing does not count it.", "type": ["integer", "null"], "minimum": 0},
+      "deletions": {"description": "Null, never 0, where the listing does not count it.", "type": ["integer", "null"], "minimum": 0},
+      "changed_files": {"description": "Null, never 0, where the listing does not count it.", "type": ["integer", "null"], "minimum": 0},
+      "review": {"description": "The provider's review decision, such as APPROVED, and empty until a review is requested.", "type": "string"},
+      "reviews": {"description": "How many reviews were submitted, which a review setting no decision still counts.", "type": "integer", "minimum": 0},
+      "checks": {"description": "The head commit's check rollup, such as SUCCESS, and empty until a workflow runs.", "type": "string"},
+      "age_days": {"description": "Whole days since it was opened.", "type": "integer", "minimum": 0},
+      "path": {"description": "Where its repository is checked out on this machine, and empty where it is not.", "type": "string"},
+      "state": {"description": "OPEN, MERGED or CLOSED on GitHub, and bbkt's word on Bitbucket.", "type": "string"},
+      "merged_at": {"description": "Null until it merges.", "type": ["string", "null"], "format": "date-time"},
+      "closed_at": {"description": "Null until it closes, which a merge also does.", "type": ["string", "null"], "format": "date-time"},
+      "updated_at": {"description": "Null where the listing does not carry it.", "type": ["string", "null"], "format": "date-time"},
+      "mergeable": {"description": "GitHub's MERGEABLE, CONFLICTING or UNKNOWN, which reads UNKNOWN until GitHub has computed it, and null where the listing does not carry it.", "type": ["string", "null"]},
+      "merge_state_status": {"description": "GitHub's merge state, such as CLEAN, BEHIND, BLOCKED, DIRTY or UNKNOWN, and null where the listing does not carry it.", "type": ["string", "null"]},
+      "in_merge_queue": {"description": "Null where the listing does not carry it.", "type": ["boolean", "null"]},
+      "head_oid": {"description": "The head commit's full hash, and null where the listing does not carry it.", "type": ["string", "null"]},
+      "stacked_on": {"description": "The number of the open pull request in the same repository whose branch this one merges into, and null where it merges into no open one's.", "type": ["integer", "null"], "minimum": 1}
+    }
+  }
+}
