@@ -49,11 +49,10 @@ window, and the config can add keys of its own, each a command in a tmux window.
 backs out one level, and q quits.
 
 --pr opens on one pull request, named as owner/name#number or by its URL, with the cursor
-on it and its description open. q then exits 0, back to whatever ran prs. One among the
-open pull requests sits where the list puts it. A merged or closed one on GitHub is read
-on its own and sits above the list. A pull request prs cannot read is refused before the
-board draws. On Bitbucket that is one not among its repo's open pull requests, because
-Bitbucket's client has no read for a single pull request.
+on it and its description open. q then exits 0, back to whatever ran prs. An open one sits
+where the list puts it, and a merged or closed one sits above the list. One no listing
+holds is read again each minute. A pull request prs cannot read is refused before the
+board draws.
 
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
 so an agent reads what a person reads. Either exits 1 after printing when a provider

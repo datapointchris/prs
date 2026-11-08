@@ -165,15 +165,18 @@ prs tui --pr https://bitbucket.example.com/projects/FIN/repos/ledger/pull-reques
 ```
 
 - **An open pull request sits where the list puts it.** One on a repo prs does not read
-  joins the list.
-- **A merged or closed one on GitHub is read on its own**, and sits in a group above the
-  list. Its row reads `merged` or `closed`, and `m` and `x` refuse it.
+  is drawn among the list's rows too.
+- **A merged or closed one sits in a group above the list.** Its row reads `merged` or
+  `closed`, and `m` and `x` refuse it. Bitbucket's `declined` reads `closed`.
+- **While no listing holds it, prs reads it again each minute**, so one merged elsewhere
+  moves above the list, and one on a repo prs does not read stays current. One merged
+  with `m` moves there once the listing drops it.
 - **`owner/name#number` is the registry's repo of that name**, on whichever provider hosts
-  it, and GitHub where the registry names none. A URL says its provider itself. A GitHub
-  URL on a host other than the one prs reads is refused.
+  it, and GitHub where the registry names none. A URL says its provider itself. bbkt reads
+  a Bitbucket one by its project and name, so its repo need not be checked out.
 - **A pull request prs cannot read is refused before the board draws**, with one line on
-  stderr and exit 1. Bitbucket's client has no read for a single pull request, so a
-  Bitbucket one must be among its repo's open pull requests, read in its checkout.
+  stderr and exit 1. So is a URL on a host other than the one prs read the pull request
+  from, because a repo of the same name there holds a different pull request.
 
 ## Reading it from a program
 
@@ -185,8 +188,9 @@ head commit and the open pull request it is stacked on.
 
 `prs tui --json` prints the board's snapshot instead: the same rows under
 `pull_requests`, and how each read stands. With `--pr`, `opened_on` is that pull request
-in the same shape, merged or closed where it is, and null without `--pr`. `prs tui --once`
-prints one frame at `COLUMNS` by `LINES`.
+in the shape of one of those rows, merged or closed where it is, and null without `--pr`.
+`pull_requests` holds it only where a listing does. `prs tui --once` prints one frame at
+`COLUMNS` by `LINES`.
 
 Each of these exits 1 after printing when a read failed or left pull requests out,
 because a failed read and a repo with no open pull requests otherwise print the same rows.

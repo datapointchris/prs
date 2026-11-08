@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,6 +87,33 @@ func ReadBitbucket(ctx context.Context, scope Scope, last Listing) (Listing, err
 		listing.Notes = append(listing.Notes, "not checked out here, so not read: "+strings.Join(absent, ", "))
 	}
 	return listing, nil
+}
+
+// readBitbucketReference is Provider.ReadOne for Bitbucket. --repo names the repo, so bbkt
+// reads one whose repo is not checked out here too. The slug is the one bbkt answers with,
+// so a slug typed in another case keys the same row the listing does.
+func readBitbucketReference(ctx context.Context, ref Reference) (PullRequest, *Detail, error) {
+	if _, err := exec.LookPath("bbkt"); err != nil {
+		return PullRequest{}, nil, errors.New("bbkt is not installed, and prs reads Bitbucket through it")
+	}
+	out, said, err := run(ctx, "", "bbkt", "pr", "view", strconv.Itoa(ref.Number), "--json", "--repo", ref.Slug, "--no-input")
+	if err != nil {
+		return PullRequest{}, nil, fmt.Errorf("bbkt could not read %s: %s", ref, said)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return PullRequest{}, nil, fmt.Errorf("bbkt's answer for %s is not a JSON object", ref)
+	}
+	slug := ref.Slug
+	if key, name := text(dig(payload, "toRef.repository.project.key")), text(dig(payload, "toRef.repository.slug")); key != "" && name != "" {
+		slug = key + "/" + name
+	}
+	owner, name, _ := strings.Cut(slug, "/")
+	prs, _ := bitbucketPullRequests(registry.Repo{Name: name, Owner: owner, Slug: slug, Provider: registry.Bitbucket}, []any{payload})
+	if len(prs) != 1 || prs[0].Number != ref.Number {
+		return PullRequest{}, nil, fmt.Errorf("bbkt's answer for %s holds no pull request", ref)
+	}
+	return prs[0], nil, nil
 }
 
 // readBitbucketRepo is one repo's open pull requests, or what went wrong reading them.

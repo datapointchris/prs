@@ -2,7 +2,6 @@ package pullrequests
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -29,9 +28,8 @@ func (r Reference) String() string { return fmt.Sprintf("%s#%d", r.Slug, r.Numbe
 // shortReference is owner/name#number, as GitHub writes a reference across repos.
 var shortReference = regexp.MustCompile(`^([^/#\s]+/[^/#\s]+)#([0-9]+)$`)
 
-// ParseReference reads owner/name#number, or the URL of a pull request on GitHub, Bitbucket
-// Server or Bitbucket Cloud. A tab of the pull request's page, such as /files, is the same
-// pull request.
+// ParseReference reads owner/name#number, or the URL of a pull request's page on a host
+// whose PagePath reads it.
 func ParseReference(text string) (Reference, error) {
 	text = strings.TrimSpace(text)
 	if match := shortReference.FindStringSubmatch(text); match != nil {
@@ -42,16 +40,12 @@ func ParseReference(text string) (Reference, error) {
 		return Reference{}, fmt.Errorf("%q is neither owner/name#number nor a pull request's URL", text)
 	}
 	parts := strings.Split(strings.Trim(page.Path, "/"), "/")
-	at := func(i int, word string) bool { return len(parts) > i+1 && parts[i] == word }
-	switch {
-	case at(2, "pull"):
-		return reference(registry.GitHub, page.Host, parts[0]+"/"+parts[1], parts[3])
-	case at(0, "projects") && at(2, "repos") && at(4, "pull-requests"):
-		return reference(registry.Bitbucket, page.Host, parts[1]+"/"+parts[3], parts[5])
-	case at(2, "pull-requests"):
-		return reference(registry.Bitbucket, page.Host, parts[0]+"/"+parts[1], parts[3])
+	for _, provider := range Providers {
+		if slug, number, ok := provider.PagePath(parts); ok {
+			return reference(provider.Name, page.Host, slug, number)
+		}
 	}
-	return Reference{}, fmt.Errorf("%s is not the URL of a pull request on GitHub or Bitbucket", text)
+	return Reference{}, fmt.Errorf("%s is not the URL of a pull request on any host prs reads", text)
 }
 
 func reference(provider, host, slug, number string) (Reference, error) {
@@ -62,48 +56,42 @@ func reference(provider, host, slug, number string) (Reference, error) {
 	return Reference{Provider: provider, Host: host, Slug: slug, Number: n}, nil
 }
 
+// Named is one pull request a reference names, as its own read found it. Detail is nil
+// where the provider reads none.
+type Named struct {
+	PullRequest PullRequest
+	Detail      *Detail
+	Standing    Standing
+}
+
 // ReadReference reads the pull request ref names, open or not. owner/name#number is the
 // registry's repo of that slug, on whichever provider hosts it, and GitHub where the
-// registry names none. A provider with ReadOne reads it whole, with its detail. Any other
-// finds it among its repo's open pull requests, read in the checkout the registry names,
-// and refuses one they do not hold.
-func ReadReference(ctx context.Context, ref Reference, repos []registry.Repo) (PullRequest, *Detail, error) {
+// registry names none. A URL whose host is not the one the pull request was read from is
+// refused, because a repo of the same name there holds a different pull request.
+func ReadReference(ctx context.Context, ref Reference, repos []registry.Repo) (Named, error) {
 	name, err := ref.provider(repos)
 	if err != nil {
-		return PullRequest{}, nil, err
+		return Named{}, err
 	}
 	provider, err := ProviderOf(name)
 	if err != nil {
-		return PullRequest{}, nil, err
+		return Named{}, err
 	}
-	if provider.ReadOne != nil {
-		pr, detail, err := provider.ReadOne(ctx, ref)
-		if err != nil {
-			return PullRequest{}, nil, err
-		}
-		return Finish([]PullRequest{pr}, repos, time.Now())[0], &detail, nil
+	if provider.ReadOne == nil {
+		return Named{}, fmt.Errorf("prs cannot read one pull request on %s, because its client has no verb for it", name)
 	}
-	at := slices.IndexFunc(repos, func(repo registry.Repo) bool {
-		return repo.Provider == name && strings.EqualFold(repo.Slug, ref.Slug)
-	})
-	if at < 0 {
-		return PullRequest{}, nil, fmt.Errorf("%s: prs reads %s only in a checkout the registry names, and it names no %s", ref, name, ref.Slug)
-	}
-	listing, err := provider.Read(ctx, Scope{Repos: repos[at : at+1]}, Listing{})
+	pr, detail, err := provider.ReadOne(ctx, ref)
 	if err != nil {
-		return PullRequest{}, nil, err
+		return Named{}, err
 	}
-	for _, pr := range listing.PullRequests {
-		if pr.Number == ref.Number {
-			return Finish([]PullRequest{pr}, repos, time.Now())[0], nil, nil
-		}
+	if page, err := url.Parse(pr.URL); ref.Host != "" && err == nil && page.Host != "" && !strings.EqualFold(page.Host, ref.Host) {
+		return Named{}, fmt.Errorf("%s is on %s, and prs reads %s at %s", ref, ref.Host, name, page.Host)
 	}
-	why := fmt.Sprintf("%s is not among %s's open pull requests on %s, and prs can read no other there, because its client has no read for a single pull request",
-		ref, repos[at].Slug, name)
-	if note := listing.Note(); note != "" {
-		why += ": " + note
+	standing, err := pr.Standing()
+	if err != nil {
+		return Named{}, err
 	}
-	return PullRequest{}, nil, errors.New(why)
+	return Named{PullRequest: Finish([]PullRequest{pr}, repos, time.Now())[0], Detail: detail, Standing: standing}, nil
 }
 
 // provider is the reference's own, or for owner/name#number the provider the registry

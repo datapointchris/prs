@@ -58,8 +58,12 @@ takes and how it is read.
   0. A pull request it cannot read is refused before anything draws, with one line on
   stderr and exit 1, so a caller can show why.
 - **A Provider verb a host's client lacks is nil**, and its key refuses with `lacking`.
-  `ReadOne` is nil on Bitbucket, so `--pr` finds a Bitbucket pull request among its repo's
-  open ones.
+- **A per-host fact lives in the Provider table**: the state words a client prints, mapped
+  to `Standing`, and the path of a pull request's page, read by `PagePath`. The board
+  switches over `Standing` rather than over a host's words.
+- **`pull_requests` in `--json` holds only what the listings read.** The pull request
+  `--pr` names is `opened_on`, and the board draws its own read only where no listing holds
+  it.
 - **A pull request's detail never holds up its row.** The board reads each GitHub row's
   detail in the background after the listing lands, a few at a time. It reads one again
   when its head commit, update time or checks state moves, or when its last read failed.

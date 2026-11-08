@@ -1,0 +1,31 @@
+{
+  "id": 3,
+  "version": 4,
+  "title": "Round the ledger totals to the cent",
+  "description": "Rounds each total half to even, as the auditors asked.",
+  "state": "MERGED",
+  "open": false,
+  "closed": true,
+  "createdDate": 1792918800000,
+  "updatedDate": 1793091600000,
+  "closedDate": 1793091600000,
+  "fromRef": {
+    "id": "refs/heads/feature/round-totals",
+    "displayId": "feature/round-totals",
+    "latestCommit": "3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b",
+    "repository": { "slug": "ledger", "project": { "key": "FIN" } }
+  },
+  "toRef": {
+    "id": "refs/heads/develop",
+    "displayId": "develop",
+    "repository": { "slug": "ledger", "project": { "key": "FIN" } }
+  },
+  "author": {
+    "user": { "name": "jdoe", "displayName": "Jane Doe", "emailAddress": "jdoe@example.com" },
+    "role": "AUTHOR",
+    "approved": false,
+    "status": "UNAPPROVED"
+  },
+  "reviewers": [],
+  "links": { "self": [ { "href": "https://bitbucket.example.com/projects/FIN/repos/ledger/pull-requests/3" } ] }
+}

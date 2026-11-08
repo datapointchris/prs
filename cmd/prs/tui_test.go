@@ -139,6 +139,10 @@ exit 1
 		"bbkt": "#!/bin/sh\n" + record + `case "$1 $2" in
 'pr merge') exit 0 ;;
 'pr comment') ` + posted + ` exit 0 ;;
+'pr view')
+  [ -f "` + filepath.Dir(listed) + `/bbkt-view-$3.json" ] && exec cat "` + filepath.Dir(listed) + `/bbkt-view-$3.json"
+  echo "error: bitbucket 404 on /projects/FIN/repos/ledger/pull-requests/$3: Pull request $3 does not exist in FIN/ledger." >&2
+  exit 1 ;;
 esac
 ` + fmt.Sprintf("cat %q\n", listed),
 		"tmux":   "#!/bin/sh\n" + record + "case \"$*\" in *automatic-rename}*) printf 'prs\\t0\\n' ;; esac\n",
@@ -458,21 +462,27 @@ func TestTuiOpensOnTheNamedPullRequestWithItsDescriptionAndQExits0(t *testing.T)
 	}
 }
 
-// Bitbucket's client reads no single pull request, so --pr finds one in its repo's open
-// pull requests and refuses one they do not hold, before anything draws.
-func TestABitbucketPullRequestOpensOnlyFromItsReposOpenPullRequests(t *testing.T) {
+// A jump from a merged Bitbucket pull request opens on it by its URL. --json names it as
+// opened_on and leaves it out of pull_requests, which holds what the listings read. One bbkt
+// cannot read is refused before anything draws.
+func TestAMergedBitbucketPullRequestOpensByItsURLAndOneBbktCannotReadIsRefused(t *testing.T) {
 	s := newStandIn(t)
-	out, said, code := s.run(t, "tui", "--pr", "https://bitbucket.example.com/projects/FIN/repos/ledger/pull-requests/4/overview", "--json")
+	out, said, code := s.run(t, "tui", "--pr", "https://bitbucket.example.com/projects/FIN/repos/ledger/pull-requests/3/overview", "--json")
 	var snap board.Snapshot
 	if err := json.Unmarshal([]byte(out), &snap); err != nil || code != 0 {
 		t.Fatalf("prs tui --pr <bitbucket URL> --json exited %d, saying %q: %v", code, said, err)
 	}
-	if on := snap.OpenedOn; on == nil || on.Provider != "bitbucket" || on.Slug != "FIN/ledger" || on.Number != 4 {
-		t.Errorf("opened_on is %+v, want FIN/ledger #4 on bitbucket", on)
+	if on := snap.OpenedOn; on == nil || on.Provider != "bitbucket" || on.Slug != "FIN/ledger" || on.Number != 3 || on.State != "MERGED" {
+		t.Errorf("opened_on is %+v, want the merged FIN/ledger #3 on bitbucket", on)
+	}
+	for _, row := range snap.PullRequests {
+		if row.Number == 3 {
+			t.Errorf("pull_requests holds #3, which no listing read")
+		}
 	}
 
 	out, said, code = s.run(t, "tui", "--pr", "FIN/ledger#9", "--json")
-	if code != 1 || out != "" || !strings.Contains(said, "FIN/ledger#9 is not among FIN/ledger's open pull requests on bitbucket") {
+	if code != 1 || out != "" || !strings.Contains(said, "bbkt could not read FIN/ledger#9") {
 		t.Errorf("prs tui --pr FIN/ledger#9 exited %d and printed %q, saying %q", code, out, said)
 	}
 }

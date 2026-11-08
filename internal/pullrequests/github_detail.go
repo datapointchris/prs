@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
-	"github.com/cli/go-gh/v2/pkg/auth"
 )
 
 // githubDetailQuery reads one pull request by repo and number, whatever its state, with
@@ -186,14 +185,13 @@ func ReadGitHubPullRequest(ctx context.Context, slug string, number int) (PullRe
 	return pr, detail, nil
 }
 
-// readGitHubReference is Provider.ReadOne for GitHub. It refuses a URL on another host,
-// because prs reads only the host gh defaults to, where a repo of the same name would hold
-// a different pull request.
-func readGitHubReference(ctx context.Context, ref Reference) (PullRequest, Detail, error) {
-	if host, _ := auth.DefaultHost(); ref.Host != "" && !strings.EqualFold(ref.Host, host) {
-		return PullRequest{}, Detail{}, fmt.Errorf("%s is on %s, and prs reads GitHub at %s, which GH_HOST changes", ref, ref.Host, host)
+// readGitHubReference is Provider.ReadOne for GitHub.
+func readGitHubReference(ctx context.Context, ref Reference) (PullRequest, *Detail, error) {
+	pr, detail, err := ReadGitHubPullRequest(ctx, ref.Slug, ref.Number)
+	if err != nil {
+		return PullRequest{}, nil, err
 	}
-	return ReadGitHubPullRequest(ctx, ref.Slug, ref.Number)
+	return pr, &detail, nil
 }
 
 // readGitHubDetail is Provider.Detail for GitHub.

@@ -113,20 +113,22 @@ func (b *Board) Sources() []gotermboard.Refresher {
 	for i, source := range b.sources {
 		refreshers[i] = source
 	}
+	if b.openedOn != nil {
+		refreshers = append(refreshers, b.openedOn.source)
+	}
 	return refreshers
 }
 
 // Groupings is gotermboard.Board's. The board has one.
 func (b *Board) Groupings() []string { return nil }
 
-// pullRequests is every provider's last good read, and an open pull request the board
-// opened on that no read holds, oldest first.
+// pullRequests is every provider's last good read, oldest first.
 func (b *Board) pullRequests(now time.Time) []pullrequests.PullRequest {
 	var prs []pullrequests.PullRequest
 	for _, source := range b.sources {
 		prs = append(prs, source.Value().PullRequests...)
 	}
-	return pullrequests.Finish(b.withOpenedOn(prs), b.repos, now)
+	return pullrequests.Finish(prs, b.repos, now)
 }
 
 // Row is one pull request as both --json outputs print it, with the open pull request it
@@ -152,10 +154,14 @@ func (b *Board) Rows(now time.Time) []Row {
 	return rows
 }
 
+// statuses is each listing's read, then the read of the pull request the board opened on.
 func (b *Board) statuses() []gotermboard.Status {
 	statuses := make([]gotermboard.Status, len(b.sources))
 	for i, source := range b.sources {
 		statuses[i] = source.Status()
+	}
+	if b.openedOn != nil {
+		statuses = append(statuses, b.openedOn.source.Status())
 	}
 	return statuses
 }
@@ -187,17 +193,18 @@ func (b *Board) unread() bool {
 
 // failed says every provider was tried and none could be read.
 func (b *Board) failed() bool {
-	for _, status := range b.statuses() {
-		if status.Fault == "" || !status.ReadAt.IsZero() {
+	for _, source := range b.sources {
+		if status := source.Status(); status.Fault == "" || !status.ReadAt.IsZero() {
 			return false
 		}
 	}
 	return len(b.sources) > 0
 }
 
-// Frame is gotermboard.Board's: one group of every open pull request, oldest first.
+// Frame is gotermboard.Board's: one group of every open pull request, oldest first, under
+// the merged or closed pull request the board opened on, where there is one.
 func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
-	prs := b.pullRequests(now)
+	prs := b.withOpenedOn(b.pullRequests(now), now)
 	parents := stackParents(prs)
 	clear(b.shown)
 	group := gotermboard.Group{
@@ -209,7 +216,7 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 		group.Rows = append(group.Rows, b.row(pr, parents, now))
 	}
 	groups := []gotermboard.Group{group}
-	if apart, ok := b.apart(parents, now); ok {
+	if apart, ok := b.apart(prs, parents, now); ok {
 		groups = append([]gotermboard.Group{apart}, groups...)
 	}
 	maps.DeleteFunc(b.settled, func(key string, _ settledState) bool { return !b.listed(key) })

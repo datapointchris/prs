@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "urn:prs:list:v1",
   "title": "Every open pull request on the repos prs reads",
-  "description": "What `prs list --json` prints, and `pull_requests` in `prs tui --json`: one object per open pull request, oldest first, and [] where there are none. Every field is always present. A field the provider's listing does not carry is null rather than a zero, so a pull request nobody counted never reads as one that changed nothing. `opened_on` in `prs tui --pr <pull request> --json` is one item in this shape, and may be merged or closed.",
+  "description": "What `prs list --json` prints, and `pull_requests` in `prs tui --json`: one object per open pull request, oldest first, and [] where there are none. Every field is always present. A field the provider's listing does not carry is null rather than a zero, so a pull request nobody counted never reads as one that changed nothing.",
   "type": "array",
   "items": {
     "type": "object",
