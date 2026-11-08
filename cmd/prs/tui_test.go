@@ -14,9 +14,9 @@ import (
 	"github.com/datapointchris/prs/internal/board"
 )
 
-// standIn is prs run against a stand-in gh answering testdata/search.json, and a stand-in
-// tmux and claude that each record their arguments, so no test reads a real account or
-// starts a real Claude.
+// standIn is prs run against a stand-in gh answering testdata/search.json, a stand-in bbkt
+// answering testdata/bbkt-list.json, and a stand-in tmux and claude that each record their
+// arguments, so no test reads a real account or starts a real Claude.
 type standIn struct {
 	env      map[string]string
 	checkout string
@@ -30,15 +30,20 @@ func newStandIn(t *testing.T) standIn {
 	if err != nil {
 		t.Fatal(err)
 	}
+	listed, err := filepath.Abs(filepath.Join("testdata", "bbkt-list.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := standIn{checkout: filepath.Join(dir, "widget"), recorded: filepath.Join(dir, "recorded")}
 	bin := filepath.Join(dir, "bin")
-	for _, d := range []string{bin, s.checkout, filepath.Join(dir, "config", "prs")} {
+	for _, d := range []string{bin, s.checkout, filepath.Join(dir, "ledger"), filepath.Join(dir, "config", "prs")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	scripts := map[string]string{
 		"gh":     fmt.Sprintf("#!/bin/sh\ncat %q\n", answer),
+		"bbkt":   fmt.Sprintf("#!/bin/sh\ncat %q\n", listed),
 		"tmux":   fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' tmux \"$@\" >> %q\n", s.recorded),
 		"claude": fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' claude \"$@\" >> %q\n", s.recorded),
 	}
@@ -50,8 +55,9 @@ func newStandIn(t *testing.T) standIn {
 	registry := fmt.Sprintf(`{"repos": [
 		{"name": "widget", "owner": "acme", "path": %q, "status": "active"},
 		{"name": "gadget", "owner": "acme", "path": %q, "status": "active"},
-		{"name": "typos", "owner": "acme", "path": %q, "status": "active"}
-	]}`, s.checkout, filepath.Join(dir, "gadget"), filepath.Join(dir, "typos"))
+		{"name": "typos", "owner": "acme", "path": %q, "status": "active"},
+		{"name": "ledger", "owner": "FIN", "path": %q, "status": "active", "provider": "bitbucket"}
+	]}`, s.checkout, filepath.Join(dir, "gadget"), filepath.Join(dir, "typos"), filepath.Join(dir, "ledger"))
 	config := fmt.Sprintf(`registry: %s
 window_actions:
   - key: r
@@ -75,7 +81,7 @@ window_actions:
 	return s
 }
 
-func TestTheSnapshotKeepsEachRegistryPullRequestOnceAndFindsItsParentByRepoAndBranch(t *testing.T) {
+func TestTheSnapshotKeepsEachRegistryPullRequestOnceAcrossBothProvidersAndFindsItsParentByRepoAndBranch(t *testing.T) {
 	s := newStandIn(t)
 	cmd := exec.Command(tuidrive.Build(t, "."), "tui", "--json")
 	for name, value := range s.env {
@@ -96,14 +102,19 @@ func TestTheSnapshotKeepsEachRegistryPullRequestOnceAndFindsItsParentByRepoAndBr
 		if row.StackedOn != nil {
 			stacked = *row.StackedOn
 		}
-		got = append(got, fmt.Sprintf("%s#%d bot=%v stacked_on=%d", row.Slug, row.Number, *row.Bot, stacked))
+		bot := "unknown"
+		if row.Bot != nil {
+			bot = fmt.Sprint(*row.Bot)
+		}
+		got = append(got, fmt.Sprintf("%s#%d %s into %s bot=%s stacked_on=%d", row.Slug, row.Number, row.Branch, row.Base, bot, stacked))
 	}
 	// crate-ci/typos shares a registry repo's bare name and is not it; #12 is in both searches;
-	// gadget#5 targets a branch only widget has.
+	// gadget#5 targets a branch only widget has. bbkt's listing types no bot.
 	want := []string{
-		"acme/widget#12 bot=false stacked_on=0",
-		"acme/widget#13 bot=true stacked_on=12",
-		"acme/gadget#5 bot=false stacked_on=0",
+		"ledger#4 feature/ledger-export into develop bot=unknown stacked_on=0",
+		"acme/widget#12 add-cache into main bot=false stacked_on=0",
+		"acme/widget#13 cache-metrics into add-cache bot=true stacked_on=12",
+		"acme/gadget#5 tidy into add-cache bot=false stacked_on=0",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -113,7 +124,7 @@ func TestTheSnapshotKeepsEachRegistryPullRequestOnceAndFindsItsParentByRepoAndBr
 func TestTheBoardSaysEachStateInWordsOpensADescriptionAndRunsAKeyTheConfigAdds(t *testing.T) {
 	s := newStandIn(t)
 	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 140, Rows: 30})
-	term.WaitFor("open · 3")
+	term.WaitFor("open · 4")
 	for _, words := range []string{"checks passing", "checks failing", "checks not run", "review required", "review 2 posted", "bot acme-automation", "Tidy the gadget (draft)", " #12"} {
 		term.WaitFor(words)
 	}
@@ -125,6 +136,7 @@ func TestTheBoardSaysEachStateInWordsOpensADescriptionAndRunsAKeyTheConfigAdds(t
 	term.Press("esc")
 	term.WaitGone("Keys, any key closes this")
 
+	term.Press("j")
 	term.Press("enter")
 	term.WaitFor("Caches the widget lookups for a minute.")
 
