@@ -205,7 +205,7 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 			got, err = pullrequests.Fetch(ctx, target)
 			return err
 		},
-		done: func(*gotermboard.Model) tea.Cmd {
+		done: func(m *gotermboard.Model) tea.Cmd {
 			b.diffed[pr.Key()] = got.Head
 			stem := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d", pr.Repo, pr.Number))
 			socket := stem + ".sock"
@@ -218,7 +218,7 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 				nvim.Env = append(os.Environ(), files.env()...)
 			}
 			restore := nameWindow(fmt.Sprintf("diff %s #%d", pr.Repo, pr.Number))
-			return handOver(nvim, func(m *gotermboard.Model, err error) tea.Cmd {
+			return m.HandOver(nvim, func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
 				restore()
 				files.remove()
 				var exit *exec.ExitError
@@ -227,7 +227,7 @@ func (b *Board) diff(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd 
 				case errors.As(err, &exit) && exit.ExitCode() == noDiffview:
 					said = "nvim has no :DiffviewOpen, and the diff needs the diffview.nvim plugin"
 				case err != nil:
-					said = fmt.Sprintf("nvim ended the diff of #%d with %v", pr.Number, err)
+					said = fmt.Sprintf("nvim ended the diff of #%d: %s", pr.Number, gotermboard.LastLine(stderr, err))
 				case got.BaseFault != "":
 					said = fmt.Sprintf("closed the diff of %s #%d, which ran against the origin/%s fetched earlier, because fetching it again failed: %s",
 						pr.Repo, pr.Number, target.Base, got.BaseFault)
@@ -606,11 +606,11 @@ func (b *Board) comment(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 	}
 	path := file.Name()
 	_ = file.Close()
-	return handOver(gotermboard.EditorCommand(path), func(m *gotermboard.Model, err error) tea.Cmd {
+	return m.HandOver(gotermboard.EditorCommand(path), func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
 		body, readErr := os.ReadFile(path)
 		switch {
 		case err != nil:
-			m.Say(fmt.Sprintf("the editor ended with %v, so nothing was posted; what it wrote is in %s", err, path))
+			m.Say(fmt.Sprintf("the editor ended with %s, so nothing was posted; what it wrote is in %s", gotermboard.LastLine(stderr, err), path))
 			return nil
 		case readErr != nil || strings.TrimSpace(string(body)) == "":
 			_ = os.Remove(path)
@@ -660,7 +660,9 @@ func (b *Board) windowAction(window config.WindowAction) func(pullrequests.PullR
 		if err != nil {
 			return "", err
 		}
-		if err := openWindow(name, config.Fill(window.Command, fields), checkout, window.Needs...); err != nil {
+		// The command is a shell command, which tmux runs whole through its shell, so needs
+		// names the programs it runs.
+		if err := gotermboard.OpenWindow(name, checkout, []string{config.Fill(window.Command, fields)}, window.Needs...); err != nil {
 			return "", err
 		}
 		if window.RunsReviewRound {
@@ -713,38 +715,7 @@ func (b *Board) copyBranch(pr pullrequests.PullRequest) (string, error) {
 	// On PATH is not the same as able to run: wl-copy exits 1 with no compositor to talk
 	// to, as over ssh.
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("%s could not take the branch: %s", argv[0], lastLine(out, err))
+		return "", fmt.Errorf("%s could not take the branch: %s", argv[0], gotermboard.LastLine(out, err))
 	}
 	return "copied " + pr.Branch, nil
-}
-
-// openWindow runs command in a new tmux window, once the programs it needs are on PATH.
-// tmux reports whether it opened the window and never what the command did, so a missing
-// program would open a window that dies at once.
-func openWindow(name, command, dir string, needs ...string) error {
-	if os.Getenv("TMUX") == "" {
-		return errors.New("this opens a tmux window, and prs is not running inside tmux")
-	}
-	if missing := config.MissingPrograms(append([]string{"tmux"}, needs...)); len(missing) > 0 {
-		return fmt.Errorf("not installed here: %s, and the window would open and die without it", strings.Join(missing, ", "))
-	}
-	args := []string{"new-window", "-n", name}
-	if dir != "" {
-		args = append(args, "-c", dir)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-	defer cancel()
-	if out, err := exec.CommandContext(ctx, "tmux", append(args, command)...).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux could not open %s: %s", name, lastLine(out, err))
-	}
-	return nil
-}
-
-// lastLine is the last thing a failed command said, or its exit status where it said nothing.
-func lastLine(out []byte, err error) string {
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if last := strings.TrimSpace(lines[len(lines)-1]); last != "" {
-		return last
-	}
-	return err.Error()
 }

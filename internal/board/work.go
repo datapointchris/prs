@@ -42,13 +42,6 @@ type workEnded struct {
 	err  error
 }
 
-// handedBack is what a program prs handed the terminal to sends when it exits, with what to
-// do next.
-type handedBack struct {
-	err  error
-	then func(m *gotermboard.Model, err error) tea.Cmd
-}
-
 // start puts w on the footer and runs it in the background. Each client it runs is bounded
 // by pullrequests.Run.
 func (b *Board) start(w work) tea.Cmd {
@@ -70,11 +63,6 @@ func (b *Board) busy(pr pullrequests.PullRequest) string {
 	return ""
 }
 
-// handOver gives the terminal to cmd until it exits, then runs then.
-func handOver(cmd *exec.Cmd, then func(m *gotermboard.Model, err error) tea.Cmd) tea.Cmd {
-	return tea.ExecProcess(cmd, func(err error) tea.Msg { return handedBack{err: err, then: then} })
-}
-
 // UnderWay is gotermboard.BusyBoard's: every command a key started that has not ended.
 func (b *Board) UnderWay() string {
 	doing := make([]string, len(b.working))
@@ -86,7 +74,8 @@ func (b *Board) UnderWay() string {
 
 // Receive is gotermboard.ReceivingBoard's. Each provider is read again when the terminal gains
 // focus and when a program prs handed the terminal to exits, because either is someone coming
-// back to the list, maybe from changing a pull request.
+// back to the list, maybe from changing a pull request. The model runs a handback's then after
+// this.
 func (b *Board) Receive(m *gotermboard.Model, msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case workEnded:
@@ -99,10 +88,7 @@ func (b *Board) Receive(m *gotermboard.Model, msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		return msg.work.done(m)
-	case handedBack:
-		b.readAgain()
-		return msg.then(m, msg.err)
-	case tea.FocusMsg:
+	case gotermboard.HandedBack, tea.FocusMsg:
 		b.readAgain()
 	}
 	return nil
