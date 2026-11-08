@@ -175,6 +175,38 @@ func Run(ctx context.Context, dir string, argv ...string) ([]byte, error) {
 	return out, nil
 }
 
+// RunDetached runs a command that is to finish whether or not prs is still open, such as one
+// waiting on a model call, and returns when it ends. It runs as run runs a client, in a
+// session of its own with stdin closed, with its output written to the file at log in place
+// of a pipe, so neither prs exiting nor its terminal closing stops it, and nothing bounds it.
+// It fails with the last line the command wrote.
+func RunDetached(dir, log string, argv ...string) error {
+	out, err := os.Create(log)
+	if err != nil {
+		return fmt.Errorf("could not open the log %s: %w", log, err)
+	}
+	defer func() { _ = out.Close() }()
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := cmd.Run(); err != nil {
+		if line := lastLineOf(log); line != "" {
+			return errors.New(line)
+		}
+		return err
+	}
+	return nil
+}
+
+// lastLineOf is the file's last line holding text, and empty where it holds none or cannot be read.
+func lastLineOf(path string) string {
+	written, _ := os.ReadFile(path)
+	lines := strings.Split(strings.TrimSpace(string(written)), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
 // run runs a client with stdin closed and returns its stdout, and stderr's first line on
 // a failure. git and ssh ask on the terminal itself rather than on stdin, so the client runs
 // in a session of its own, with no terminal to open, and git's prompt is turned off as well.

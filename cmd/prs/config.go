@@ -38,6 +38,11 @@ exists. The file is YAML:
       window: "review {repo} #{number}"
       command: claude '/review-pr {number}'
       runs_review_round: true
+  recaps:
+    needs: [recap]
+    list: [recap, list]
+    show: [recap, show, "--{kind}", "{label}"]
+    write: [recap, write, "--{kind}", "{label}"]
 
 repos_registry names the repo registry, a JSON file of repos, each with a name, an owner,
 a path, a status and optionally a provider. PRS_REPOS_REGISTRY names it ahead of the
@@ -65,8 +70,17 @@ request's checkout. needs are the programs it runs, and a machine missing one is
 offered the key. {number}, {repo} and {slug} are filled in. Quote a value holding " #",
 which YAML otherwise reads as a comment. runs_review_round marks a command that runs a
 Claude review round, so the row reads claude running while its window is open, until a
-round finishes after the key opened it.`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds()),
-			pullrequests.ReposPerSearch, config.DefaultDiffSectionMaxLines),
+round finishes after the key opened it.
+
+recaps names the three commands prs tui's recaps tab runs, each an argv run with no shell,
+so one that pipes runs through sh -c. list prints the windows a recap is written for, in
+the order the tab draws them, one a line as its kind and its label, such as day 2026-11-06,
+and prs reads nothing else it prints. show prints one window's recap as markdown. write
+writes one, a
+model call, and may be left out. %[5]s in show and write are filled in from the window.
+needs are the programs the commands run beyond each one's first, and a machine missing one
+draws no recaps tab, as a config naming no list does.`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds()),
+			pullrequests.ReposPerSearch, config.DefaultDiffSectionMaxLines, strings.Join(config.RecapPlaceholders(), " and ")),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := config.Path()
@@ -133,8 +147,42 @@ round finishes after the key opened it.`, int(config.DefaultRefreshEvery.Seconds
 				}
 				_, _ = fmt.Fprintf(out, "%s  %s  %s\n", pal.Bold(fmt.Sprintf("key %-4s", action.Key)), action.Label, state)
 			}
+			for _, tab := range tuiTabs {
+				if tab.absent == nil {
+					continue
+				}
+				state := pal.Paint(gotermstyle.CodeGreen, "drawn")
+				if why := tab.absent(cfg); why != "" {
+					state = pal.Paint(gotermstyle.CodeYellow, "not drawn, because "+why)
+				}
+				_, _ = fmt.Fprintf(out, "%s  %s  %s\n", pal.Bold("tab     "), tab.name, state)
+			}
+			if recaps := cfg.Recaps; recaps.Named() {
+				_, _ = fmt.Fprintf(out, "%s\n", pal.Bold("recaps  "))
+				for _, command := range []struct {
+					name string
+					argv []string
+				}{{"list", recaps.List}, {"show", recaps.Show}, {"write", recaps.Write}} {
+					if len(command.argv) > 0 {
+						_, _ = fmt.Fprintf(out, "%s  %s\n", pal.Bold(fmt.Sprintf("  %-6s", command.name)), shellQuoted(command.argv))
+					}
+				}
+			}
 			return nil
 		},
 	})
 	return cmd
+}
+
+// shellQuoted is argv as a shell reads it back, quoting each argument it would split or expand.
+func shellQuoted(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, arg := range argv {
+		if arg != "" && strings.Trim(arg, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./:=@%+,{}") == "" {
+			quoted[i] = arg
+			continue
+		}
+		quoted[i] = "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+	}
+	return strings.Join(quoted, " ")
 }

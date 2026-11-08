@@ -10,7 +10,8 @@ disk for the next start, `table.go` what `prs list` prints, `document.go` each p
 request's markdown document, a section per heading, `review_rounds.go` the round's cell,
 the Review section and the tmux windows that run a round, `diff_files.go` the document and
 review threads a diff in nvim is handed, `opened_on.go` the pull request `prs tui --pr`
-names, and `summary_tab.go` and `summary_charts.go` the Summary tab and its charts.
+names, `summary_tab.go` and `summary_charts.go` the Summary tab and its charts, and
+`recaps_tab.go` the recaps tab, which runs the three commands `recaps` in the config names.
 `internal/summary` counts a window's pull requests, and keeps the merged and closed ones in
 SQLite, brought up to date through `pullrequests`' `github_history.go`.
 `internal/reviewrounds` reads a pull request's Claude review rounds out of its
@@ -25,12 +26,14 @@ read, and `since.go` what `--since` takes.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
 `prs tui --json`, and a test holds both outputs to it. `cmd/prs/diff-threads.schema.json`
 is the shape of the threads file a diff in nvim is handed, held the same way, and
-`cmd/prs/summary.schema.json` the shape of `prs summary --json`.
+`cmd/prs/summary.schema.json` the shape of `prs summary --json`, and
+`cmd/prs/recaps.schema.json` the shape of `prs tui --view recaps --json`.
 
 A tab is an entry in `tuiTabs` in `cmd/prs/tui.go`: the name `--view` takes, the flags its
-`--once` and `--json` read, and how it opens on the board into what gotermboard draws,
-what `--json` prints and why either exits 1. `--view`, its help and `gotermboard.NewTabs`
-read that one list. The pull requests' board is `board.View` and the Summary tab
+`--once` and `--json` read, why a config leaves it out, and how it opens on the board into
+what gotermboard draws, what `--json` prints and why either exits 1. `--view`, its help and
+`gotermboard.NewTabs` read that one list, and `drawnTabs` drops each tab `absent` names a
+reason for. The pull requests' board is `board.View` and the Summary tab
 `board.SummaryView`. A tab reading what the board reads lists the board's sources in its
 own `Sources`, as the Summary tab does, so a read is not made twice.
 
@@ -204,6 +207,19 @@ own `Sources`, as the Summary tab does, so a read is not made twice.
 - **The closed history is a cache.** Its version is a digest of its schema, so a file of
   another shape is emptied and read again rather than migrated. There is one per set of
   repos, named by `Scope.Names`, so a registry edit starts a new one.
+- **The recaps tab reads nothing its commands print but the list's `<kind> <label>`
+  lines.** A recap is the markdown show printed, drawn whole. The commands are the
+  config's, so prs knows nothing of the program behind them, and a config naming no list,
+  or a machine missing a program `needs` names, draws no recaps tab rather than an empty
+  one.
+- **The recaps tab's write is a model call, so `w` asks first, naming it, with enter
+  meaning no**, because a reflex enter would spend the call. It runs through
+  `pullrequests.RunDetached`, in a session of its own with its output in a file under the
+  cache, so quitting prs leaves it to finish, and nothing bounds it. The list runs again
+  once it ends, so a window written for the first time joins it.
+- **Each run of the recaps list reads every recap again.** A recap read before the newest
+  list run began is due, so `R`, the timer and a write's end all reach every recap, and a
+  read under way when a write ended is read again.
 - **No test reads a real account or starts a real program a key runs.** `cmd/prs/tui_test.go`
   puts a stand-in on `PATH` for every program a read or a key in the test runs, and its
   testdata answers in each provider's published shape. GitHub's stand-in is an HTTP server
