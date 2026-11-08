@@ -72,6 +72,11 @@ func (b *Board) keyTable(windows []config.WindowAction) []gotermboard.Action {
 		gotermboard.Action{Keys: []string{"o"}, Label: "open in browser", Footer: "o browser", Run: b.onRow(b.browse)},
 		gotermboard.Action{Keys: []string{"y"}, Label: "copy branch: its name, to the system clipboard", Footer: "y copy", Run: b.onCursor(b.copyBranch)},
 		gotermboard.Action{Keys: []string{"c"}, Label: "comment: write it in your editor, and it posts when the editor exits", Run: b.onRow(b.comment)},
+		gotermboard.Action{
+			Keys:  []string{"f"},
+			Label: "fix what keeps GitHub from merging it: a menu of fixes for conflicts, a branch behind, failing checks or a draft",
+			Run:   b.onRow(b.fix),
+		},
 		gotermboard.Action{Keys: []string{"x"}, Label: "close without merging, after asking, and enter alone keeps it open", Run: b.onRow(b.closePR)},
 		gotermboard.Action{
 			Keys: []string{"space"}, Label: "mark for m to merge with the others marked, where its checks pass and GitHub reads it ready; on a group's header, fold it",
@@ -380,8 +385,22 @@ func openDiffview(revisions string) string {
 
 // merge asks first, and enter alone merges. A merge confirmed by reflex lands work that was
 // landing anyway, and the question is there to show which pull request lands. Anything typed
-// but y or yes leaves it, so a stray key still stops it.
+// but y or yes leaves it, so a stray key still stops it. A pull request whose record says
+// GitHub would refuse the merge is read again first, and opens the fix menu where the new read
+// still says so.
 func (b *Board) merge(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
+	if _, why := b.mergeable(pr); why != "" {
+		m.Say(refused(pr, "merge", why).Error())
+		return nil
+	}
+	if blockerOf(pr) != "" {
+		return b.readThenFix(m, pr, fixFrom{merge: true})
+	}
+	return b.askMerge(m, pr)
+}
+
+// askMerge is merge's question.
+func (b *Board) askMerge(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd {
 	provider, why := b.mergeable(pr)
 	if why != "" {
 		m.Say(refused(pr, "merge", why).Error())
@@ -427,7 +446,9 @@ func (b *Board) pinFor(pr pullrequests.PullRequest) (head, from string) {
 }
 
 // mergeWork merges the pull request through its host's client, pinned to head where head is
-// set, and moves its row to recently closed once it has.
+// set, and moves its row to recently closed once it has. A merge the host refuses opens the fix
+// menu, with the host's words, on a host that reports a merge state. One that got no answer
+// may have merged, so it says so instead.
 func (b *Board) mergeWork(pr pullrequests.PullRequest, provider pullrequests.Provider, head string) work {
 	argv, inCheckout := provider.Merge(pr, head)
 	return work{
@@ -438,6 +459,13 @@ func (b *Board) mergeWork(pr pullrequests.PullRequest, provider pullrequests.Pro
 			b.closeHere(m, pr, pullrequests.Merged)
 			m.Say(fmt.Sprintf("merged %s #%d", pr.Slug, pr.Number))
 			return nil
+		},
+		failed: func(m *gotermboard.Model, err error) tea.Cmd {
+			if errors.Is(err, pullrequests.ErrNoAnswer) || pr.MergeStateStatus == nil {
+				m.Say(err.Error())
+				return nil
+			}
+			return b.readThenFix(m, pr, fixFrom{refusal: err.Error()})
 		},
 	}
 }
@@ -582,7 +610,7 @@ func (b *Board) mergeInTurn(m *gotermboard.Model, queue []pullrequests.PullReque
 	merge, merged := w.run, w.done
 	w.doing = fmt.Sprintf("merging %s, %d of %d", name, tally.of-len(rest), tally.of)
 	w.run = func(ctx context.Context) error {
-		fresh, err := readMergeState(ctx, provider, ref)
+		fresh, _, err := readMergeState(ctx, provider, ref)
 		if err != nil {
 			return err
 		}
@@ -607,20 +635,21 @@ func (b *Board) mergeInTurn(m *gotermboard.Model, queue []pullrequests.PullReque
 	return b.start(w)
 }
 
-// readMergeState reads the pull request again for its merge state, and again after a pause
-// while GitHub is still computing it, up to mergeStateReads times.
-func readMergeState(ctx context.Context, provider pullrequests.Provider, ref pullrequests.Reference) (pullrequests.PullRequest, error) {
+// readMergeState reads the pull request again for its merge state, with its detail, and again
+// after a pause while GitHub is still computing it, up to mergeStateReads times. A draft is not
+// waited on, because a draft does not merge whatever GitHub works out.
+func readMergeState(ctx context.Context, provider pullrequests.Provider, ref pullrequests.Reference) (pullrequests.PullRequest, *pullrequests.Detail, error) {
 	for read := 1; ; read++ {
-		fresh, _, err := provider.ReadOne(ctx, ref)
+		fresh, detail, err := provider.ReadOne(ctx, ref)
 		if err != nil {
-			return pullrequests.PullRequest{}, fmt.Errorf("reading it again failed: %w", err)
+			return pullrequests.PullRequest{}, nil, fmt.Errorf("reading it again failed: %w", err)
 		}
-		if fresh.MergeStateStatus == nil || !mergeMeanings[*fresh.MergeStateStatus].computing || read == mergeStateReads {
-			return fresh, nil
+		if fresh.MergeStateStatus == nil || fresh.Draft || !mergeMeanings[*fresh.MergeStateStatus].computing || read == mergeStateReads {
+			return fresh, detail, nil
 		}
 		select {
 		case <-ctx.Done():
-			return fresh, ctx.Err()
+			return fresh, detail, ctx.Err()
 		case <-time.After(mergeStatePause):
 		}
 	}
@@ -785,11 +814,11 @@ func (b *Board) windowAction(window config.WindowAction) func(pullrequests.PullR
 		}
 		// The command is a shell command, which tmux runs whole through its shell, so needs
 		// names the programs it runs.
-		if err := gotermboard.OpenWindow(name, checkout, []string{config.Fill(window.Command, fields)}, window.Needs...); err != nil {
+		if err := gotermboard.OpenWindow(name, checkout, []string{config.FillCommand(window.Command, fields)}, window.Needs...); err != nil {
 			return "", err
 		}
 		if window.RunsReviewRound {
-			b.roundWindows.openedHere(name)
+			b.windows.openedHere(name)
 		}
 		return "opened " + name + " in a tmux window", nil
 	}

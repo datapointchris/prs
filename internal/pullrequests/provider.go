@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,7 +54,21 @@ type Provider struct {
 	Merge   func(pr PullRequest, head string) (argv []string, inCheckout bool)
 	Close   func(PullRequest) (argv []string, inCheckout bool)
 	Comment func(pr PullRequest, path string) (argv []string, inCheckout bool)
+	// UpdateBranch, Ready, Rerun and FailedLog are the fix menu's commands, and run with no
+	// terminal as Merge does. UpdateBranch merges the base into the head branch on the host,
+	// and Ready takes a draft out of draft. Rerun runs a run's failed jobs again, and FailedLog
+	// prints what they logged, for a run CheckRun reads from a check's URL, empty for a check
+	// that is not one.
+	UpdateBranch func(PullRequest) (argv []string, inCheckout bool)
+	Ready        func(PullRequest) (argv []string, inCheckout bool)
+	Rerun        func(pr PullRequest, run string) (argv []string, inCheckout bool)
+	FailedLog    func(pr PullRequest, run string) (argv []string, inCheckout bool)
+	CheckRun     func(url string) string
 }
+
+// actionsRun reads the run out of a GitHub Actions check's URL, such as
+// https://github.com/<owner>/<name>/actions/runs/<run>/job/<job>.
+var actionsRun = regexp.MustCompile(`/actions/runs/(\d+)`)
 
 // Providers is a Provider for each name registry.Providers holds.
 var Providers = []Provider{
@@ -91,6 +106,24 @@ var Providers = []Provider{
 		},
 		Comment: func(pr PullRequest, path string) ([]string, bool) {
 			return []string{"gh", "pr", "comment", strconv.Itoa(pr.Number), "--repo", pr.Slug, "--body-file", path}, false
+		},
+		UpdateBranch: func(pr PullRequest) ([]string, bool) {
+			return []string{"gh", "pr", "update-branch", strconv.Itoa(pr.Number), "--repo", pr.Slug}, false
+		},
+		Ready: func(pr PullRequest) ([]string, bool) {
+			return []string{"gh", "pr", "ready", strconv.Itoa(pr.Number), "--repo", pr.Slug}, false
+		},
+		Rerun: func(pr PullRequest, run string) ([]string, bool) {
+			return []string{"gh", "run", "rerun", run, "--failed", "--repo", pr.Slug}, false
+		},
+		FailedLog: func(pr PullRequest, run string) ([]string, bool) {
+			return []string{"gh", "run", "view", run, "--log-failed", "--repo", pr.Slug}, false
+		},
+		CheckRun: func(url string) string {
+			if found := actionsRun.FindStringSubmatch(url); found != nil {
+				return found[1]
+			}
+			return ""
 		},
 	},
 	{

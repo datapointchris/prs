@@ -258,6 +258,37 @@ footer names what merged and what was left and why, and the open listings are re
 
 `y` copies the branch.
 
+### Fixes for what blocks a merge
+
+`m` on a pull request GitHub will not merge reads it again, and where GitHub still refuses
+it, opens a menu of fixes rather than asking to merge. A merge GitHub refuses anyway opens
+the same menu, with gh's words at its top, and `f` opens it on any row. Each choice is one
+key, `esc` leaves the menu, and no choice exits prs. prs reads no merge state from
+Bitbucket, so a Bitbucket row has no menu, and `m` there asks to merge as before.
+
+- **Conflicts** name the files that conflict, which `git merge-tree` reads before anything
+  is checked out. `n` resolves them in nvim. prs adds a worktree of the checkout under
+  `worktree_root`, as `<checkout's directory>/pr-<number>`, detached at the pull request's
+  head, so no branch checked out elsewhere moves. It merges `origin/<base>` into it, then
+  hands the terminal to nvim's `:DiffviewOpen`. Once nvim exits with nothing left
+  unmerged, prs shows the merge's changes and asks to commit it and push it to the head
+  branch, enter meaning yes, then removes the worktree. The push is a plain one, so it fails
+  rather than overwrites where the branch moved. With paths left unmerged it offers nvim
+  again, `git merge --abort`, or a fix of your own, and the merge waits in the worktree
+  until one of them, so `f` then `n` opens it again. `x` closes the pull request, after
+  asking.
+- **A branch behind its base** updates with `u`, which is `gh pr update-branch`. GitHub
+  merges the base into it, and its checks run again.
+- **Failing checks** are named. `l` reads the failed jobs' log full screen, from `gh run
+  view --log-failed`, and keeps it in `$TMPDIR`. `r` reruns the failed jobs with `gh run
+  rerun --failed`. Only a check GitHub Actions runs has a log or a rerun here. Where GitHub
+  would merge it with the checks failing, because none of them is required, `m` merges it
+  anyway.
+- **A draft** is marked ready for review with `r`, which is `gh pr ready`.
+- **A merge state GitHub is still working out** offers nothing, and `f` reads it again. A
+  pull request GitHub blocks for anything else, such as a required review, says what its
+  review and checks read.
+
 ### Keys of your own
 
 A window action in the config is a key that runs a command in a new tmux window, started
@@ -288,6 +319,34 @@ upgrade by the same rule.
 `claude running` while the window is open, which prs asks tmux every few seconds, until a
 round finishes after the key opened it. A session that ran a round keeps its window
 afterwards, so a window prs did not open reads running only where no round has finished.
+
+A merge fix in the config adds a choice to the fix menu, for the kinds of blocker it names:
+
+```yaml
+worktree_root: ~/worktrees
+merge_fixes:
+  - key: c
+    label: hand to claude
+    needs: [claude]
+    blockers: [conflicts, behind, failing-checks]
+    window: "fix {repo} #{number}"
+    command: "claude '/make-mergeable {number} {blocker}'"
+    row_reads: claude fixing
+```
+
+`blockers` names some of `conflicts`, `behind`, `failing-checks` and `draft`. The command
+runs in a tmux window opened behind the board, in the checkout, so the board stays in
+front. The row reads `row_reads`, or `fixing`, while the window is open. `window` takes the
+window action's placeholders, so the board finds the window from the row. `command` also
+takes `{path}`, the checkout, `{worktree}`, where a merge waits in one, `{head}` and
+`{base}`, the branches, `{blocker}`, the kind, and `{log}`, a file holding the failing
+checks' log. Each is empty where it does not apply. A branch name can hold `;` or `$`, so
+prs quotes the paths and branches for the shell itself. A command that puts one of them
+inside quotes of its own is refused, because prs's quotes would end its quotes rather than
+nest in them. A fix may not take a key the menu offers itself: `n`, `x`, `u`, `l`, `r`, `m`
+or `a`.
+
+`worktree_root` is `$XDG_DATA_HOME/prs/worktrees` where the config does not say.
 
 ## Opening on one pull request
 

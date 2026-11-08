@@ -43,6 +43,15 @@ exists. The file is YAML:
     list: [recap, list]
     show: [recap, show, "--{kind}", "{label}"]
     write: [recap, write, "--{kind}", "{label}"]
+  worktree_root: ~/worktrees
+  merge_fixes:
+    - key: c
+      label: hand to claude
+      needs: [claude]
+      blockers: [conflicts, behind, failing-checks]
+      window: "fix {repo} #{number}"
+      command: claude '/make-mergeable {number} {blocker}'
+      row_reads: claude fixing
 
 repos_registry names the repo registry, a JSON file of repos, each with a name, an owner,
 a path, a status and optionally a provider. PRS_REPOS_REGISTRY names it ahead of the
@@ -79,8 +88,32 @@ and prs reads nothing else it prints. show prints one window's recap as markdown
 writes one, a
 model call, and may be left out. %[5]s in show and write are filled in from the window.
 needs are the programs the commands run beyond each one's first, and a machine missing one
-draws no recaps tab, as a config naming no list does.`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds()),
-			pullrequests.ReposPerSearch, config.DefaultDiffSectionMaxLines, strings.Join(config.RecapPlaceholders(), " and ")),
+draws no recaps tab, as a config naming no list does.
+
+f, or m on a pull request GitHub will not merge, opens a menu of fixes for what blocks it.
+Resolving a conflict merges the base into a worktree of the checkout, detached at the pull
+request's head, under worktree_root, a directory for each checkout under it, and
+$XDG_DATA_HOME/prs/worktrees where the file does not say.
+
+Each merge fix adds a choice to that menu for the kinds of blocker it names in blockers:
+
+  %[6]s
+
+Its command runs in a tmux window opened behind the board, in the checkout, and the row
+reads row_reads, or fixing, while the window is open. window takes the window action's
+placeholders, so the board finds the window from the row. command takes these:
+
+  %[7]s
+
+{path} is the checkout, {worktree} the worktree where a merge waits in one, {head} and
+{base} the branches, {blocker} the kind, and {log} a file holding the failing checks' log.
+Each is empty where it does not apply. A branch name can hold ; or $, so prs quotes these
+for the shell itself, and a command that puts one inside quotes of its own is refused:
+
+  %[8]s`, int(config.DefaultRefreshEvery.Seconds()), int(config.DefaultClosedRefreshEvery.Seconds()),
+			pullrequests.ReposPerSearch, config.DefaultDiffSectionMaxLines, strings.Join(config.RecapPlaceholders(), " and "),
+			strings.Join(config.BlockerKinds, ", "), strings.Join(config.FixPlaceholders(), ", "),
+			strings.Join(config.ShellQuotedPlaceholders, ", ")),
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := config.Path()
@@ -167,6 +200,16 @@ draws no recaps tab, as a config naming no list does.`, int(config.DefaultRefres
 						_, _ = fmt.Fprintf(out, "%s  %s\n", pal.Bold(fmt.Sprintf("  %-6s", command.name)), shellQuoted(command.argv))
 					}
 				}
+			}
+			_, _ = fmt.Fprintf(out, "%s  %s  from %s\n", pal.Bold("worktree"), cfg.WorktreeRoot, cfg.WorktreeRootFrom)
+			for _, fix := range cfg.MergeFixes {
+				state := pal.Paint(gotermstyle.CodeGreen, "offered")
+				if err := board.RefusedFix(fix); err != nil {
+					state = pal.Paint(gotermstyle.CodeRed, "refused, "+err.Error())
+				} else if missing := fix.Missing(); len(missing) > 0 {
+					state = pal.Paint(gotermstyle.CodeYellow, "not offered, missing "+strings.Join(missing, ", "))
+				}
+				_, _ = fmt.Fprintf(out, "%s  %s  for %s  %s\n", pal.Bold(fmt.Sprintf("fix %-4s", fix.Key)), fix.Label, strings.Join(fix.Blockers, ", "), state)
 			}
 			return nil
 		},

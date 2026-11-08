@@ -158,14 +158,29 @@ const readTimeout = 2 * time.Minute
 // once the client itself has ended.
 const pipesGrace = 5 * time.Second
 
-// ErrNoAnswer is a client killed at its timeout. A client that changes a pull request may
-// have changed it by then.
-var ErrNoAnswer = fmt.Errorf("no answer in %s", readTimeout)
+// hooksTimeout bounds a git client that runs the repo's own hooks, such as a commit or a push,
+// which can run a repo's whole test suite.
+const hooksTimeout = 10 * time.Minute
+
+// ErrNoAnswer is a client killed at its timeout, which errors.Is finds whatever the timeout
+// was. A client that changes a pull request may have changed it by then.
+var ErrNoAnswer = errors.New("no answer")
+
+// noAnswer is ErrNoAnswer naming the timeout.
+type noAnswer struct{ within time.Duration }
+
+func (e noAnswer) Error() string        { return fmt.Sprintf("no answer in %s", e.within) }
+func (e noAnswer) Is(target error) bool { return target == ErrNoAnswer }
 
 // Run runs a client a key uses as a read runs one, and returns its stdout. It fails with the
 // first line the client said, or with ErrNoAnswer.
 func Run(ctx context.Context, dir string, argv ...string) ([]byte, error) {
-	out, said, err := run(ctx, dir, argv[0], argv[1:]...)
+	return RunWithin(ctx, readTimeout, dir, argv...)
+}
+
+// RunWithin is Run, bounded by within rather than a read's timeout.
+func RunWithin(ctx context.Context, within time.Duration, dir string, argv ...string) ([]byte, error) {
+	out, said, err := runFor(ctx, within, dir, argv[0], argv[1:]...)
 	switch {
 	case errors.Is(err, ErrNoAnswer), err != nil && said == "":
 		return out, err
@@ -212,7 +227,12 @@ func lastLineOf(path string) string {
 // in a session of its own, with no terminal to open, and git's prompt is turned off as well.
 // At the timeout its whole process group is killed, ssh included.
 func run(ctx context.Context, dir string, name string, args ...string) ([]byte, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, readTimeout)
+	return runFor(ctx, readTimeout, dir, name, args...)
+}
+
+// runFor is run bounded by within.
+func runFor(ctx context.Context, within time.Duration, dir string, name string, args ...string) ([]byte, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, within)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
@@ -224,7 +244,8 @@ func run(ctx context.Context, dir string, name string, args ...string) ([]byte, 
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return out, ErrNoAnswer.Error(), ErrNoAnswer
+		late := noAnswer{within: within}
+		return out, late.Error(), late
 	}
 	if err != nil {
 		said := strings.TrimSpace(stderr.String())

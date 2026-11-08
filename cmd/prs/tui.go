@@ -385,7 +385,7 @@ func loadBoard() (*board.Board, config.Config, error) {
 			return nil, cfg, err
 		}
 	}
-	b, err := board.New(repos, cfg.RefreshEvery, cfg.WindowActions)
+	b, err := board.New(repos, cfg.RefreshEvery, board.Configured{Windows: cfg.WindowActions, Fixes: cfg.MergeFixes, WorktreeRoot: cfg.WorktreeRoot})
 	if err != nil {
 		return nil, cfg, fmt.Errorf("%s: %w", cfg.File, err)
 	}

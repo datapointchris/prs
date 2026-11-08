@@ -32,6 +32,7 @@ const (
 	pathGlyph    = "" // fa-folder
 	numberGlyph  = "" // oct-git-pull-request
 	sinceGlyph   = "" // oct-git-commit
+	fixGlyph     = "" // fa-wrench
 	botGlyph     = "" // fa-robot, in every Nerd Font, where U+F544 is in none
 )
 
@@ -53,8 +54,9 @@ type meaning struct {
 	word string
 	code string
 	// passed is a check that needs nothing from anyone, which the document lists after
-	// those that do.
-	passed bool
+	// those that do, and failed one whose run ended without passing, which the fix menu
+	// reads and reruns.
+	passed, failed bool
 	// ready is a merge state that merges on its own, which space marks, and computing one
 	// GitHub has not worked out yet, which a batch reads again.
 	ready, computing bool
@@ -66,9 +68,9 @@ var checkMeanings = map[string]meaning{
 	"SUCCESS":   {word: "passing", code: gotermboard.Green, passed: true},
 	"NEUTRAL":   {word: "neutral", code: gotermboard.Green, passed: true},
 	"SKIPPED":   {word: "skipped", code: dim, passed: true},
-	"FAILURE":   {word: "failing", code: gotermboard.Red},
-	"ERROR":     {word: "failing", code: gotermboard.Red},
-	"TIMED_OUT": {word: "timed out", code: gotermboard.Red},
+	"FAILURE":   {word: "failing", code: gotermboard.Red, failed: true},
+	"ERROR":     {word: "failing", code: gotermboard.Red, failed: true},
+	"TIMED_OUT": {word: "timed out", code: gotermboard.Red, failed: true},
 	"":          {word: "not run", code: dim},
 }
 
@@ -410,9 +412,9 @@ var fieldGap = gotermboard.C("   ", "")
 
 // secondLine is a pull request's second line on the board: its checks under where it stands,
 // then where it is checked out, its number and the open pull request it is stacked on, its
-// review, its newest Claude review round, what was pushed since its newest review, and the
-// app that opened it. A field a pull request does not have takes no room. The line is cut at
-// the table's edge, so a narrow screen loses its end first.
+// review, its newest Claude review round, what was pushed since its newest review, a merge fix
+// running on it, and the app that opened it. A field a pull request does not have takes no
+// room. The line is cut at the table's edge, so a narrow screen loses its end first.
 func (b *Board) secondLine(at rowAt, parent int) gotermboard.Line {
 	pr := at.pr
 	line := gotermboard.Line{checksCell(pr)}
@@ -427,6 +429,9 @@ func (b *Board) secondLine(at rowAt, parent int) gotermboard.Line {
 	}
 	if since := sinceReviewCell(b.detailOf(pr)); since.Text != "" {
 		line = append(line, fieldGap, since)
+	}
+	if fixing := b.fixingCell(pr); fixing.Text != "" {
+		line = append(line, fieldGap, fixing)
 	}
 	if pr.IsBot() {
 		line = append(line, fieldGap, botCell(pr))

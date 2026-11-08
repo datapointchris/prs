@@ -173,23 +173,29 @@ func (b *Board) readAgain() {
 // says the outcome is unknown rather than that it failed.
 func runClient(pr pullrequests.PullRequest, verb string, argv []string, inCheckout bool) func(context.Context) error {
 	return func(ctx context.Context) error {
-		dir := ""
-		if inCheckout {
-			checkout, err := pullrequests.CheckoutOf(pr)
-			if err != nil {
-				return err
-			}
-			dir = checkout
-		}
-		_, err := pullrequests.Run(ctx, dir, argv...)
-		switch {
-		case errors.Is(err, pullrequests.ErrNoAnswer):
-			return fmt.Errorf("%s gave %w to %s #%d, so it may have happened; o opens its page", argv[0], err, verb, pr.Number)
-		case err != nil:
-			return fmt.Errorf("%s could not %s #%d: %w", argv[0], verb, pr.Number, err)
-		}
-		return nil
+		_, err := clientOutput(ctx, pr, verb, argv, inCheckout)
+		return err
 	}
+}
+
+// clientOutput is runClient's client run, and what it printed.
+func clientOutput(ctx context.Context, pr pullrequests.PullRequest, verb string, argv []string, inCheckout bool) ([]byte, error) {
+	dir := ""
+	if inCheckout {
+		checkout, err := pullrequests.CheckoutOf(pr)
+		if err != nil {
+			return nil, err
+		}
+		dir = checkout
+	}
+	out, err := pullrequests.Run(ctx, dir, argv...)
+	switch {
+	case errors.Is(err, pullrequests.ErrNoAnswer):
+		return out, fmt.Errorf("%s gave %w to %s #%d, so it may have happened; o opens its page", argv[0], err, verb, pr.Number)
+	case err != nil:
+		return out, fmt.Errorf("%s could not %s #%d: %w", argv[0], verb, pr.Number, err)
+	}
+	return out, nil
 }
 
 // nameWindow names prs's tmux window for the length of a handover, and returns what puts its
