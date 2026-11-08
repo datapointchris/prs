@@ -57,6 +57,8 @@ type Board struct {
 	// details holds each row's detail, read after each listing once ReadDetails is called.
 	details     *pullrequests.Details
 	readDetails bool
+	// openedOn is the pull request OpenOn read, and nil where the board opened on none.
+	openedOn *openedOn
 }
 
 // New is a board over repos, with the window actions the config adds. It refuses a window
@@ -111,6 +113,9 @@ func (b *Board) Sources() []gotermboard.Refresher {
 	for i, source := range b.sources {
 		refreshers[i] = source
 	}
+	if b.openedOn != nil {
+		refreshers = append(refreshers, b.openedOn.source)
+	}
 	return refreshers
 }
 
@@ -149,10 +154,14 @@ func (b *Board) Rows(now time.Time) []Row {
 	return rows
 }
 
+// statuses is each listing's read, then the read of the pull request the board opened on.
 func (b *Board) statuses() []gotermboard.Status {
 	statuses := make([]gotermboard.Status, len(b.sources))
 	for i, source := range b.sources {
 		statuses[i] = source.Status()
+	}
+	if b.openedOn != nil {
+		statuses = append(statuses, b.openedOn.source.Status())
 	}
 	return statuses
 }
@@ -184,17 +193,18 @@ func (b *Board) unread() bool {
 
 // failed says every provider was tried and none could be read.
 func (b *Board) failed() bool {
-	for _, status := range b.statuses() {
-		if status.Fault == "" || !status.ReadAt.IsZero() {
+	for _, source := range b.sources {
+		if status := source.Status(); status.Fault == "" || !status.ReadAt.IsZero() {
 			return false
 		}
 	}
 	return len(b.sources) > 0
 }
 
-// Frame is gotermboard.Board's: one group of every open pull request, oldest first.
+// Frame is gotermboard.Board's: one group of every open pull request, oldest first, under
+// the merged or closed pull request the board opened on, where there is one.
 func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
-	prs := b.pullRequests(now)
+	prs := b.withOpenedOn(b.pullRequests(now), now)
 	parents := stackParents(prs)
 	clear(b.shown)
 	group := gotermboard.Group{
@@ -205,6 +215,10 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 		b.shown[pr.Key()] = pr
 		group.Rows = append(group.Rows, b.row(pr, parents, now))
 	}
+	groups := []gotermboard.Group{group}
+	if apart, ok := b.apart(prs, parents, now); ok {
+		groups = append([]gotermboard.Group{apart}, groups...)
+	}
 	maps.DeleteFunc(b.settled, func(key string, _ settledState) bool { return !b.listed(key) })
 	maps.DeleteFunc(b.diffed, func(key, _ string) bool { return !b.listed(key) })
 	if len(prs) == 0 {
@@ -213,7 +227,8 @@ func (b *Board) Frame(now time.Time, _ string) gotermboard.Frame {
 	return gotermboard.Frame{
 		Strip:   []gotermboard.Line{gotermboard.ReadStatus(b.statuses(), now)},
 		Columns: columns,
-		Groups:  []gotermboard.Group{group},
+		Groups:  groups,
+		StartAt: b.startAt(),
 	}
 }
 
@@ -243,16 +258,22 @@ func (b *Board) emptyReason() string {
 
 // Snapshot is what --json prints: the rows the board draws, and how each read stands.
 // Registry is empty where the board reads owners whole, and Owners names them, with @me
-// for the token's own account.
+// for the token's own account. OpenedOn is the pull request --pr named, which may be
+// merged or closed, and null without one.
 type Snapshot struct {
 	View         string               `json:"view"`
 	Registry     string               `json:"registry"`
 	Owners       []string             `json:"owners,omitempty"`
 	PullRequests []Row                `json:"pull_requests"`
+	OpenedOn     *Row                 `json:"opened_on"`
 	Sources      []gotermboard.Status `json:"sources"`
 }
 
 // Snapshot reads what the board holds now.
 func (b *Board) Snapshot(now time.Time) Snapshot {
-	return Snapshot{View: View, Registry: b.registry, Owners: b.owners, PullRequests: b.Rows(now), Sources: b.statuses()}
+	rows := b.Rows(now)
+	return Snapshot{
+		View: View, Registry: b.registry, Owners: b.owners, PullRequests: rows,
+		OpenedOn: b.openedOnRow(rows, now), Sources: b.statuses(),
+	}
 }

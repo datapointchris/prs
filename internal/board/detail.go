@@ -19,6 +19,9 @@ func (b *Board) detailLines(pr pullrequests.PullRequest) []gotermboard.Line {
 		return nil
 	}
 	state := b.details.Of(pr)
+	if detail, own := b.openedOnDetail(pr); own && !state.Held {
+		state.Detail, state.Held = detail, true
+	}
 	if !state.Held {
 		switch {
 		case state.Fault != "":

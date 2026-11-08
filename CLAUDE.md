@@ -4,9 +4,11 @@ A Go command whose board is a view on gotermboard. `cmd/prs` holds the commands.
 `internal/board` is the view: `rows.go` the row grammar, `actions.go` the key table,
 `work.go` what a key runs in the background or hands the terminal to, `board.go` the
 sources, the frame and the `--json` snapshot, `table.go` what `prs list` prints, and
-`detail.go` the detail under a description. `internal/pullrequests` reads each provider:
-GitHub in-process through go-gh, Bitbucket through bbkt. `provider.go` holds everything
-prs does differently by host, and `detail.go` the per-PR detail cache.
+`detail.go` the detail under a description, and `opened_on.go` the pull request
+`prs tui --pr` names. `internal/pullrequests` reads each provider: GitHub in-process
+through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
+differently by host, `detail.go` the per-PR detail cache, and `reference.go` what `--pr`
+takes and how it is read.
 `internal/registry` reads the registry file, and `internal/config` reads
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
@@ -51,7 +53,17 @@ prs does differently by host, and `detail.go` the per-PR detail cache.
   window, such as a Claude session explaining the diff, reads `diff <repo> #<n>` off the
   window's name and asks nvim on `prs-diff-<repo>-<n>.sock` what is under the cursor. So
   `d` names prs's window that way while nvim has it.
+- **`prs tui --pr` is a contract too.** Other terminal programs jump to a pull request by
+  running it with `owner/name#number` or a URL, and get their screen back when `q` exits
+  0. A pull request it cannot read is refused before anything draws, with one line on
+  stderr and exit 1, so a caller can show why.
 - **A Provider verb a host's client lacks is nil**, and its key refuses with `lacking`.
+- **A per-host fact lives in the Provider table**: the state words a client prints, mapped
+  to `Standing`, and the path of a pull request's page, read by `PagePath`. The board
+  switches over `Standing` rather than over a host's words.
+- **`pull_requests` in `--json` holds only what the listings read.** The pull request
+  `--pr` names is `opened_on`, and the board draws its own read only where no listing holds
+  it.
 - **A pull request's detail never holds up its row.** The board reads each GitHub row's
   detail in the background after the listing lands, a few at a time. It reads one again
   when its head commit, update time or checks state moves, or when its last read failed.

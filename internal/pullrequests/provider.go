@@ -9,16 +9,26 @@ import (
 )
 
 // Provider is everything prs does differently by host, so a host is added in one place.
-// Every field after Head is a verb a host's client may lack, and is nil there. The key for
-// a nil verb says the host cannot do it.
+// Name, Standings, PagePath, Read and Head every host has. Every other function is a verb a
+// host's client may lack, and is nil there. The key for a nil verb says the host cannot do
+// it.
 type Provider struct {
 	Name string
+	// Standings is each state word the host's client prints, and where it puts the pull
+	// request.
+	Standings map[string]Standing
+	// PagePath reads owner/name and the number out of the path of a pull request's page,
+	// split at its slashes, and is false for a path that is not one.
+	PagePath func(parts []string) (slug, number string, ok bool)
 	// Read lists the open pull requests in the scope. last is the previous good listing,
 	// for a reader that can keep one repo's rows when only that repo failed.
 	Read func(ctx context.Context, scope Scope, last Listing) (Listing, error)
 	// Detail reads what the listing leaves out of one pull request. Nil where the host's
 	// client reads no more than its listing.
 	Detail func(ctx context.Context, pr PullRequest) (Detail, error)
+	// ReadOne reads the one pull request ref names, open or not, with its detail where the
+	// host has one.
+	ReadOne func(ctx context.Context, ref Reference) (PullRequest, *Detail, error)
 	// ReadsOwners says Read can read an owner whole, for a config that names owners.
 	ReadsOwners bool
 	// Head is what git fetches from origin as the pull request's head.
@@ -41,9 +51,18 @@ type Provider struct {
 // Providers is a Provider for each name registry.Providers holds.
 var Providers = []Provider{
 	{
-		Name:        registry.GitHub,
+		Name:      registry.GitHub,
+		Standings: map[string]Standing{"OPEN": Open, "MERGED": Merged, "CLOSED": Closed},
+		// github.com/<owner>/<name>/pull/<number>, then a tab such as /files.
+		PagePath: func(parts []string) (string, string, bool) {
+			if len(parts) < 4 || parts[2] != "pull" {
+				return "", "", false
+			}
+			return parts[0] + "/" + parts[1], parts[3], true
+		},
 		Read:        ReadGitHub,
 		Detail:      readGitHubDetail,
+		ReadOne:     readGitHubReference,
 		ReadsOwners: true,
 		Head:        func(pr PullRequest) string { return fmt.Sprintf("pull/%d/head", pr.Number) },
 		Browse: func(pr PullRequest) ([]string, bool) {
@@ -74,7 +93,21 @@ var Providers = []Provider{
 	},
 	{
 		Name: registry.Bitbucket,
-		Read: ReadBitbucket,
+		// Bitbucket Cloud supersedes a pull request where Bitbucket Server only declines one.
+		Standings: map[string]Standing{"OPEN": Open, "MERGED": Merged, "DECLINED": Closed, "SUPERSEDED": Closed},
+		// Server's /projects/<KEY>/repos/<name>/pull-requests/<number>, or Cloud's
+		// /<workspace>/<name>/pull-requests/<number>, then a tab such as /overview.
+		PagePath: func(parts []string) (string, string, bool) {
+			switch {
+			case len(parts) >= 6 && parts[0] == "projects" && parts[2] == "repos" && parts[4] == "pull-requests":
+				return parts[1] + "/" + parts[3], parts[5], true
+			case len(parts) >= 4 && parts[2] == "pull-requests":
+				return parts[0] + "/" + parts[1], parts[3], true
+			}
+			return "", "", false
+		},
+		Read:    ReadBitbucket,
+		ReadOne: readBitbucketReference,
 		// Bitbucket serves no pull request refs, so the head is the source branch on origin.
 		Head: func(pr PullRequest) string { return pr.Branch },
 		// bbkt finds the repo from the directory it runs in.

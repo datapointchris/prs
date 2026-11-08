@@ -25,7 +25,8 @@ import (
 const standInToken = "stand-in-token"
 
 // standIn is prs run against a stand-in GitHub answering the listing with
-// testdata/search.json and one pull request with testdata/pull-request.json, a stand-in
+// testdata/search.json and one pull request with testdata/pull-request-<number>.json where
+// there is one, else testdata/pull-request.json, a stand-in
 // bbkt answering testdata/bbkt-list.json, and a stand-in gh, tmux, claude, git, nvim and
 // editor. Each records its arguments, and a client records the body it was handed to post,
 // so no test reads a real account, changes a real pull request or starts a real Claude.
@@ -68,7 +69,8 @@ func gitHubStandIn(t *testing.T) string {
 			return
 		}
 		var request struct {
-			Query string `json:"query"`
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -77,6 +79,10 @@ func gitHubStandIn(t *testing.T) string {
 		answer := "search.json"
 		if strings.Contains(request.Query, "pullRequest(number:") {
 			answer = "pull-request.json"
+			// A pull request outside the listing has a file of its own.
+			if own := fmt.Sprintf("pull-request-%v.json", request.Variables["number"]); fileExists(filepath.Join("testdata", own)) {
+				answer = own
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		http.ServeFile(w, r, filepath.Join("testdata", answer))
@@ -92,6 +98,11 @@ func gitHubStandIn(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return config
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func newStandIn(t *testing.T) standIn {
@@ -128,6 +139,10 @@ exit 1
 		"bbkt": "#!/bin/sh\n" + record + `case "$1 $2" in
 'pr merge') exit 0 ;;
 'pr comment') ` + posted + ` exit 0 ;;
+'pr view')
+  [ -f "` + filepath.Dir(listed) + `/bbkt-view-$3.json" ] && exec cat "` + filepath.Dir(listed) + `/bbkt-view-$3.json"
+  echo "error: bitbucket 404 on /projects/FIN/repos/ledger/pull-requests/$3: Pull request $3 does not exist in FIN/ledger." >&2
+  exit 1 ;;
 esac
 ` + fmt.Sprintf("cat %q\n", listed),
 		"tmux":   "#!/bin/sh\n" + record + "case \"$*\" in *automatic-rename}*) printf 'prs\\t0\\n' ;; esac\n",
@@ -413,5 +428,61 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowReadsMergedAtOnce(t *tes
 	term.Press("q")
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
+	}
+}
+
+// Another program jumps to a pull request with --pr and gets its screen back on q. A listed
+// pull request opens where the list puts it, and a merged one is read on its own and opens
+// above the list. Each opens with its description showing and the cursor on it, which a
+// key's question naming it proves.
+func TestTuiOpensOnTheNamedPullRequestWithItsDescriptionAndQExits0(t *testing.T) {
+	s := newStandIn(t)
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "acme/widget#12"}, Env: s.env, Cols: 140, Rows: 30})
+	term.WaitFor("open · 4")
+	term.WaitFor("Caches the widget lookups for a minute.")
+	term.WaitFor("approved   mona  at 9e8d7c6")
+	term.Press("m")
+	term.WaitFor("merge acme/widget #12 — Cache the widget lookups? [Y/n]")
+	term.Press("n", "enter")
+	term.WaitFor("did not merge acme/widget #12")
+	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+
+	term = tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "https://github.com/acme/widget/pull/7"}, Env: s.env, Cols: 140, Rows: 30})
+	term.WaitFor("merged · 1")
+	term.WaitFor("Pins the schema the widget reads, so a newer one fails loudly.")
+	term.WaitFor("open · 4")
+	term.Press("m")
+	term.WaitFor("acme/widget #7 is merged already, so there is nothing to merge")
+	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+}
+
+// A jump from a merged Bitbucket pull request opens on it by its URL. --json names it as
+// opened_on and leaves it out of pull_requests, which holds what the listings read. One bbkt
+// cannot read is refused before anything draws.
+func TestAMergedBitbucketPullRequestOpensByItsURLAndOneBbktCannotReadIsRefused(t *testing.T) {
+	s := newStandIn(t)
+	out, said, code := s.run(t, "tui", "--pr", "https://bitbucket.example.com/projects/FIN/repos/ledger/pull-requests/3/overview", "--json")
+	var snap board.Snapshot
+	if err := json.Unmarshal([]byte(out), &snap); err != nil || code != 0 {
+		t.Fatalf("prs tui --pr <bitbucket URL> --json exited %d, saying %q: %v", code, said, err)
+	}
+	if on := snap.OpenedOn; on == nil || on.Provider != "bitbucket" || on.Slug != "FIN/ledger" || on.Number != 3 || on.State != "MERGED" {
+		t.Errorf("opened_on is %+v, want the merged FIN/ledger #3 on bitbucket", on)
+	}
+	for _, row := range snap.PullRequests {
+		if row.Number == 3 {
+			t.Errorf("pull_requests holds #3, which no listing read")
+		}
+	}
+
+	out, said, code = s.run(t, "tui", "--pr", "FIN/ledger#9", "--json")
+	if code != 1 || out != "" || !strings.Contains(said, "bbkt could not read FIN/ledger#9") {
+		t.Errorf("prs tui --pr FIN/ledger#9 exited %d and printed %q, saying %q", code, out, said)
 	}
 }

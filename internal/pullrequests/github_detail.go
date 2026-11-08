@@ -185,6 +185,15 @@ func ReadGitHubPullRequest(ctx context.Context, slug string, number int) (PullRe
 	return pr, detail, nil
 }
 
+// readGitHubReference is Provider.ReadOne for GitHub.
+func readGitHubReference(ctx context.Context, ref Reference) (PullRequest, *Detail, error) {
+	pr, detail, err := ReadGitHubPullRequest(ctx, ref.Slug, ref.Number)
+	if err != nil {
+		return PullRequest{}, nil, err
+	}
+	return pr, &detail, nil
+}
+
 // readGitHubDetail is Provider.Detail for GitHub.
 func readGitHubDetail(ctx context.Context, pr PullRequest) (Detail, error) {
 	_, detail, err := ReadGitHubPullRequest(ctx, pr.Slug, pr.Number)

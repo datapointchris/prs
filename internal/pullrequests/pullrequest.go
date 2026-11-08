@@ -70,6 +70,33 @@ type PullRequest struct {
 	HeadOID          *string `json:"head_oid"`
 }
 
+// Standing is where a pull request stands, in the three words prs acts on, whatever word its
+// host prints for it.
+type Standing int
+
+const (
+	Open Standing = iota
+	Merged
+	Closed
+)
+
+func (s Standing) String() string { return [...]string{"open", "merged", "closed"}[s] }
+
+// Standing is where the pull request stands, by its provider's Standings. A word the
+// provider does not name is refused, because a guess would draw a declined pull request as
+// open, or the reverse.
+func (pr PullRequest) Standing() (Standing, error) {
+	provider, err := ProviderOf(pr.Provider)
+	if err != nil {
+		return Open, err
+	}
+	standing, known := provider.Standings[pr.State]
+	if !known {
+		return Open, fmt.Errorf("%s says %s#%d is %s, a state prs does not know", pr.Provider, pr.Slug, pr.Number, pr.State)
+	}
+	return standing, nil
+}
+
 // Key names a pull request across reads, when its position and every field can change. It
 // carries the provider, because a GitHub repo and a Bitbucket one can share owner/name.
 func (pr PullRequest) Key() string {

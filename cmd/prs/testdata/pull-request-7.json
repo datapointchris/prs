@@ -1,0 +1,83 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 7,
+        "title": "Pin the widget schema",
+        "author": { "__typename": "User", "login": "octo" },
+        "body": "Pins the schema the widget reads, so a newer one fails loudly.",
+        "url": "https://github.com/acme/widget/pull/7",
+        "headRefName": "pin-schema",
+        "headRefOid": "7e6d5c4b3a2918071f0e9d8c7b6a5f4e3d2c1b0a",
+        "baseRefName": "main",
+        "isDraft": false,
+        "state": "MERGED",
+        "createdAt": "2026-10-20T09:00:00Z",
+        "updatedAt": "2026-10-22T16:00:00Z",
+        "mergedAt": "2026-10-22T16:00:00Z",
+        "closedAt": "2026-10-22T16:00:00Z",
+        "additions": 14,
+        "deletions": 3,
+        "changedFiles": 2,
+        "mergeable": "UNKNOWN",
+        "mergeStateStatus": "UNKNOWN",
+        "isInMergeQueue": false,
+        "reviewDecision": "APPROVED",
+        "reviews": { "totalCount": 1 },
+        "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+        "repository": { "name": "widget", "nameWithOwner": "acme/widget" },
+        "reviewRequests": { "nodes": [] },
+        "submittedReviews": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "author": { "login": "hubot" },
+              "state": "APPROVED",
+              "body": "",
+              "submittedAt": "2026-10-22T15:00:00Z",
+              "url": "https://github.com/acme/widget/pull/7#pullrequestreview-7",
+              "commit": { "oid": "7e6d5c4b3a2918071f0e9d8c7b6a5f4e3d2c1b0a" }
+            }
+          ]
+        },
+        "comments": { "totalCount": 0, "nodes": [] },
+        "reviewThreads": { "totalCount": 0, "nodes": [] },
+        "files": {
+          "totalCount": 2,
+          "nodes": [
+            { "path": "schema/version.go", "additions": 12, "deletions": 3, "changeType": "MODIFIED" },
+            { "path": "schema/version_test.go", "additions": 2, "deletions": 0, "changeType": "MODIFIED" }
+          ]
+        },
+        "history": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "commit": {
+                "oid": "7e6d5c4b3a2918071f0e9d8c7b6a5f4e3d2c1b0a",
+                "messageHeadline": "fix: pin the widget schema",
+                "committedDate": "2026-10-20T08:55:00Z",
+                "author": { "name": "Octo Cat", "user": { "login": "octo" } }
+              }
+            }
+          ]
+        },
+        "head": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "contexts": {
+                    "nodes": [
+                      { "__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://github.com/acme/widget/actions/runs/7" }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
