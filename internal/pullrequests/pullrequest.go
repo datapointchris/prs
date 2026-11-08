@@ -98,6 +98,12 @@ func (pr PullRequest) Standing() (Standing, error) {
 	return standing, nil
 }
 
+// IsBot says an app opened it. One whose listing does not say, or whose account is gone,
+// counts as a person's.
+func (pr PullRequest) IsBot() bool { return pr.Bot != nil && *pr.Bot }
+
+func authorIsBot(typename string) bool { return typename == "Bot" }
+
 // Key names a pull request across reads, when its position and every field can change. It
 // carries the provider, because a GitHub repo and a Bitbucket one can share owner/name.
 func (pr PullRequest) Key() string {
@@ -127,6 +133,23 @@ const ViewerOwner = "@me"
 
 // Empty says the scope names nothing to read.
 func (s Scope) Empty() bool { return len(s.Repos) == 0 && len(s.Owners) == 0 }
+
+// Names are the scope's repos as owner/name and its owners, each in lower case, sorted and
+// named once, because GitHub matches both in any case. A search asks for them, and a cache
+// of what the scope read is named by them, so a registry edit that changes neither keeps
+// its cache. Neither is nil.
+func (s Scope) Names() (repos, owners []string) {
+	repos, owners = []string{}, []string{}
+	for _, repo := range s.Repos {
+		repos = append(repos, strings.ToLower(repo.Slug))
+	}
+	for _, owner := range s.Owners {
+		owners = append(owners, strings.ToLower(owner))
+	}
+	slices.Sort(repos)
+	slices.Sort(owners)
+	return slices.Compact(repos), slices.Compact(owners)
+}
 
 // readTimeout bounds one client call, so a hung network never holds a read forever.
 const readTimeout = 2 * time.Minute

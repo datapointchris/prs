@@ -79,6 +79,6 @@ own repos on GitHub.`,
 	root.SetVersionTemplate("prs {{.Version}}\n")
 	// Registered here because cobra's own version flag takes -v.
 	root.Flags().Bool("version", false, "print the version")
-	root.AddCommand(tuiCommand(), listCommand(), configCommand(), goclikit.UpdateCommand(updateConfig()))
+	root.AddCommand(tuiCommand(), listCommand(), summaryCommand(), configCommand(), goclikit.UpdateCommand(updateConfig()))
 	return root
 }

@@ -79,6 +79,10 @@ type gitHub struct {
 	recorded    string
 	rounds      bool
 	pushed      bool
+	// history is the merged and closed pull requests the history search finds, and
+	// historyQueries each query it was asked, in order.
+	history        []map[string]any
+	historyQueries []string
 }
 
 // readsAs has one pull request read on its own carry state as its merge state, whatever the
@@ -241,8 +245,8 @@ func (g *gitHub) fail() {
 }
 
 // serveListing answers a listing request as the test last said. A search for closed pull
-// requests reads testdata/search-closed.json, keeping those closed at or after the instant
-// its closed:>= qualifier names, as GitHub does, so a query without one finds none.
+// requests reads testdata/search-closed.json, keeping those updated at or after the instant
+// its updated:>= qualifier names, as GitHub does, so a query without one finds none.
 func (g *gitHub) serveListing(w http.ResponseWriter, r *http.Request, query string) {
 	g.mu.Lock()
 	listing, down := g.listing, g.down
@@ -261,11 +265,11 @@ func (g *gitHub) serveListing(w http.ResponseWriter, r *http.Request, query stri
 	}
 }
 
-// closedSince is testdata/search-closed.json holding only the pull requests closed at or
-// after the closed:>= instant in query.
+// closedSince is testdata/search-closed.json holding only the pull requests updated at or
+// after the updated:>= instant in query.
 func closedSince(query string) []byte {
 	var since time.Time
-	if at := regexp.MustCompile(`closed:>=(\S+)`).FindStringSubmatch(query); at != nil {
+	if at := regexp.MustCompile(`updated:>=(\S+)`).FindStringSubmatch(query); at != nil {
 		since, _ = time.Parse(time.RFC3339, at[1])
 	}
 	raw, _ := os.ReadFile(filepath.Join("testdata", "search-closed.json"))
@@ -277,8 +281,8 @@ func closedSince(query string) []byte {
 	_ = json.Unmarshal(raw, &doc)
 	var nodes []map[string]any
 	for _, node := range doc.Data["s0"].Nodes {
-		closed, _ := time.Parse(time.RFC3339, fmt.Sprint(node["closedAt"]))
-		if !since.IsZero() && !closed.Before(since) {
+		updated, _ := time.Parse(time.RFC3339, fmt.Sprint(node["updatedAt"]))
+		if !since.IsZero() && !updated.Before(since) {
 			nodes = append(nodes, node)
 		}
 	}
@@ -324,6 +328,10 @@ func gitHubStandIn(t *testing.T, listing *gitHub) string {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.Contains(request.Query, "fragment HistoryRow") {
+			listing.serveHistory(w, request.Variables)
 			return
 		}
 		if !strings.Contains(request.Query, "pullRequest(number:") {

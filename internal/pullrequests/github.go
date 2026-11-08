@@ -125,39 +125,33 @@ func (s githubSearch) covers(pr PullRequest) bool {
 // githubSearches names the scope's repos with repo: qualifiers, which GitHub ORs, so it
 // answers only for those repos and no other repo of an owner's takes a place on the page.
 // Each owner a scope reads whole gets a search of its own. which is the qualifiers that pick
-// open or closed pull requests.
+// open or closed pull requests, and empty for every state.
 func githubSearches(scope Scope, which string) []githubSearch {
-	slugs := make([]string, 0, len(scope.Repos))
-	for _, repo := range scope.Repos {
-		slugs = append(slugs, strings.ToLower(repo.Slug))
-	}
-	slices.Sort(slugs)
-	slugs = slices.Compact(slugs)
+	repos, owners := scope.Names()
+	pick := strings.TrimSpace("is:pr " + which)
 	var searches []githubSearch
-	for chunk := range slices.Chunk(slugs, ReposPerSearch) {
+	for chunk := range slices.Chunk(repos, ReposPerSearch) {
 		qualifiers := make([]string, len(chunk))
 		for i, slug := range chunk {
 			qualifiers[i] = "repo:" + slug
 		}
-		searches = append(searches, githubSearch{query: "is:pr " + which + " " + strings.Join(qualifiers, " "), slugs: chunk})
+		searches = append(searches, githubSearch{query: pick + " " + strings.Join(qualifiers, " "), slugs: chunk})
 	}
-	owners := make([]string, 0, len(scope.Owners))
-	for _, owner := range scope.Owners {
-		owners = append(owners, strings.ToLower(owner))
-	}
-	slices.Sort(owners)
-	for _, owner := range slices.Compact(owners) {
-		searches = append(searches, githubSearch{query: "is:pr " + which + " user:" + owner, owner: owner})
+	for _, owner := range owners {
+		searches = append(searches, githubSearch{query: pick + " user:" + owner, owner: owner})
 	}
 	return searches
 }
 
 const openQualifiers = "is:open"
 
-// closedQualifiers pick the pull requests merged or closed at or after since, newest first,
-// so a page that cannot hold them all keeps the newest.
+// closedQualifiers pick the merged and closed pull requests updated at or after since, the
+// newest first, so a page that cannot hold them all keeps the newest. GitHub's closed:
+// qualifier leaves out some pull requests that closed within its range, and updated: finds
+// them, because a pull request is never last updated before it closed. ReadGitHubClosed
+// drops those that closed before since.
 func closedQualifiers(since time.Time) string {
-	return "is:closed closed:>=" + since.UTC().Format(time.RFC3339) + " sort:updated-desc"
+	return "is:closed updated:>=" + since.UTC().Format(time.RFC3339) + " sort:updated-desc"
 }
 
 // githubListQuery is one GraphQL request holding a search per alias, s0 onward. GraphQL
@@ -181,7 +175,11 @@ func ReadGitHub(ctx context.Context, scope Scope, last Listing) (Listing, error)
 // ReadGitHubClosed is every pull request in the scope merged or closed at or after since, in
 // one request, as ReadGitHub reads the open ones.
 func ReadGitHubClosed(ctx context.Context, scope Scope, since time.Time, last Listing) (Listing, error) {
-	return readGitHub(ctx, githubSearches(scope, closedQualifiers(since)), "closed", last)
+	listing, err := readGitHub(ctx, githubSearches(scope, closedQualifiers(since)), "closed", last)
+	listing.PullRequests = slices.DeleteFunc(listing.PullRequests, func(pr PullRequest) bool {
+		return pr.ClosedAt == nil || pr.ClosedAt.Before(since)
+	})
+	return listing, err
 }
 
 // readGitHub runs the searches in one request. kind names what they find, for a note.
@@ -275,7 +273,7 @@ func githubPullRequest(node githubNode) PullRequest {
 	// A deleted account has no author, which says nothing about whether an app opened it.
 	if node.Author != nil {
 		pr.Author = node.Author.Login
-		bot := node.Author.Typename == "Bot"
+		bot := authorIsBot(node.Author.Typename)
 		pr.Bot = &bot
 	}
 	// No rollup until a workflow runs.

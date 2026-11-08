@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:prs:summary:v1",
+  "title": "The pull requests opened, merged and closed over a window",
+  "description": "What `prs summary --json` and `prs tui --view summary --json` print: the Summary tab's numbers for one window, then what they were counted from. Every count is split into all, those a person opened and those an app opened, and one whose author is gone counts as a person's. The merged and closed pull requests are GitHub's, read from a cache the run brings up to date. Every field is always present but owners. A measure over no pull request is null rather than 0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "view", "registry", "window", "since", "until", "open", "opened", "merged", "closed_unmerged",
+    "median_seconds_to_merge", "p90_seconds_to_merge", "merged_reviewed_by_round",
+    "merged_reviewed_by_round_share", "repos", "time_to_merge", "merged_per", "merged_over", "open_over",
+    "cache", "notes", "sources"
+  ],
+  "definitions": {
+    "kinds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["all", "people", "bots"],
+      "properties": {
+        "all": {"type": "integer", "minimum": 0},
+        "people": {"type": "integer", "minimum": 0},
+        "bots": {"type": "integer", "minimum": 0}
+      }
+    },
+    "measure": {"type": ["number", "null"], "minimum": 0},
+    "kindValues": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["all", "people", "bots"],
+      "properties": {
+        "all": {"$ref": "#/definitions/measure"},
+        "people": {"$ref": "#/definitions/measure"},
+        "bots": {"$ref": "#/definitions/measure"}
+      }
+    }
+  },
+  "properties": {
+    "view": {"const": "summary"},
+    "registry": {"description": "The registry the repos come from, and empty where prs reads owners whole.", "type": "string"},
+    "owners": {"description": "The owners read whole in a registry's place, with @me for the token's own account.", "type": "array", "items": {"type": "string"}},
+    "window": {"description": "The window's start as it was given, such as 30d or 2026-10-01.", "type": "string"},
+    "since": {"description": "The window's first instant.", "type": "string", "format": "date-time"},
+    "until": {"description": "The instant the window ends before: now, or --until.", "type": "string", "format": "date-time"},
+    "open": {"description": "The pull requests open at until, on every host prs reads.", "$ref": "#/definitions/kinds"},
+    "opened": {"description": "The pull requests opened within the window, whether open or closed now.", "$ref": "#/definitions/kinds"},
+    "merged": {"description": "The pull requests merged within the window.", "$ref": "#/definitions/kinds"},
+    "closed_unmerged": {"description": "The pull requests closed within the window without merging.", "$ref": "#/definitions/kinds"},
+    "median_seconds_to_merge": {"description": "From opening to merging, over the merges within the window, joined straight between the two nearest ranks.", "$ref": "#/definitions/kindValues"},
+    "p90_seconds_to_merge": {"description": "The 90th percentile of the same.", "$ref": "#/definitions/kindValues"},
+    "merged_reviewed_by_round": {"description": "The merges within the window whose first review was a Claude review round's, of any grammar version, from an app or someone who can write to the repo.", "$ref": "#/definitions/kinds"},
+    "merged_reviewed_by_round_share": {"description": "merged_reviewed_by_round as a share of merged, from 0 to 1.", "$ref": "#/definitions/kindValues"},
+    "repos": {
+      "description": "Each repo with a merge within the window, the most merges first, then by name.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slug", "merged", "median_seconds_to_merge"],
+        "properties": {
+          "slug": {"description": "owner/name as GitHub writes it.", "type": "string"},
+          "merged": {"$ref": "#/definitions/kinds"},
+          "median_seconds_to_merge": {"type": "number", "minimum": 0}
+        }
+      }
+    },
+    "time_to_merge": {
+      "description": "The merges within the window by how long each took from opening, in buckets shortest first, each naming its own edges.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "from_seconds", "to_seconds", "merged"],
+        "properties": {
+          "label": {"type": "string"},
+          "from_seconds": {"type": "number", "minimum": 0},
+          "to_seconds": {"description": "Null on the last bucket, which has no end.", "type": ["number", "null"]},
+          "merged": {"$ref": "#/definitions/kinds"}
+        }
+      }
+    },
+    "merged_per": {"description": "The span each of merged_over counts: an hour for a short window, else a day.", "enum": ["hour", "day"]},
+    "merged_over": {
+      "description": "The merges in each hour or day, from the one holding since to the one holding until. A day starts at local midnight, so the first and last are partly outside the window and count only what falls inside it.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start", "merged"],
+        "properties": {
+          "start": {"type": "string", "format": "date-time"},
+          "merged": {"$ref": "#/definitions/kinds"}
+        }
+      }
+    },
+    "open_over": {
+      "description": "The open pull requests at evenly spaced instants from since, a whole number of hours apart, then at until.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at", "open"],
+        "properties": {
+          "at": {"type": "string", "format": "date-time"},
+          "open": {"$ref": "#/definitions/kinds"}
+        }
+      }
+    },
+    "cache": {
+      "description": "Where the merged and closed pull requests are kept, and how far back they reach. Null where nothing has been read into it.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["path", "from", "synced"],
+      "properties": {
+        "path": {"description": "The SQLite file, and empty where the run had nowhere to keep it.", "type": "string"},
+        "from": {"description": "Every pull request merged or closed at or after this is kept.", "type": "string", "format": "date-time"},
+        "synced": {"description": "Each kept pull request is as it stood at this instant or later.", "type": "string", "format": "date-time"}
+      }
+    },
+    "notes": {"description": "What the counts leave out, a sentence each, such as a window reaching past what the cache holds, or a host whose closed pull requests are not read.", "type": "array", "items": {"type": "string"}},
+    "sources": {
+      "description": "How each read stands: each host's open listing, then GitHub's merged and closed.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "every"],
+        "properties": {
+          "name": {"type": "string"},
+          "every": {"type": "string"},
+          "read_at": {"type": "string", "format": "date-time"},
+          "took": {"type": "string"},
+          "tried_at": {"type": "string", "format": "date-time"},
+          "fault": {"type": "string"},
+          "note": {"type": "string"},
+          "reading": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

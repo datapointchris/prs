@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/datapointchris/gotermboard"
 	"github.com/datapointchris/gotermstyle"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"golang.org/x/term"
 
 	"github.com/datapointchris/prs/internal/board"
@@ -26,6 +28,73 @@ const (
 	onceFallbackWidth  = 160
 	onceFallbackHeight = 50
 )
+
+// tuiTab is one tab prs tui draws: its name, which --view takes, the flags beside --view,
+// --once and --json that its printed frame reads, where to go for the rest, and how it opens
+// on the board.
+type tuiTab struct {
+	name      string
+	prints    []string
+	elsewhere string
+	open      func(b *board.Board, cfg config.Config) openedTab
+}
+
+// openedTab is a tab opened on the board: what gotermboard draws, what --json prints, why
+// --once or --json exits 1, and what it holds open, nil where it holds nothing.
+type openedTab struct {
+	board    gotermboard.Board
+	snapshot func(now time.Time) any
+	missed   func() error
+	close    func() error
+}
+
+// tuiTabs are prs tui's tabs, in the order tab steps through them, the first opening where
+// --view is not given.
+var tuiTabs = []tuiTab{
+	{name: board.View, prints: []string{"since", "pr"}, open: boardTab},
+	{name: board.SummaryView, elsewhere: "prs summary --since and --until set the window it counts", open: summaryTab},
+}
+
+func tuiTabNames() []string {
+	names := make([]string, len(tuiTabs))
+	for i, tab := range tuiTabs {
+		names[i] = tab.name
+	}
+	return names
+}
+
+func boardTab(b *board.Board, _ config.Config) openedTab {
+	return openedTab{
+		board:    b,
+		snapshot: func(now time.Time) any { return b.Snapshot(now) },
+		// A failed read and a repo with no open pull requests print the same rows, so the
+		// exit status is what tells a script the two apart.
+		missed: func() error {
+			var missed []string
+			if gaps := b.Gaps(); len(gaps) > 0 {
+				missed = append(missed, "could not read every open pull request: "+strings.Join(gaps, "; "))
+			}
+			if faults := b.ClosedFaults(); len(faults) > 0 {
+				missed = append(missed, "could not read the recently closed pull requests: "+strings.Join(faults, "; "))
+			}
+			if len(missed) > 0 {
+				return errors.New(strings.Join(missed, "; "))
+			}
+			return nil
+		},
+	}
+}
+
+func summaryTab(b *board.Board, cfg config.Config) openedTab {
+	window, _ := pullrequests.ParseSince(board.DefaultSummaryWindow, time.Local)
+	s := openSummary(b, cfg, window)
+	return openedTab{
+		board:    s,
+		snapshot: func(now time.Time) any { return s.Snapshot(now) },
+		missed:   func() error { return summaryFaults(s) },
+		close:    s.Close,
+	}
+}
 
 func tuiCommand() *cobra.Command {
 	var (
@@ -62,8 +131,8 @@ It opens on the rows the last run on the same repos read, kept under $XDG_CACHE_
 with their age on the first line, and reads each provider behind them. It reads the open
 pull requests again every refresh_every_seconds in the config, %d by default, whenever its
 terminal gains focus, and whenever a program a key handed the terminal to exits. It reads
-the recently closed every closed_refresh_every_seconds, %d by default, because that read
-costs GitHub as much again. A spinner follows the age while a read runs, and a read that
+the recently closed, and the Summary tab what changed in its history, every
+closed_refresh_every_seconds, %d by default, because each read costs GitHub as much again. A spinner follows the age while a read runs, and a read that
 fails keeps the rows and names why on that line. A refresh leaves the cursor on its pull
 request, in the group it was in, and one no read lists any more stays under the cursor,
 marked gone, until the cursor moves off it.`,
@@ -105,6 +174,11 @@ where the list puts it, and a merged or closed one sits above the list. One no l
 holds is read again on the same timer. A pull request prs cannot read is refused before
 the board draws.
 
+` + fmt.Sprintf(`tab moves to the Summary tab, and --view summary opens on it. It counts the pull requests
+opened, merged and closed over a window, %[1]s at first, which w and W step through
+%[2]s. It charts the merges per day, the open pull requests and the times to merge.
+prs summary --help says what each count is and where they are kept.
+
 --once prints one frame at COLUMNS by LINES, and --json the snapshot it is drawn from,
 so an agent reads what a person reads. Neither reads a pull request's own detail, so both
 leave out what the open board fills in from it: the Claude review round, the commits
@@ -112,7 +186,9 @@ since review, and the document's review, checks, files and comments. The snapsho
 the open pull requests under pull_requests and the recently closed under recently_closed.
 Either exits 1 after printing when a read failed, or when the open pull requests' read
 left some out. A recently closed read past its page keeps the newest, and says so on the
-first line. With no terminal and neither flag it refuses.`,
+first line. With --view summary, the frame is the Summary tab's and the snapshot is what
+prs summary --json prints for %[1]s. --since and --pr are the board's, so --view summary
+refuses them with --once or --json. With no terminal and neither flag it refuses.`, board.DefaultSummaryWindow, strings.Join(board.SummaryWindows, ", ")),
 		Example: `  prs tui
   prs tui --pr 'acme/widget#12'
   prs tui --pr https://github.com/acme/widget/pull/12
@@ -121,11 +197,22 @@ first line. With no terminal and neither flag it refuses.`,
   prs tui --json | jq '.pull_requests[] | {slug, number, checks}'`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if view != "" && view != board.View {
-				return goclikit.UsageError(fmt.Errorf("--view takes %s, not %q", board.View, view))
+			chosen := tuiTabs[0]
+			if view != "" {
+				at := slices.Index(tuiTabNames(), view)
+				if at < 0 {
+					return goclikit.UsageError(fmt.Errorf("--view takes %s, not %q", strings.Join(tuiTabNames(), " or "), view))
+				}
+				chosen = tuiTabs[at]
 			}
 			if once && asJSON {
 				return goclikit.UsageError(errors.New("--once prints a frame and --json a snapshot, so give one of them"))
+			}
+			printing := once || asJSON
+			if printing {
+				if err := refuseUnprinted(cmd, chosen); err != nil {
+					return goclikit.UsageError(err)
+				}
 			}
 			var ref *pullrequests.Reference
 			if openOn != "" {
@@ -139,7 +226,6 @@ first line. With no terminal and neither flag it refuses.`,
 			if err != nil {
 				return goclikit.UsageError(fmt.Errorf("--since %w", err))
 			}
-			printing := once || asJSON
 			if !printing && (!term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))) {
 				return goclikit.UsageError(errors.New("prs tui needs a terminal; --once prints one frame and --json the snapshot"))
 			}
@@ -162,48 +248,70 @@ first line. With no terminal and neither flag it refuses.`,
 				if kept, err := config.ListingCacheDir(); err == nil {
 					b.KeepListings(kept)
 				}
-				tabs, err := gotermboard.NewTabs([]gotermboard.Tab{{Name: board.View, Board: b}}, pal, view)
+				var tabs []gotermboard.Tab
+				var closers []func() error
+				defer func() {
+					for _, close := range closers {
+						_ = close()
+					}
+				}()
+				for _, tab := range tuiTabs {
+					opened := tab.open(b, cfg)
+					if opened.close != nil {
+						closers = append(closers, opened.close)
+					}
+					tabs = append(tabs, gotermboard.Tab{Name: tab.name, Board: opened.board})
+				}
+				model, err := gotermboard.NewTabs(tabs, pal, view)
 				if err != nil {
 					return err
 				}
-				_, err = tea.NewProgram(reportsFocus{tabs}).Run()
+				_, err = tea.NewProgram(reportsFocus{model}).Run()
 				return err
 			}
-			gotermboard.RefreshAll(cmd.Context(), b.Sources()...)
+			opened := chosen.open(b, cfg)
+			if opened.close != nil {
+				defer func() { _ = opened.close() }()
+			}
+			gotermboard.RefreshAll(cmd.Context(), opened.board.Sources()...)
 			if asJSON {
 				encoder := json.NewEncoder(cmd.OutOrStdout())
 				encoder.SetIndent("", "  ")
 				encoder.SetEscapeHTML(false)
-				err = encoder.Encode(b.Snapshot(time.Now()))
+				err = encoder.Encode(opened.snapshot(time.Now()))
 			} else {
 				width, height := gotermboard.OnceSize(onceFallbackWidth, onceFallbackHeight)
-				_, err = fmt.Fprintln(cmd.OutOrStdout(), gotermboard.Once(b, pal, width, height))
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), gotermboard.Once(opened.board, pal, width, height))
 			}
 			if err != nil {
 				return err
 			}
-			// A failed read and a repo with no open pull requests print the same rows, so
-			// the exit status is what tells a script the two apart.
-			var missed []string
-			if gaps := b.Gaps(); len(gaps) > 0 {
-				missed = append(missed, "could not read every open pull request: "+strings.Join(gaps, "; "))
-			}
-			if faults := b.ClosedFaults(); len(faults) > 0 {
-				missed = append(missed, "could not read the recently closed pull requests: "+strings.Join(faults, "; "))
-			}
-			if len(missed) > 0 {
-				return errors.New(strings.Join(missed, "; "))
-			}
-			return nil
+			return opened.missed()
 		},
 	}
-	cmd.Flags().StringVar(&view, "view", "", "Open on this tab: "+board.View)
+	cmd.Flags().StringVar(&view, "view", "", "Open on this tab: "+strings.Join(tuiTabNames(), " or "))
 	cmd.Flags().StringVar(&openOn, "pr", "", "Open on this pull request, as owner/name#number or its URL")
 	cmd.Flags().StringVar(&since, "since", "2d",
 		"Hold in recently closed what closed at or after then: a span back from each read (30m, 12h, 2d, 1w), a day (2026-10-01) or an RFC 3339 instant")
 	cmd.Flags().BoolVar(&once, "once", false, "Print one frame of the tab at COLUMNS by LINES, then exit")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output the tab's snapshot as JSON to stdout")
 	return cmd
+}
+
+// refuseUnprinted refuses a flag the tab --once or --json prints does not read, because it
+// would be taken and do nothing.
+func refuseUnprinted(cmd *cobra.Command, tab tuiTab) error {
+	var refused error
+	cmd.Flags().Visit(func(flag *pflag.Flag) {
+		if refused != nil || slices.Contains([]string{"view", "once", "json"}, flag.Name) || slices.Contains(tab.prints, flag.Name) {
+			return
+		}
+		refused = fmt.Errorf("--view %s prints the %s tab, which reads no --%s", tab.name, tab.name, flag.Name)
+		if tab.elsewhere != "" {
+			refused = fmt.Errorf("%w: %s", refused, tab.elsewhere)
+		}
+	})
+	return refused
 }
 
 // loadBoard reads the config and the repos it chooses: the registry's, the owners', or
