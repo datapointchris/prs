@@ -193,6 +193,7 @@ func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now 
 		Document:    b.document(pr),
 		ReaderTitle: pr.Title,
 		StartsOpen:  b.isOpenedOn(pr),
+		Marked:      b.marked[pr.Key()],
 		Text:        strings.Join([]string{pr.Body, pr.Author, pr.Branch, pr.Slug}, " "),
 	}
 }

@@ -65,8 +65,101 @@ func (b *Board) keyTable(windows []config.WindowAction) []gotermboard.Action {
 		gotermboard.Action{Keys: []string{"y"}, Label: "copy branch: its name, to the system clipboard", Footer: "y copy", Run: b.onCursor(b.copyBranch)},
 		gotermboard.Action{Keys: []string{"c"}, Label: "comment: write it in your editor, and it posts when the editor exits", Run: b.onRow(b.comment)},
 		gotermboard.Action{Keys: []string{"x"}, Label: "close without merging, after asking, and enter alone keeps it open", Run: b.onRow(b.closePR)},
-		gotermboard.Action{Keys: []string{"m"}, Label: "merge, after asking, and enter alone merges", Run: b.onRow(b.merge)},
+		gotermboard.Action{
+			Keys: []string{"space"}, Label: "mark for m to merge with the others marked, where its checks pass and GitHub reads it clean; on a group's header, fold it",
+			Footer: "space mark", Run: b.space,
+		},
+		gotermboard.Action{Keys: []string{"m"}, Label: "merge, after asking, and enter alone merges; with rows marked, every one of them, one at a time", Run: b.mergeKey},
 	)
+}
+
+// space folds a group's header and closes a row's text open in place, as the table's space
+// does, and otherwise marks the row for m, or takes its mark off. A row whose merge could not
+// go through without a person is refused, with why, and the batch's question names it again.
+func (b *Board) space(m *gotermboard.Model) tea.Cmd {
+	pr, ok := b.shown[m.Cursor()]
+	switch {
+	case !ok:
+		return m.Toggle()
+	case m.CloseInPlace():
+		return nil
+	case b.marked[pr.Key()]:
+		delete(b.marked, pr.Key())
+		m.Say(fmt.Sprintf("unmarked %s #%d%s", pr.Slug, pr.Number, b.markedCount()))
+	default:
+		if why := b.whyNotMarkable(pr); why != "" {
+			b.refused[pr.Key()] = true
+			m.Say(fmt.Sprintf("%s #%d cannot be marked, because %s", pr.Slug, pr.Number, why))
+			return nil
+		}
+		delete(b.refused, pr.Key())
+		b.marked[pr.Key()] = true
+		m.Say(fmt.Sprintf("marked %s #%d%s", pr.Slug, pr.Number, b.markedCount()))
+	}
+	m.Rebuild()
+	return nil
+}
+
+// markedCount is how many are marked, for what space says after it.
+func (b *Board) markedCount() string {
+	if len(b.marked) == 0 {
+		return ", and none is marked"
+	}
+	return fmt.Sprintf(", and m merges the %d marked", len(b.marked))
+}
+
+// whyNotMarkable is why space will not mark the pull request, and empty where it can: open,
+// with nothing under way on it, on a host prs can merge on, with its checks passing and its
+// merge state CLEAN.
+func (b *Board) whyNotMarkable(pr pullrequests.PullRequest) string {
+	if why := b.whyNotMergeable(pr); why != "" {
+		return why
+	}
+	return mergeBlocker(pr)
+}
+
+// whyNotMergeable is why the board will not merge the pull request whatever its record says,
+// and empty where it can.
+func (b *Board) whyNotMergeable(pr pullrequests.PullRequest) string {
+	switch state := b.stateOf(pr); state {
+	case merged, closed:
+		return "it is " + string(state) + " already"
+	case gone:
+		return "no read lists it any more"
+	}
+	if doing := b.busy(pr); doing != "" {
+		return doing + " is still under way"
+	}
+	if provider, err := pullrequests.ProviderOf(pr.Provider); err != nil || provider.Merge == nil {
+		return "prs cannot merge a pull request on " + pr.Provider
+	}
+	return ""
+}
+
+// mergeBlocker is why the pull request's record says it would not merge on its own, and empty
+// where its checks pass and its merge state is CLEAN. A host that reports no merge state is
+// one such, because nothing says the merge would go through.
+func mergeBlocker(pr pullrequests.PullRequest) string {
+	var why []string
+	if checks := checkMeaning(pr.Checks); !checks.passed {
+		why = append(why, "its checks are "+checks.word)
+	}
+	switch {
+	case pr.MergeStateStatus == nil:
+		why = append(why, pr.Provider+" reports no merge state for it")
+	case *pr.MergeStateStatus != "CLEAN":
+		why = append(why, "GitHub reads its merge state as "+words(*pr.MergeStateStatus)+", not clean")
+	}
+	return strings.Join(why, ", and ")
+}
+
+// mergeKey merges every marked pull request, where any is marked, and otherwise the one under
+// the cursor.
+func (b *Board) mergeKey(m *gotermboard.Model) tea.Cmd {
+	if len(b.marked) > 0 {
+		return b.mergeMarked(m)
+	}
+	return b.onRow(b.merge)(m)
 }
 
 // onRow runs act on the pull request under the cursor.
@@ -219,6 +312,175 @@ func (b *Board) merge(m *gotermboard.Model, pr pullrequests.PullRequest) tea.Cmd
 		},
 	})
 	return nil
+}
+
+// mergeMarked asks once, listing every marked pull request it will merge and each marked or
+// refused one it leaves out with why, then merges them one at a time in the order they draw.
+// Enter alone merges, as it does for one. The marks go once it is asked, because the question
+// named every one of them.
+func (b *Board) mergeMarked(m *gotermboard.Model) tea.Cmd {
+	if b.batching {
+		m.Say("a batch is still merging; m merges the marked ones once it ends")
+		return nil
+	}
+	var batch []pullrequests.PullRequest
+	var merging, leftOut []gotermboard.Line
+	for _, key := range b.drawnOrder {
+		pr := b.shown[key]
+		if !b.marked[key] && !b.refused[key] {
+			continue
+		}
+		switch why := b.whyNotMarkable(pr); {
+		case why != "":
+			leftOut = append(leftOut, prLine("    ", pr, why))
+		case b.marked[key]:
+			batch = append(batch, pr)
+			merging = append(merging, prLine("  "+gotermboard.MarkGlyph+" ", pr, ""))
+		}
+	}
+	if len(batch) == 0 {
+		m.Say("no marked pull request can merge now, so m merged nothing; space takes a mark off")
+		return nil
+	}
+	listing := append([]gotermboard.Line{{gotermboard.C(fmt.Sprintf("merging %d, one at a time, each read again just before it:", len(batch)), gotermboard.Bold)}}, merging...)
+	if len(leftOut) > 0 {
+		listing = append(listing, gotermboard.Line{gotermboard.C("leaving out:", gotermboard.Bold)})
+		listing = append(listing, leftOut...)
+	}
+	left := func() tea.Cmd {
+		m.Say(fmt.Sprintf("merged none of the %d marked; they stay marked", len(batch)))
+		return nil
+	}
+	m.Ask(gotermboard.Question{
+		Listing: listing,
+		Text:    fmt.Sprintf("merge these %d pull requests? [Y/n]", len(batch)),
+		Typed:   true,
+		Answer: func(typed string) tea.Cmd {
+			if !slices.Contains([]string{"", "y", "yes"}, strings.ToLower(typed)) {
+				return left()
+			}
+			clear(b.marked)
+			clear(b.refused)
+			b.batching = true
+			m.Rebuild()
+			return b.mergeInTurn(m, batch, &batchTally{of: len(batch)})
+		},
+		Cancel: left,
+	})
+	return nil
+}
+
+// prLine is a pull request as a question lists it, after lead, with why it is left out where
+// it is.
+func prLine(lead string, pr pullrequests.PullRequest, why string) gotermboard.Line {
+	line := gotermboard.Line{
+		gotermboard.C(fmt.Sprintf("%s%s #%d  ", lead, pr.Slug, pr.Number), gotermboard.Yellow),
+		gotermboard.C(pr.Title, ""),
+	}
+	if why != "" {
+		line = append(line, gotermboard.C(" — "+why, gotermboard.Red))
+	}
+	return line
+}
+
+// batchTally is how far a batch has got: how many it holds, which it merged, and each it left
+// with why.
+type batchTally struct {
+	of     int
+	merged []string
+	left   []string
+}
+
+// said is the footer's line once the batch ends.
+func (t *batchTally) said() string {
+	said := fmt.Sprintf("merged %d of %d", len(t.merged), t.of)
+	if len(t.merged) > 0 {
+		said += ": " + strings.Join(t.merged, ", ")
+	}
+	if len(t.left) > 0 {
+		said += ". Left " + strings.Join(t.left, "; ")
+	}
+	return said
+}
+
+// Reads of one pull request while GitHub works out its merge state, which a merge into its
+// base sets it doing, and the pause between them.
+const (
+	mergeStateReads = 5
+	mergeStatePause = 2 * time.Second
+)
+
+// mergeInTurn merges the first of queue, then the rest. Each is read again just before, because
+// merging one can leave the next on the same repo behind or conflicting, and one that reads as
+// anything but CLEAN with passing checks is left and named while the rest go on. Each merge pins
+// the head d fetched, or else the one the question listed, so a commit pushed since is not
+// merged unseen. The open listings are read again once it ends, because the merges move the
+// merge state of the rows it leaves on the same repos.
+func (b *Board) mergeInTurn(m *gotermboard.Model, queue []pullrequests.PullRequest, tally *batchTally) tea.Cmd {
+	if len(queue) == 0 {
+		b.batching = false
+		b.readAgain()
+		m.Say(tally.said())
+		return nil
+	}
+	pr, rest := queue[0], queue[1:]
+	name := fmt.Sprintf("%s #%d", pr.Slug, pr.Number)
+	next := func(m *gotermboard.Model, why string) tea.Cmd {
+		tally.left = append(tally.left, name+": "+why)
+		return b.mergeInTurn(m, rest, tally)
+	}
+	if why := b.whyNotMergeable(pr); why != "" {
+		return next(m, why)
+	}
+	provider, _ := pullrequests.ProviderOf(pr.Provider)
+	head, pinned := b.diffed[pr.Key()], "d fetched it"
+	if head == "" && pr.HeadOID != nil {
+		head, pinned = *pr.HeadOID, "the question listed it"
+	}
+	ref := pullrequests.Reference{Provider: pr.Provider, Slug: pr.Slug, Number: pr.Number}
+	return b.start(work{
+		pr:    pr,
+		doing: fmt.Sprintf("merging %s, %d of %d", name, tally.of-len(rest), tally.of),
+		run: func(ctx context.Context) error {
+			fresh, err := readMergeState(ctx, provider, ref)
+			if err != nil {
+				return err
+			}
+			if why := mergeBlocker(fresh); why != "" {
+				return errors.New(why)
+			}
+			if head != "" && fresh.HeadOID != nil && *fresh.HeadOID != head {
+				return fmt.Errorf("a commit was pushed to it since %s", pinned)
+			}
+			argv, inCheckout := provider.Merge(pr, head)
+			return runClient(pr, "merge", argv, inCheckout)(ctx)
+		},
+		done: func(m *gotermboard.Model) tea.Cmd {
+			b.closeHere(m, pr, pullrequests.Merged)
+			tally.merged = append(tally.merged, name)
+			return b.mergeInTurn(m, rest, tally)
+		},
+		failed: func(m *gotermboard.Model, err error) tea.Cmd { return next(m, err.Error()) },
+	})
+}
+
+// readMergeState reads the pull request again for its merge state, and again after a pause
+// while GitHub reads it as UNKNOWN, up to mergeStateReads times.
+func readMergeState(ctx context.Context, provider pullrequests.Provider, ref pullrequests.Reference) (pullrequests.PullRequest, error) {
+	for read := 1; ; read++ {
+		fresh, _, err := provider.ReadOne(ctx, ref)
+		if err != nil {
+			return pullrequests.PullRequest{}, fmt.Errorf("reading it again failed: %w", err)
+		}
+		if fresh.MergeStateStatus == nil || *fresh.MergeStateStatus != "UNKNOWN" || read == mergeStateReads {
+			return fresh, nil
+		}
+		select {
+		case <-ctx.Done():
+			return fresh, ctx.Err()
+		case <-time.After(mergeStatePause):
+		}
+	}
 }
 
 // closePR asks first, and enter alone keeps it open. A close confirmed by reflex discards a

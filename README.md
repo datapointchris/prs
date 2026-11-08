@@ -190,11 +190,27 @@ while one runs is refused. On GitHub a merge after `d` pins the head the diff sh
 fails where the branch moved since. `c` opens your editor on an empty file and posts what
 was written when it exits. Merging, closing, commenting and `o`, which opens the page in
 the browser, each run while the list stays usable, named on the footer until they end. A
-row merged or closed here moves to `recently closed` at once, reading `merged` or `closed`,
-and the cursor goes with it. A read that starts after the key then says where it stands,
-so a merge a queue only accepted, or a close reopened on its page, returns it to its
-group. A failure says the client's own reason on the footer. Bitbucket's client has no verb to close a pull request, so `x`
-refuses there.
+row merged or closed here moves to `recently closed` at once, reading `merged` or `closed`.
+A cursor on it moves on to the next open row in its group, or the one above where it was
+the last, so a queue takes one key a pull request. A read that starts after the key then
+says where it stands, so a merge a queue only accepted, or a close reopened on its page,
+returns it to its group. A failure says the client's own reason on the footer. Bitbucket's
+client has no verb to close a pull request, so `x` refuses there.
+
+`space` marks a row for `m` to merge with the others marked, and a second press takes the
+mark off. It marks only a row whose checks pass and whose merge state GitHub reads as
+`CLEAN`, and names why on the footer where it refuses one. prs reads no merge state from
+Bitbucket, so a Bitbucket row is never marked. On a group's header `space` folds the group,
+and on a row open in place it closes the row.
+
+With rows marked, `m` asks once. The question lists every pull request it will merge, then
+each marked or refused one it leaves out, with why. Enter alone merges them, one at a time,
+in the order the board draws them. Each is read again just before its merge, because
+merging one can leave the next on the same repo behind or conflicting. One that no longer
+reads `CLEAN` with its checks passing is left, and the rest go on. Each merge pins the head
+`d` fetched, or else the one the question listed, so a commit pushed since is not merged
+unseen. When the batch ends, the footer names what merged and what was left and why, and
+the open listings are read again.
 
 `y` copies the branch.
 

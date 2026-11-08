@@ -32,8 +32,8 @@ const standInToken = "stand-in-token"
 
 // standIn is prs run against a stand-in GitHub answering the listing with
 // testdata/search.json, the closed listing with testdata/search-closed.json, and one pull
-// request with testdata/pull-request-<number>.json where there is one, else
-// testdata/pull-request.json, a stand-in
+// request with testdata/pull-request-<number>.json where there is one, else the listing's
+// row over testdata/pull-request.json, a stand-in
 // bbkt answering testdata/bbkt-list.json, and a stand-in gh, tmux, claude, git, nvim and
 // editor. Each records its arguments, and a client records the body it was handed to post,
 // so no test reads a real account, changes a real pull request or starts a real Claude.
@@ -60,11 +60,54 @@ const fetchedHead = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
 
 // gitHub is the stand-in GitHub's listing, which a test changes while prs runs. It answers
 // testdata/search.json until a test hands it another listing, and refuses each listing with
-// a 502 while down.
+// a 502 while down. One pull request reads as the listing's row over testdata/pull-request.json,
+// with the merge state mergeStates names for its number where it names one, and each such read
+// is recorded beside the stand-in programs' arguments.
 type gitHub struct {
-	mu      sync.Mutex
-	listing []byte
-	down    bool
+	mu          sync.Mutex
+	listing     []byte
+	down        bool
+	mergeStates map[int]string
+	recorded    string
+}
+
+// readsAs has one pull request read on its own carry state as its merge state, whatever the
+// listing says.
+func (g *gitHub) readsAs(number int, state string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.mergeStates[number] = state
+}
+
+// serveOne answers a read of one pull request: the listing's row for number laid over
+// testdata/pull-request.json, which carries the detail.
+func (g *gitHub) serveOne(w http.ResponseWriter, number int) {
+	g.mu.Lock()
+	listing, state := g.listing, g.mergeStates[number]
+	g.mu.Unlock()
+	if listing == nil {
+		listing, _ = os.ReadFile(filepath.Join("testdata", "search.json"))
+	}
+	raw, _ := os.ReadFile(filepath.Join("testdata", "pull-request.json"))
+	var answer, rows map[string]any
+	_ = json.Unmarshal(raw, &answer)
+	_ = json.Unmarshal(listing, &rows)
+	pr := answer["data"].(map[string]any)["repository"].(map[string]any)["pullRequest"].(map[string]any)
+	for _, node := range rows["data"].(map[string]any)["s0"].(map[string]any)["nodes"].([]any) {
+		if row := node.(map[string]any); row["number"] == float64(number) {
+			maps.Copy(pr, row)
+		}
+	}
+	if state != "" {
+		pr["mergeStateStatus"] = state
+	}
+	file, err := os.OpenFile(g.recorded, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err == nil {
+		_, _ = fmt.Fprintf(file, "github\npullRequest\n%d\n", number)
+		_ = file.Close()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(answer)
 }
 
 func (g *gitHub) answer(listing []byte) {
@@ -169,13 +212,14 @@ func gitHubStandIn(t *testing.T, listing *gitHub) string {
 			listing.serveListing(w, r, fmt.Sprint(request.Variables["s0"]))
 			return
 		}
-		answer := "pull-request.json"
 		// A pull request outside the listing has a file of its own.
 		if own := fmt.Sprintf("pull-request-%v.json", request.Variables["number"]); fileExists(filepath.Join("testdata", own)) {
-			answer = own
+			w.Header().Set("Content-Type", "application/json")
+			http.ServeFile(w, r, filepath.Join("testdata", own))
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		http.ServeFile(w, r, filepath.Join("testdata", answer))
+		number, _ := request.Variables["number"].(float64)
+		listing.serveOne(w, int(number))
 	}))
 	server.Listener = listener
 	server.Start()
@@ -204,7 +248,8 @@ func newStandIn(t *testing.T) standIn {
 	}
 	s := standIn{
 		config: filepath.Join(dir, "config", "prs", "config.yml"), checkout: filepath.Join(dir, "widget"), ledger: filepath.Join(dir, "ledger"),
-		tmp: filepath.Join(dir, "tmp"), recorded: filepath.Join(dir, "recorded"), handed: filepath.Join(dir, "handed"), github: &gitHub{},
+		tmp: filepath.Join(dir, "tmp"), recorded: filepath.Join(dir, "recorded"), handed: filepath.Join(dir, "handed"),
+		github: &gitHub{mergeStates: map[int]string{}, recorded: filepath.Join(dir, "recorded")},
 	}
 	bin := filepath.Join(dir, "bin")
 	for _, d := range []string{bin, s.checkout, s.ledger, s.tmp, filepath.Join(dir, "config", "prs")} {
@@ -597,9 +642,10 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtO
 	if recorded, _ := os.ReadFile(s.recorded); strings.Count(string(recorded), "pr\nmerge\n12\n") != 1 {
 		t.Error("m pressed while a merge is under way should not send a second merge")
 	}
-	// The cursor went with the row.
+	// The cursor moved on to the next open row in the people's group.
 	term.Press("m")
-	term.WaitFor("acme/widget #12 is merged already")
+	term.WaitFor("merge acme/gadget #5 — Tidy the gadget? [Y/n]")
+	term.Press("esc")
 
 	term.Press("g", "j", "j", "j", "j", "m", "enter")
 	term.WaitFor("gh could not merge #13: X Pull request acme/widget#13 is not mergeable")
@@ -647,6 +693,97 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtO
 	term.WaitFor("gh could not merge #13")
 	if !s.ran(t, "pr", "merge", "13", "--repo", "acme/widget", "--merge", "--match-head-commit", fetchedHead) {
 		t.Error("a merge after d should pin the head d fetched")
+	}
+	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+}
+
+// botQueue is testdata/search.json with widget #13 replaced by five pull requests the bot
+// opened, oldest first: #24's checks fail, and the rest are green and clean.
+func botQueue(t *testing.T) []byte {
+	t.Helper()
+	titles := map[int]string{21: "Pin the cache's clock", 22: "Drop the unused widget flag", 23: "Bump the linter", 24: "Retry the flaky fetch", 25: "Sort the widget imports"}
+	return editedSearch(t, func(pr map[string]any) []any {
+		if pr["number"] != 13.0 {
+			return []any{pr}
+		}
+		var queue []any
+		for number := 21; number <= 25; number++ {
+			raw, _ := json.Marshal(pr)
+			var bot map[string]any
+			_ = json.Unmarshal(raw, &bot)
+			checks, state := "SUCCESS", "CLEAN"
+			if number == 24 {
+				checks, state = "FAILURE", "UNSTABLE"
+			}
+			bot["number"], bot["title"], bot["mergeStateStatus"], bot["mergeable"] = number, titles[number], state, "MERGEABLE"
+			bot["headRefOid"], bot["createdAt"] = fmt.Sprintf("%040d", number), fmt.Sprintf("2026-11-0%dT09:00:00Z", number-20)
+			bot["commits"] = map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"statusCheckRollup": map[string]any{"state": checks}}}}}
+			queue = append(queue, bot)
+		}
+		return queue
+	})
+}
+
+// space marks only a green, clean row, and says why it refuses another. m on the marks asks
+// once, naming each one it merges and the one it leaves out with why, then merges them in the
+// order they draw, each after its own read. #22 reads behind by then, so it is left, named,
+// and the rest go on.
+func TestOneQuestionMergesEveryMarkedGreenPullRequestInTurnEachAfterItsOwnRead(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t)
+	s.github.answer(botQueue(t))
+	s.github.readsAs(22, "BEHIND")
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--since", "2026-11-01"}, Env: s.env, Cols: 160, Rows: 40})
+	term.WaitFor("bots · 5")
+	term.WaitFor("people · 3")
+
+	// ] jumps from the people's header to the bots'.
+	term.Press("g", "]", "j", "space")
+	term.WaitFor("marked acme/widget #21, and m merges the 1 marked")
+	term.Press("j", "space", "j", "space", "j", "space")
+	term.WaitFor("acme/widget #24 cannot be marked, because its checks are failing, and GitHub reads its merge state as unstable, not clean")
+	term.Press("j", "space")
+	term.WaitFor("marked acme/widget #25, and m merges the 4 marked")
+	if n := strings.Count(term.Frame().Text(), "◆"); n != 4 {
+		t.Errorf("4 rows should draw the mark, not %d:\n%s", n, term.Frame().Text())
+	}
+
+	term.Press("m")
+	term.WaitFor("merge these 4 pull requests? [Y/n]")
+	for _, pattern := range []string{
+		`merging 4, one at a time`, `◆ acme/widget #21  Pin the cache's clock`, `◆ acme/widget #22  Drop the unused widget flag`,
+		`◆ acme/widget #23  Bump the linter`, `◆ acme/widget #25  Sort the widget imports`,
+		`leaving out:\s+acme/widget #24  Retry the flaky fetch — its checks are failing`,
+	} {
+		term.WaitForPattern(pattern)
+	}
+	before, err := os.ReadFile(s.recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	term.Press("enter")
+	term.WaitFor("merged 3 of 4: acme/widget #21, acme/widget #23, acme/widget #25. Left acme/widget #22: GitHub reads its merge state as behind, not clean")
+
+	recorded, _ := os.ReadFile(s.recorded)
+	var events []string
+	lines := strings.Split(string(recorded[len(before):]), "\n")
+	for i, line := range lines {
+		switch {
+		case line == "pullRequest":
+			events = append(events, "read "+lines[i+1])
+		case line == "merge" && lines[i-1] == "pr":
+			events = append(events, fmt.Sprintf("merge %s pinned to %s", lines[i+1], lines[i+6]))
+		}
+	}
+	want := []string{
+		"read 21", "merge 21 pinned to " + fmt.Sprintf("%040d", 21), "read 22",
+		"read 23", "merge 23 pinned to " + fmt.Sprintf("%040d", 23), "read 25", "merge 25 pinned to " + fmt.Sprintf("%040d", 25),
+	}
+	if strings.Join(events, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the stand-ins saw:\n%s\nwant each merge after its own read, in the order the rows draw:\n%s", strings.Join(events, "\n"), strings.Join(want, "\n"))
 	}
 	term.Press("q")
 	if code := term.WaitExit(); code != 0 {

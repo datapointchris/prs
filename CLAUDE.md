@@ -49,8 +49,9 @@ is the shape of the threads file `d` hands nvim, held the same way.
 - **A refresh never moves the row under the cursor.** A pull request a read moves to
   another group stays under the cursor in the group it was drawn in, in its new state, and
   one no read lists stays there marked gone, each until the cursor leaves it. m and x
-  refuse a gone one. A merge or close a key made here moves its row at once, and the
-  cursor goes with it.
+  refuse a gone one. A merge or close a key made here moves its row at once, and a cursor
+  on it moves on to the next open row in its group, through `closeHere`, so a queue takes
+  one key a pull request.
 - **A pull request's group comes from its own record**: recently closed once its state is
   merged or closed, whichever listing read it, then bots where `bot` is true, then people.
   Where two listings read one pull request, the record updated last stands, because
@@ -78,7 +79,16 @@ is the shape of the threads file `d` hands nvim, held the same way.
 - **A key that changes a pull request acts only on the row under the cursor, or asks
   first.** Merge asks with enter meaning yes, and close with enter meaning no, because a
   reflex merge lands work that was landing anyway and a reflex close discards a branch
-  nobody read. A pull request with a change under way refuses another.
+  nobody read. A pull request with a change under way refuses another. m on marked rows
+  asks once, listing every title it merges and each it leaves out with why.
+- **space marks only a row whose checks pass and whose merge state is CLEAN**, so a batch
+  holds only what would merge on its own. A host with no merge state, as Bitbucket's
+  listing carries none, is never marked.
+- **A batch merges one pull request at a time, reading each again just before**, because
+  a merge can leave the next on the same repo behind or conflicting. One no longer CLEAN
+  with passing checks is left and named, and the rest go on. Each merge pins the head `d`
+  fetched, or else the one the question listed, so a commit pushed since is not merged
+  unseen.
 - **A key that waits on the network runs in the background**, through `work` in
   `work.go`, so the list stays usable and the footer names it until it ends. Every client
   it runs, git included, goes through `pullrequests.Run`, which a read's client shares.
@@ -129,6 +139,10 @@ is the shape of the threads file `d` hands nvim, held the same way.
   action on a bound key would take it the same way, such as `p`, the side panel's toggle,
   so `board.Refused` refuses one, reading the table's keys from `gotermboard.TableKeys()`
   and adding esc.
+- **prs binds space, so the table's fold and close reach it through the model.**
+  `m.Toggle` folds a group's header, and `m.CloseInPlace` closes a row open in place,
+  before space marks. A row `--pr` opens starts open on a narrow screen, and only space
+  closes it.
 - **The side panel and the Reader draw one document, `MarkdownDocument`.** A row sets
   `Document` and no `Panel`, so from `PanelFrom` columns gotermboard's panel draws the
   `Document` under the row's `ReaderTitle`. Such a row then starts folded beside the panel

@@ -241,6 +241,7 @@ func (b *Board) groups(rows []placed, parents map[[2]string]int, now time.Time) 
 				continue
 			}
 			b.shown[p.pr.Key()], b.drawnIn[p.pr.Key()] = p.pr, p.in
+			b.drawnOrder = append(b.drawnOrder, p.pr.Key())
 			group.Rows = append(group.Rows, b.row(p.pr, parents, now))
 		}
 		group.Count = len(group.Rows)
