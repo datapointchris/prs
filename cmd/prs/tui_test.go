@@ -611,19 +611,15 @@ func TestTheBoardSortsPeopleAboveBotsAndClosedBelowInWordsShowsTheDocumentBeside
 		}
 	}
 
-	// The cursor starts on the first row of whichever provider answered first, and g goes to
-	// the people's header.
-	term.Press("g", "j", "j")
-	// The board read the pull request's own detail after its listing landed.
+	// The cursor starts on the first row of whichever provider answered first, which can be
+	// #12, so the header's own panel is what says g has landed before j moves on.
+	term.Press("g")
+	term.WaitForPattern(`│\s*people · 3`)
+	term.Press("j", "j")
+	// The board read the pull request's own detail after its listing landed, and its document
+	// shares a line of the screen with a row of the table.
 	term.WaitFor("mona approved at 9e8d7c6")
-	beside := false
-	for line := range strings.SplitSeq(term.Frame().Text(), "\n") {
-		list, document, found := strings.Cut(line, "│")
-		beside = beside || found && strings.TrimSpace(list) != "" && strings.Contains(document, "acme/widget #12 · opened by octo")
-	}
-	if !beside {
-		t.Errorf("#12's document should share a line of the screen with a row of the table:\n%s", term.Frame().Text())
-	}
+	term.WaitForPattern(`[^│\n]*\S[^│\n]*│[^\n]*acme/widget #12 · opened by octo`)
 	term.Press("j", "j", "j")
 	term.WaitFor("Counts the hits the cache in #12 takes.")
 	term.WaitGone("Caches the widget lookups for a minute.")
