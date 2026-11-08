@@ -40,21 +40,21 @@ show names, in three groups. people holds those a person opened, and bots those 
 opened, each oldest first. recently closed holds those merged or closed within --since,
 newest first. Each header counts its rows, and enter on it folds them.
 
-Each row gives where it stands in one word: ready, behind, conflicts, blocked, mergeable
-with checks not passing, draft or unknown while open, and merged or closed after. Then its
-checks and review in words, its age, or how long ago it closed, its diff, its repo and
-number, and its title. f shows its branch and checkout under it. A Bitbucket row reads
-open, and only one merged here reaches recently closed, because prs reads no merge state
-or close time from Bitbucket.
+Each pull request takes two lines. The first gives where it stands in one word: ready,
+behind, conflicts, blocked, mergeable with checks not passing, draft or unknown while open,
+and merged or closed after. Then its title, its diff, its age, or how long ago it closed,
+and its branch. The second gives its checks in words, its checkout, its number and its
+review, and names the app that opened it. A Bitbucket row reads open, and only one merged
+here reaches recently closed, because prs reads no merge state or close time from
+Bitbucket.
 
-A pull request a Claude review round reviewed gains a CLAUDE cell after its review, from
-the newest round: its findings by section once the round comment posts, as in claude 2
-correctness · 1 design, with any reviewer that did not run counted beside them. Before the
-round comment, it reads claude running while the reviews post and claude unfinished once
-they have stopped for an hour. It reads claude reviewed where the newest review is of a
-version prs does not read. The column shows only while a row fills it. A window action
-marked runs_review_round reads running while its window is open and the round has not
-finished.
+A pull request a Claude review round reviewed reads the newest round after its review:
+its findings by section once the round comment posts, as in claude 2 correctness · 1
+design, with any reviewer that did not run counted beside them. Before the round comment,
+it reads claude running while the reviews post and claude unfinished once they have
+stopped for an hour. It reads claude reviewed where the newest review is of a version prs
+does not read. A window action marked runs_review_round reads running while its window is
+open and the round has not finished.
 
 It opens on the rows the last run on the same repos read, kept under $XDG_CACHE_HOME/prs,
 with their age on the first line, and reads each provider behind them. It reads the open

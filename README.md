@@ -122,23 +122,32 @@ field it filters on drops a repo silently, and every list it prints still looks 
   moved to another group stays under the cursor where it was, in its new state, and one no
   read lists any more stays there marked `gone`, each until the cursor moves off it. `m`
   and `x` refuse a `gone` one.
+- **Each pull request takes two lines, with a dotted rule between it and the next.** The
+  first line holds where it stands, its title, its diff, its age and its branch, its
+  columns spread across the width. The second holds its checks, its checkout, its number
+  and its review. A glyph marks each field but the title, and a field's glyph is the same
+  in every state.
 - **State is a word, never a color alone.** The first column says where a pull request
   stands: `ready`, `behind`, `conflicts`, `blocked`, `draft` or `unknown` while open, or
   `mergeable` where it can merge with its checks not passing, and `merged` or `closed`
-  after. A Bitbucket row reads `open`, because prs reads no merge state from Bitbucket. `checks
-  passing`, `review required` and `review 2 posted` follow it. Each reads under every
-  theme and under `NO_COLOR`, and the colors are the terminal's own 16.
-- **A Claude review round reads on its row.** Where one reviewed the pull request, a
-  `CLAUDE` cell after the review gives the newest round. Once its round comment posts, the
-  cell is its findings by section, as `claude 2 correctness · 1 design`. It adds `1 not
-  run` or `1 unread` where a reviewer did not run or its review could not be read, and
-  reads `claude did not run` where none ran. Before the round comment, it reads `claude
-  running` while the reviews post, and `claude unfinished` once they have stopped for an
-  hour. It reads `claude reviewed` where the newest review is of a version prs does not
-  read. The column shows only while a row fills it.
+  after. A Bitbucket row reads `open`, because prs reads no merge state from Bitbucket.
+  `checks passing` sits under the state, and `review required` or `review 2 posted`
+  follows the number. Each reads under every theme and under `NO_COLOR`, and the colors
+  are the terminal's own 16.
+- **A Claude review round reads on its row.** Where one reviewed the pull request, its
+  second line gives the newest round after the review. Once its round comment posts, that
+  is its findings by section, as `claude 2 correctness · 1 design`. It adds `1 not run` or
+  `1 unread` where a reviewer did not run or its review could not be read, and reads
+  `claude did not run` where none ran. Before the round comment, it reads `claude running`
+  while the reviews post, and `claude unfinished` once they have stopped for an hour. It
+  reads `claude reviewed` where the newest review is of a version prs does not read.
 - **A pull request whose base is another open one's branch names that one**, as `↑ #12`
-  after its title. A pull request an app opened names the app.
-- **The branch and the checkout are under the row**, dim, where `f` shows them.
+  after its number. A pull request an app opened names the app at the end of its second
+  line.
+- **A checkout reads from `~`**, and a repo not cloned here reads as its owner/name, `not
+  cloned here` beside it.
+- **The board keeps a margin at each side**, which a narrow terminal gives up first. The
+  margin also gives way to the side panel, so a terminal wide enough for the panel shows it.
 - **The glyphs are Nerd Font glyphs**, so the board wants a Nerd Font in the terminal.
 
 ## Each pull request's document
@@ -287,8 +296,9 @@ prs tui --pr https://bitbucket.example.com/projects/FIN/repos/ledger/pull-reques
 
 ## Reading it from a program
 
-`prs list` reads each provider once and prints the board's open rows as a table, the
-people's then the bots', under a line naming any provider it could not read. It reads no
+`prs list` reads each provider once and prints the board's open rows as a table, one line
+a pull request, the people's then the bots', under a line naming any provider it could not
+read. A `CLAUDE` column shows the newest review round while a row fills it. It reads no
 closed pull requests. `prs list --json` prints them as a JSON array, one
 object per pull request, in the shape [`cmd/prs/list.schema.json`](cmd/prs/list.schema.json)
 gives. Beside the row's columns it carries each pull request's state, its merge state, its

@@ -3,6 +3,7 @@ package board
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -142,9 +143,9 @@ func stateMeaning(pr pullrequests.PullRequest, state rowState) meaning {
 // words is an enum as words, CHANGES_REQUESTED as "changes requested".
 func words(enum string) string { return strings.ToLower(strings.ReplaceAll(enum, "_", " ")) }
 
-// rowColumn is one column of the board: its header, and the cell it draws on a pull request's
-// row. The last column, the title, wraps under itself and draws no cell of its own. An optional
-// column draws only while a row fills it.
+// rowColumn is one column of a table of pull requests: its header, and the cell it draws on a
+// pull request's line. A column with no cell is the line's last, which the table fills itself.
+// An optional column draws only while a row fills it.
 type rowColumn struct {
 	gotermboard.Column
 	cell     func(b *Board, at rowAt) gotermboard.Cell
@@ -158,13 +159,26 @@ type rowAt struct {
 	now   time.Time
 }
 
-// rowColumns carry the state, the checks, the review, the newest Claude review round, the age
-// and the sizes, then the repo and the number, then the title wrapping under itself. The
-// round's column is optional, so a board on repos no round reviews never has it. The three
-// diff counts each right-align in a column of their own, so the signs stack. The branch and
-// the checkout are read when acting rather than when scanning, so they sit dim under the row,
-// where f shows them.
-var rowColumns = []rowColumn{
+// boardColumns are a pull request's first line on the board: where it stands, its title, its
+// diff, its age and its branch, spread across the width. The diff's three counts each
+// right-align on a column of their own, so the signs stack, and the two after the first carry
+// no title, so the spread keeps them beside it. Its second line, under the first column, is
+// secondLine.
+var boardColumns = []rowColumn{
+	{Column: gotermboard.Column{Title: "STATUS"}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return stateCell(at.pr, at.state) }},
+	{Column: gotermboard.Column{Title: "TITLE"}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return titleCell(at.pr, at.state) }},
+	{Column: gotermboard.Column{Title: "DIFF", Right: true}, cell: diffCell(0)},
+	{Column: gotermboard.Column{Right: true}, cell: diffCell(1)},
+	{Column: gotermboard.Column{Right: true}, cell: diffCell(2)},
+	{Column: gotermboard.Column{Title: "AGE", Right: true}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return ageCell(at.pr, at.state, at.now) }},
+	{Column: gotermboard.Column{Title: "BRANCH"}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return branchCell(at.pr) }},
+}
+
+// listColumns are what prs list prints of a pull request on one line: the state, the checks,
+// the review, the newest Claude review round, the age and the sizes, then the repo and the
+// number, then the title. The round's column is optional, so a list of repos no round reviews
+// never has it.
+var listColumns = []rowColumn{
 	{Column: gotermboard.Column{Title: "STATE"}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return stateCell(at.pr, at.state) }},
 	{Column: gotermboard.Column{Title: "CHECKS"}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return checksCell(at.pr) }},
 	{Column: gotermboard.Column{Title: "REVIEW"}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return reviewCell(at.pr) }},
@@ -178,15 +192,13 @@ var rowColumns = []rowColumn{
 	{Column: gotermboard.Column{Right: true}, cell: diffCell(1)},
 	{Column: gotermboard.Column{Right: true}, cell: diffCell(2)},
 	{Column: gotermboard.Column{Title: "REPO", Max: repoWidth}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return repoCell(at.pr) }},
-	{Column: gotermboard.Column{Title: "#", Right: true}, cell: func(_ *Board, at rowAt) gotermboard.Cell {
-		return gotermboard.C(fmt.Sprintf("%s #%d", numberGlyph, at.pr.Number), gotermboard.Yellow)
-	}},
+	{Column: gotermboard.Column{Title: "#", Right: true}, cell: func(_ *Board, at rowAt) gotermboard.Cell { return numberCell(at.pr) }},
 	{Column: gotermboard.Column{Title: "PULL REQUEST"}},
 }
 
-// drawnColumns is rowColumns less each optional one no row of prs fills.
-func (b *Board) drawnColumns(prs []pullrequests.PullRequest, now time.Time) []rowColumn {
-	return slices.DeleteFunc(slices.Clone(rowColumns), func(column rowColumn) bool {
+// listedColumns is listColumns less each optional one no row of prs fills.
+func (b *Board) listedColumns(prs []pullrequests.PullRequest, now time.Time) []rowColumn {
+	return slices.DeleteFunc(slices.Clone(listColumns), func(column rowColumn) bool {
 		return column.optional && !slices.ContainsFunc(prs, func(pr pullrequests.PullRequest) bool {
 			return column.cell(b, rowAt{pr: pr, state: b.stateOf(pr), now: now}).Text != ""
 		})
@@ -227,19 +239,23 @@ func parentOf(pr pullrequests.PullRequest, parents map[[2]string]int) int {
 	return parent
 }
 
-func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now time.Time) gotermboard.Row {
-	at := rowAt{pr: pr, state: b.stateOf(pr), now: now}
+// cells are the cells columns draw on the pull request's line.
+func (b *Board) cells(columns []rowColumn, at rowAt) []gotermboard.Cell {
 	var cells []gotermboard.Cell
-	for _, column := range b.columns {
+	for _, column := range columns {
 		if column.cell != nil {
 			cells = append(cells, column.cell(b, at))
 		}
 	}
+	return cells
+}
+
+func (b *Board) row(pr pullrequests.PullRequest, parents map[[2]string]int, now time.Time) gotermboard.Row {
+	at := rowAt{pr: pr, state: b.stateOf(pr), now: now}
 	return gotermboard.Row{
 		Key:         pr.Key(),
-		Cells:       cells,
-		WrapLast:    titleLine(pr, parentOf(pr, parents), at.state),
-		Under:       gotermboard.C(identity(pr), dim),
+		Cells:       b.cells(boardColumns, at),
+		Second:      b.secondLine(at, parentOf(pr, parents)),
 		Document:    b.document(pr),
 		ReaderTitle: pr.Title,
 		StartsOpen:  b.isOpenedOn(pr),
@@ -342,37 +358,124 @@ func repoCell(pr pullrequests.PullRequest) gotermboard.Cell {
 	return gotermboard.C(pathGlyph+" "+pr.Repo, gotermboard.Cyan)
 }
 
-// titleLine is the title, the open pull request it is stacked on, and the app that opened it.
-// A pull request a person opened carries no mark, so the mark sets an app's row apart. A
-// draft's title and one with a row state are dim, because neither waits on a reviewer.
-func titleLine(pr pullrequests.PullRequest, parent int, state rowState) gotermboard.Line {
-	code := ""
+// titleCell is the title. A draft's and one with a row state are dim, because neither waits
+// on a reviewer.
+func titleCell(pr pullrequests.PullRequest, state rowState) gotermboard.Cell {
 	if state != "" || pr.Draft {
-		code = dim
+		return gotermboard.C(pr.Title, dim)
 	}
-	line := gotermboard.Line{gotermboard.C(pr.Title, code)}
+	return gotermboard.C(pr.Title, "")
+}
+
+// titleLine is the title, the open pull request it is stacked on, and the app that opened it.
+// A pull request a person opened carries no mark, so the mark sets an app's row apart.
+func titleLine(pr pullrequests.PullRequest, parent int, state rowState) gotermboard.Line {
+	line := gotermboard.Line{titleCell(pr, state)}
 	if parent != 0 {
-		line = append(line, gotermboard.C(fmt.Sprintf("  %s #%d", stackGlyph, parent), gotermboard.Yellow))
+		line = append(line, titleGap, stackCell(parent))
 	}
-	if pr.Bot != nil && *pr.Bot {
-		line = append(line, gotermboard.C("  "+botGlyph+" bot "+pr.Author, gotermboard.Magenta))
+	if isBot(pr) {
+		line = append(line, titleGap, botCell(pr))
 	}
 	return line
 }
 
-// identity is the branch, the base it targets, and the checkout on this disk, written
-// ~-rooted as it would be typed.
-func identity(pr pullrequests.PullRequest) string {
-	where := "not cloned here"
-	if pr.Path != "" {
-		where = pr.Path
-		if home, err := os.UserHomeDir(); err == nil {
-			if rest, ok := strings.CutPrefix(where, home); ok {
-				where = "~" + rest
-			}
-		}
+// titleGap is the space between the title and each mark after it in prs list.
+var titleGap = gotermboard.C("  ", "")
+
+// branchCell is the branch the pull request merges from.
+func branchCell(pr pullrequests.PullRequest) gotermboard.Cell {
+	return gotermboard.C(branchGlyph+"  "+orDash(pr.Branch), gotermboard.Blue)
+}
+
+// numberCell is the pull request's number.
+func numberCell(pr pullrequests.PullRequest) gotermboard.Cell {
+	return gotermboard.C(fmt.Sprintf("%s  #%d", numberGlyph, pr.Number), gotermboard.Yellow)
+}
+
+// stackCell is the number of the open pull request this one is stacked on.
+func stackCell(parent int) gotermboard.Cell {
+	return gotermboard.C(fmt.Sprintf("%s #%d", stackGlyph, parent), gotermboard.Yellow)
+}
+
+// botCell names the app that opened the pull request.
+func botCell(pr pullrequests.PullRequest) gotermboard.Cell {
+	return gotermboard.C(botGlyph+"  bot "+pr.Author, gotermboard.Magenta)
+}
+
+func isBot(pr pullrequests.PullRequest) bool { return pr.Bot != nil && *pr.Bot }
+
+// fieldGap is the space between two fields of a second line, wider than a field's own glyph
+// and words are apart, so each reads as a field.
+var fieldGap = gotermboard.C("   ", "")
+
+// secondLine is a pull request's second line on the board: its checks under where it stands,
+// then where it is checked out, its number and the open pull request it is stacked on, its
+// review, its newest Claude review round, and the app that opened it. A field a pull request
+// does not have takes no room. The line is cut at the table's edge, so a narrow screen loses
+// its end first.
+func (b *Board) secondLine(at rowAt, parent int) gotermboard.Line {
+	pr := at.pr
+	line := gotermboard.Line{checksCell(pr)}
+	line = append(line, whereCells(pr)...)
+	line = append(line, fieldGap, numberCell(pr))
+	if parent != 0 {
+		line = append(line, gotermboard.C(" ", ""), stackCell(parent))
 	}
-	return fmt.Sprintf("%s %s into %s   %s %s", branchGlyph, orDash(pr.Branch), orDash(pr.Base), pathGlyph, where)
+	line = append(line, fieldGap, reviewCell(pr))
+	if claude := claudeCell(b.reviewOf(pr, at.now)); claude.Text != "" {
+		line = append(line, fieldGap, claude)
+	}
+	if isBot(pr) {
+		line = append(line, fieldGap, botCell(pr))
+	}
+	return line
+}
+
+// whereCells are where the pull request is checked out on this disk, or its repo where it is
+// not cloned here, which d and the window keys refuse.
+func whereCells(pr pullrequests.PullRequest) gotermboard.Line {
+	if pr.Path == "" {
+		return gotermboard.Line{gotermboard.C(pathGlyph+"  "+pr.Slug, gotermboard.Cyan), gotermboard.C("  not cloned here", dim)}
+	}
+	return gotermboard.Line{gotermboard.C(pathGlyph+"  "+homeAsTilde(pr.Path), gotermboard.Cyan)}
+}
+
+// homeAsTilde is path for a person to read, with the home directory written ~ where path sits
+// inside it. The cut falls at a path segment, so a sibling of home keeps its whole path.
+func homeAsTilde(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(path, home+string(filepath.Separator)); ok {
+		return "~" + string(filepath.Separator) + rest
+	}
+	return path
+}
+
+// sideMargin is the columns of margin at each side of the board from marginFrom columns
+// wide. A narrower screen gives up a column a side for every two columns it lacks, rounded
+// up, and keeps one.
+const (
+	sideMargin = 12
+	marginFrom = 150
+)
+
+// Look is gotermboard.LookBoard's: a margin around the screen, the columns spread across the
+// width, rules under the titles and above the keys, and the cursor's pull request bold on the
+// selection. The margin gives way to the side panel, which gotermboard measures inside it, so
+// a screen wide enough for the panel keeps it. Every row opens its document, so no row draws
+// a chevron.
+func (b *Board) Look(width int) gotermboard.Look {
+	sides := min(sideMargin, max(sideMargin-(marginFrom-width+1)/2, 1))
+	if width >= gotermboard.PanelFrom {
+		sides = min(sides, (width-gotermboard.PanelFrom)/2)
+	}
+	return gotermboard.Look{Sides: sides, Ends: 1, Spread: true, Rules: true, BoldCursor: true, NoRowChevrons: true}
 }
 
 func orDash(text string) string {
