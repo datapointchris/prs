@@ -60,6 +60,11 @@ type standIn struct {
 // fetchedHead is the commit the stand-in git names for any ref.
 const fetchedHead = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
 
+// rebasedAway is a commit the stand-in git does not have, as one a rebase took off a branch
+// is missing from a checkout that fetched the branch after it. Every other commit is in the
+// history of every head.
+const rebasedAway = "5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e5ca1ab1e"
+
 // gitHub is the stand-in GitHub's listing, which a test changes while prs runs. It answers
 // testdata/search.json until a test hands it another listing, and refuses each listing with
 // a 502 while down. One pull request reads as the listing's row over testdata/pull-request.json,
@@ -73,6 +78,7 @@ type gitHub struct {
 	mergeStates map[int]string
 	recorded    string
 	rounds      bool
+	pushed      bool
 }
 
 // readsAs has one pull request read on its own carry state as its merge state, whatever the
@@ -95,7 +101,7 @@ func (g *gitHub) withRounds() {
 // testdata/pull-request.json, which carries the detail.
 func (g *gitHub) serveOne(w http.ResponseWriter, number int) {
 	g.mu.Lock()
-	listing, state, rounds := g.listing, g.mergeStates[number], g.rounds
+	listing, state, rounds, pushed := g.listing, g.mergeStates[number], g.rounds, g.pushed
 	g.mu.Unlock()
 	if listing == nil {
 		listing, _ = os.ReadFile(filepath.Join("testdata", "search.json"))
@@ -118,6 +124,9 @@ func (g *gitHub) serveOne(w http.ResponseWriter, number int) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+	if pushed {
+		withPushesOf(pr, number)
 	}
 	file, err := os.OpenFile(g.recorded, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err == nil {
@@ -181,6 +190,42 @@ func withRoundOf(pr map[string]any, number int) error {
 		connection["nodes"], connection["totalCount"] = nodes, len(nodes)
 	}
 	return nil
+}
+
+// withPushes has each pull request read on its own stand as withPushesOf says against its
+// newest review.
+func (g *gitHub) withPushes() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pushed = true
+}
+
+// withPushesOf has widget #12's head two commits past mona's review, with a thread on a
+// line its base removed, gadget #5 reviewed by nobody, and widget #13's review read at
+// rebasedAway, which no commit on its branch is.
+func withPushesOf(pr map[string]any, number int) {
+	reviews := pr["submittedReviews"].(map[string]any)
+	switch number {
+	case 12:
+		history := pr["history"].(map[string]any)
+		nodes := history["nodes"].([]any)
+		pushed := map[string]any{"commit": map[string]any{
+			"oid": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00", "messageHeadline": "fix: drop the expired entries",
+			"committedDate": "2026-11-02T11:00:00Z", "author": map[string]any{"name": "Octo Cat", "user": nil},
+		}}
+		history["nodes"], history["totalCount"] = []any{nodes[0], pushed, nodes[1]}, 3
+		threads := pr["reviewThreads"].(map[string]any)
+		removed := map[string]any{
+			"path": "cache/cache.go", "line": 3, "diffSide": "LEFT", "isResolved": false, "isOutdated": false,
+			"comments": map[string]any{"totalCount": 0, "nodes": []any{}},
+		}
+		threads["nodes"] = append(threads["nodes"].([]any), removed)
+		threads["totalCount"] = len(threads["nodes"].([]any))
+	case 5:
+		reviews["nodes"], reviews["totalCount"] = []any{}, 0
+	case 13:
+		reviews["nodes"].([]any)[0].(map[string]any)["commit"] = map[string]any{"oid": rebasedAway}
+	}
 }
 
 func (g *gitHub) answer(listing []byte) {
@@ -375,6 +420,7 @@ esac
 			fmt.Sprintf("case \"$1\" in new-window) printf '%%s\\n' \"$3\" >> %[1]q ;; list-windows) cat %[1]q 2>/dev/null ;; esac\n", s.windows),
 		"claude": "#!/bin/sh\n" + record,
 		"git": "#!/bin/sh\n" + record + "[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\n" +
+			"[ \"$1 $2 $3\" = 'merge-base --is-ancestor " + rebasedAway + "' ] && { echo \"fatal: Not a valid commit name $3\" >&2; exit 128; }\n" +
 			`case " $* " in *' diff '*) for a; do last=$a; done; cat "` + filepath.Dir(listed) + `/pull-request-${last##*/pr/}.diff" 2>/dev/null ;; esac` + "\nexit 0\n",
 		"nvim": "#!/bin/sh\n" + record + fmt.Sprintf(`printf '%%s\n' "PRS_DIFF_DOCUMENT=$PRS_DIFF_DOCUMENT" "PRS_DIFF_THREADS=$PRS_DIFF_THREADS" >> %q
 cp "$PRS_DIFF_DOCUMENT" %q; cp "$PRS_DIFF_THREADS" %q; exit 0
@@ -724,6 +770,71 @@ func TestEachRowReadsItsNewestReviewRoundAndItsDocumentHoldsTheRound(t *testing.
 	}
 	term.WaitForPattern(underRow("Count cache hits", "claude 5 correctness · 3 design · 4 prose"))
 	term.Press("q")
+	if code := term.WaitExit(); code != 0 {
+		t.Errorf("q exited %d", code)
+	}
+}
+
+// A row whose head moved past the commit its newest review read counts the commits since, and
+// i opens nvim's diff from that commit to the head. One reviewed by nobody, and one whose
+// reviewed commit a rebase took off the branch, open the whole diff, and the footer says why.
+// Bitbucket's reviews are not read, so i refuses there. D binds nothing.
+func TestARowCountsTheCommitsSinceItsReviewAndIDiffsOnlyThoseOrTheWholeDiffWithWhy(t *testing.T) {
+	t.Parallel()
+	s := newStandIn(t)
+	s.github.withPushes()
+	s.env["NO_COLOR"] = "1"
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(s.checkout), "gadget"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	term := tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui"}, Env: s.env, Cols: 300, Rows: 40})
+	term.WaitForPattern(underRow("Cache the widget lookups", "2 commits since review"))
+	term.WaitForPattern(underRow("Count cache hits", "rebased since review"))
+	term.WaitFor("Export the ledger as CSV")
+
+	// The people's rows run ledger #4, widget #12 and gadget #5, then widget #13 under the
+	// bots' header.
+	term.Press("g", "j", "i")
+	term.WaitFor("prs reads no reviews from bitbucket, so #4 has no reviewed commit to diff from; d opens the whole diff")
+	term.Press("j", "i")
+	term.WaitFor("closed the diff of widget #12 since its newest review, at 9e8d7c6")
+	reviewed := "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a291807"
+	since := "if exists(':DiffviewOpen') == 2 | execute 'DiffviewOpen " + reviewed + "..refs/remotes/origin/pr/12' | else | cquit 3 | endif"
+	if !s.ran(t, "git", "cwd="+s.checkout, "fetch", "--quiet", "--force", "origin", "pull/12/head:refs/remotes/origin/pr/12") ||
+		!s.ran(t, "git", "cwd="+s.checkout, "merge-base", "--is-ancestor", reviewed, "refs/remotes/origin/pr/12") ||
+		!s.ran(t, "-c", since) {
+		t.Error("i should fetch the head as d does, find the reviewed commit on it, and diff from that commit to the head")
+	}
+	// The diff's left side is the reviewed commit's copy, where a LEFT thread's line does not count.
+	threads, _ := os.ReadFile(s.handed + ".threads.json")
+	if !strings.Contains(string(threads), `"base": "`+reviewed+`"`) || !strings.Contains(string(threads), `"side": "RIGHT"`) ||
+		strings.Contains(string(threads), `"side": "LEFT"`) {
+		t.Errorf("the threads file should name the reviewed commit as the base and hold only the RIGHT threads:\n%s", threads)
+	}
+
+	// Nothing on #5's row says its detail landed, so its document beside the list does.
+	term.Press("j")
+	term.WaitFor("acme/gadget #5 · opened by")
+	term.WaitGone("Reading.")
+	if regexp.MustCompile(underRow("Tidy the gadget", "since review")).MatchString(term.Frame().Text()) {
+		t.Errorf("a row nobody reviewed should name no commits since review:\n%s", term.Frame().Text())
+	}
+	term.Press("i")
+	term.WaitFor("closed the whole diff of gadget #5. It was whole, because no review was submitted on it")
+	term.Press("j", "j", "i")
+	term.WaitFor("closed the whole diff of widget #13. It was whole, because the commit its newest review read, 5ca1ab1, is gone from the branch, as after a rebase")
+	for _, whole := range []string{"origin/add-cache...refs/remotes/origin/pr/5", "origin/add-cache...refs/remotes/origin/pr/13"} {
+		if !s.ran(t, "-c", "if exists(':DiffviewOpen') == 2 | execute 'DiffviewOpen "+whole+"' | else | cquit 3 | endif") {
+			t.Errorf("i should open the whole diff, %s, where it has no reviewed commit on the branch", whole)
+		}
+	}
+
+	term.Press("?")
+	term.WaitForPattern(`i {17}view diff since review`)
+	if regexp.MustCompile(`(?m)^\s*D {17}`).MatchString(term.Frame().Text()) {
+		t.Errorf("D deletes in the terminal tools prs sits among, so prs should bind nothing to it:\n%s", term.Frame().Text())
+	}
+	term.Press("esc", "q")
 	if code := term.WaitExit(); code != 0 {
 		t.Errorf("q exited %d", code)
 	}

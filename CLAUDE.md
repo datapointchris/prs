@@ -9,19 +9,19 @@ closed groups, one record per pull request and the row held under the cursor,
 disk for the next start, `table.go` what `prs list` prints, `document.go` each pull
 request's markdown document, a section per heading, `review_rounds.go` the round's cell,
 the Review section and the tmux windows that run a round, `diff_files.go` the document and
-review threads `d` writes for nvim, and `opened_on.go` the pull request `prs tui --pr`
+review threads `d` and `i` write for nvim, and `opened_on.go` the pull request `prs tui --pr`
 names. `internal/reviewrounds` reads a pull request's Claude review rounds out of its
 detail read. `internal/pullrequests` reads each provider: GitHub in-process
 through go-gh, Bitbucket through bbkt. `provider.go` holds everything prs does
 differently by host, `detail.go` the per-PR detail cache, `diff.go` the per-PR diff cache
 the Diff section reads, `fetch.go` a pull request's checkout and the fetch of its head that
-`d` and the diff share, `reference.go` what `--pr` takes and how it is read, and `since.go`
+`d`, `i` and the diff share, `reference.go` what `--pr` takes and how it is read, and `since.go`
 what `--since` takes.
 `internal/registry` reads the registry file, and `internal/config` reads
 `$XDG_CONFIG_HOME/prs/config.yml` and resolves which repos to read.
 `cmd/prs/list.schema.json` is the shape of one row in `prs list --json` and in
 `prs tui --json`, and a test holds both outputs to it. `cmd/prs/diff-threads.schema.json`
-is the shape of the threads file `d` hands nvim, held the same way.
+is the shape of the threads file `d` and `i` hand nvim, held the same way.
 
 ## Constraints that must not regress
 
@@ -91,9 +91,15 @@ is the shape of the threads file `d` hands nvim, held the same way.
   a merge can leave the next on the same repo behind, conflicting, or based on a branch
   the batch just merged. One no longer ready with passing checks, or based on such a
   branch, is left and named, and the rest go on.
-- **Every merge pins a head, through `pinFor`**: the one `d` fetched, or else the one the
-  Diff section was read at, or else the one the board's record holds, so a commit pushed
-  since the screen showed it is not merged unseen.
+- **Every merge pins a head, through `pinFor`**: the one `d` or `i` fetched, or else the
+  one the Diff section was read at, or else the one the board's record holds, so a commit
+  pushed since the screen showed it is not merged unseen.
+- **`i` diffs from the newest review's commit only where the fetched head holds it.** The
+  row's count reads the detail, which can be older than the head `i` fetches, so `i` asks
+  git through `HeadHolds` after its fetch. Where the head does not hold that commit, or no
+  review was submitted, it opens the whole diff and says why. Its threads file leaves out
+  each LEFT thread, because its left side is the reviewed commit rather than the base.
+  `D` stays unbound, because it deletes in the TUIs prs sits among.
 - **Whether a key may change a pull request is `refusal`'s alone**, which `writable` and
   `mergeable` both ask, so a single key and a batch never disagree.
 - **A key that waits on the network runs in the background**, through `work` in
@@ -102,7 +108,7 @@ is the shape of the threads file `d` hands nvim, held the same way.
 - **The diff's socket and window name are a contract.** A program split into the tmux
   window, such as a Claude session explaining the diff, reads `diff <repo> #<n>` off the
   window's name and asks nvim on `prs-diff-<repo>-<n>.sock` what is under the cursor. So
-  `d` names prs's window that way while nvim has it.
+  `d` and `i` name prs's window that way while nvim has it.
 - **The variables nvim's diff starts with are a contract.** `PRS_DIFF_DOCUMENT` names
   `prs-diff-<repo>-<n>.md` and `PRS_DIFF_THREADS` names `prs-diff-<repo>-<n>.threads.json`,
   both beside the socket. An nvim config reads them to show the pull request beside the

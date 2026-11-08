@@ -85,6 +85,17 @@ func (t LocalDiff) Ref() string { return "refs/remotes/origin/pr/" + strconv.Ito
 // Range is what git diffs: three-dot, from where the branch left origin/<base>.
 func (t LocalDiff) Range() string { return "origin/" + t.Base + "..." + t.Ref() }
 
+// RangeFrom is what git diffs from commit, which the head holds, to the head: what was pushed
+// after it.
+func (t LocalDiff) RangeFrom(commit string) string { return commit + ".." + t.Ref() }
+
+// HeadHolds says the head fetched into the target's Ref has commit in its history. A commit
+// git does not have here is in no history the fetch brought.
+func HeadHolds(ctx context.Context, t LocalDiff, commit string) bool {
+	_, err := Run(ctx, t.Checkout, "git", "merge-base", "--is-ancestor", commit, t.Ref())
+	return err == nil
+}
+
 // defaultBranch is the branch origin's HEAD names, for a provider whose listing reports no
 // base.
 func defaultBranch(ctx context.Context, checkout string) string {

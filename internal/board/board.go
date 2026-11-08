@@ -60,7 +60,7 @@ type Board struct {
 	batching bool
 	// closedHere is each pull request a key merged or closed, by key.
 	closedHere map[string]closeMadeHere
-	// diffed is the head commit d last fetched for a pull request, by key, which its merge
+	// diffed is the head commit d or i last fetched for a pull request, by key, which its merge
 	// pins.
 	diffed map[string]string
 	// documents is each shown pull request's MarkdownDocument and its inputs, by key, and

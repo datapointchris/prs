@@ -45,15 +45,19 @@ func diffFilesAt(stem string) diffFiles {
 
 // write puts the pull request's title over its MarkdownDocument in the document file, and its
 // review threads in the threads file. roundWindow is the open tmux window running a review
-// round on it, where one is. base and head are the revisions the diff compares.
-func (f diffFiles) write(pr pullrequests.PullRequest, detail *pullrequests.DetailState, roundWindow, base, head string, now time.Time) error {
+// round on it, where one is. base and head are the revisions the diff compares. A LEFT
+// thread's line counts in the base branch's copy of its file, so the threads file holds one
+// only where baseOnLeft says the diff's left side is that copy.
+func (f diffFiles) write(pr pullrequests.PullRequest, detail *pullrequests.DetailState, roundWindow, base, head string, baseOnLeft bool, now time.Time) error {
 	threads := diffThreads{
 		Slug: pr.Slug, Number: pr.Number, Title: pr.Title, URL: pr.URL, Base: base, Head: head,
 		Threads: []pullrequests.Thread{},
 	}
 	if detail != nil && detail.Held {
 		threads.ThreadsRead = true
-		threads.Threads = slices.Clone(detail.Detail.Threads)
+		threads.Threads = slices.DeleteFunc(slices.Clone(detail.Detail.Threads), func(thread pullrequests.Thread) bool {
+			return !baseOnLeft && thread.Side == "LEFT"
+		})
 	}
 	encoded, err := json.MarshalIndent(threads, "", "  ")
 	if err != nil {

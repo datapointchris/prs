@@ -71,7 +71,7 @@ these fields of an entry and ignores the rest:
 | `name` | yes | The repo's name on its provider. |
 | `owner` | yes | The GitHub owner, or the Bitbucket project key. |
 | `status` | yes | Only `active` repos are read. Every other value skips the entry. |
-| `path` | no | Where it is checked out, `~`-rooted or absolute. `d` and your own keys run there, and bbkt reads a Bitbucket repo there. |
+| `path` | no | Where it is checked out, `~`-rooted or absolute. `d`, `i` and your own keys run there, and bbkt reads a Bitbucket repo there. |
 | `provider` | no | `github` or `bitbucket`. An entry without one takes the file's top-level `provider`, and `github` where the file names none. |
 
 `status` and `owner` are required rather than defaulted, because a reader that defaults a
@@ -141,6 +141,10 @@ field it filters on drops a repo silently, and every list it prints still looks 
   `claude did not run` where none ran. Before the round comment, it reads `claude running`
   while the reviews post, and `claude unfinished` once they have stopped for an hour. It
   reads `claude reviewed` where the newest review is of a version prs does not read.
+- **A pull request pushed to since its newest review says how much**, as `2 commits since
+  review`, counted from the commit that review was submitted against. It reads `rebased
+  since review` where the branch does not hold that commit, and nothing where no review was
+  submitted or the head is the reviewed commit.
 - **A pull request whose base is another open one's branch names that one**, as `↑ #12`
   after its number. A pull request an app opened names the app at the end of its second
   line.
@@ -210,9 +214,18 @@ gives. nvim starts with `PRS_DIFF_DOCUMENT` and `PRS_DIFF_THREADS` naming them, 
 config can show the description beside the diff and each thread on its line. prs removes
 both once nvim exits.
 
+`i` opens what was pushed since the newest review: the same fetch and nvim as `d`, with
+the diff running from the commit that review was submitted against to the head. It checks
+the fetched head still holds that commit. Where it does not, as after a rebase, or where no
+review was submitted, it opens the whole diff instead, and the footer says why once nvim
+exits. Where nothing was pushed since the review, it says so and opens nothing. The threads
+file names the reviewed commit as `base` and holds only the `RIGHT` threads, because a
+`LEFT` thread's line counts in the base branch's copy, which this diff does not show.
+Bitbucket's client reads no reviews, so `i` refuses there.
+
 `m` merges and `x` closes without merging. Each names the pull request and asks first:
 enter alone merges, and enter alone leaves it open rather than closing it. A second press
-while one runs is refused. On GitHub every merge pins a head: the one `d` fetched, or else
+while one runs is refused. On GitHub every merge pins a head: the one `d` or `i` fetched, or else
 the one the Diff section showed, or else the one the list showed, so it fails where the
 branch moved since. `c` opens your editor on an empty file and posts what
 was written when it exits. Merging, closing, commenting and `o`, which opens the page in

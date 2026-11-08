@@ -49,6 +49,56 @@ type Review struct {
 	URL         string     `json:"url"`
 }
 
+// NewestReview is the review submitted last, and false where none was. A pending review has
+// no time yet, so it is not one.
+func (d Detail) NewestReview() (Review, bool) {
+	newest := -1
+	for i, review := range d.Reviews {
+		if review.SubmittedAt != nil && (newest < 0 || !review.SubmittedAt.Before(*d.Reviews[newest].SubmittedAt)) {
+			newest = i
+		}
+	}
+	if newest < 0 {
+		return Review{}, false
+	}
+	return d.Reviews[newest], true
+}
+
+// SinceReview is how the head stands against the commit the newest review read.
+type SinceReview struct {
+	// Commits is how many commits came after the reviewed one, where Known.
+	Commits int
+	// Gone says the branch does not hold the reviewed commit, as after a rebase.
+	Gone bool
+	// Known is false where no review was submitted, or the reviewed commit is older than the
+	// commits the read holds, so neither Commits nor Gone can be told.
+	Known bool
+}
+
+// SinceReview is how many commits came after the one the newest review read, or that it is
+// gone from the branch. The commits the read holds end at the head, so a reviewed commit
+// missing from a whole list is not on the branch.
+func (d Detail) SinceReview() SinceReview {
+	review, ok := d.NewestReview()
+	switch {
+	case !ok:
+		return SinceReview{}
+	case review.CommitOID == "":
+		return SinceReview{Gone: true, Known: true}
+	case review.CommitOID == d.HeadOID:
+		return SinceReview{Known: true}
+	}
+	for i, commit := range d.Commits {
+		if commit.OID == review.CommitOID {
+			return SinceReview{Commits: len(d.Commits) - 1 - i, Known: true}
+		}
+	}
+	if d.CommitCount > len(d.Commits) {
+		return SinceReview{}
+	}
+	return SinceReview{Gone: true, Known: true}
+}
+
 // Comment is one comment, on the conversation or in a review thread. AuthorType and
 // AuthorAssociation are as on a Review.
 type Comment struct {

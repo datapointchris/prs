@@ -44,7 +44,9 @@ Each pull request takes two lines. The first gives where it stands in one word: 
 behind, conflicts, blocked, mergeable with checks not passing, draft or unknown while open,
 and merged or closed after. Then its title, its diff, its age, or how long ago it closed,
 and its branch. The second gives its checks in words, its checkout, its number and its
-review, and names the app that opened it. A Bitbucket row reads open, and only one merged
+review, then what was pushed since its newest review, as 2 commits since review, or rebased
+since review where the branch does not hold the commit that review read, and names the app
+that opened it. A Bitbucket row reads open, and only one merged
 here reaches recently closed, because prs reads no merge state or close time from
 Bitbucket.
 
@@ -81,7 +83,10 @@ refs/remotes/origin/pr/<number> in its checkout and diffs it there, touching no 
 One whose repo is not cloned here gets a section saying so.
 
 A letter acts on the pull request under the cursor, and ? lists every key. d hands the
-terminal to its diff in nvim, and :qa comes back to the list. m merges and x closes,
+terminal to its diff in nvim, and :qa comes back to the list. i opens only what was pushed
+since its newest review, from the commit that review read to the head. Where no review was
+submitted, or a rebase took that commit off the branch, it opens the whole diff, and the
+footer says why once nvim exits. m merges and x closes,
 each after asking, and its row moves to recently closed once it has, while the cursor
 moves on to the next open row in its group. c posts what your editor wrote. Each runs
 while the list stays usable, named on the footer until it ends.
