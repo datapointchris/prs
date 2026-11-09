@@ -17,7 +17,11 @@ func configCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Show where prs's config lives and what it says",
-		Args:  cobra.NoArgs,
+		Example: `  # which repos prs reads, how often it refreshes, and where each value came from
+  prs config show
+  # open the config file in your editor
+  $EDITOR "$(prs config path)"`,
+		Args: cobra.NoArgs,
 	}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "path",
@@ -113,6 +117,10 @@ for the shell itself, and a command that puts one inside quotes of its own is re
 			pullrequests.ReposPerSearch, config.DefaultDiffSectionMaxLines, strings.Join(config.RecapPlaceholders(), " and "),
 			strings.Join(config.BlockerKinds, ", "), strings.Join(config.FixPlaceholders(), ", "),
 			strings.Join(config.ShellQuotedPlaceholders(), ", ")),
+		Example: `  # where prs reads its config from, whether or not the file exists
+  prs config path
+  # open it in your editor
+  $EDITOR "$(prs config path)"`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := config.Path()
@@ -126,7 +134,11 @@ for the shell itself, and a command that puts one inside quotes of its own is re
 	cmd.AddCommand(&cobra.Command{
 		Use:   "show",
 		Short: "Print each setting, the value it resolved to, and where that came from",
-		Args:  cobra.NoArgs,
+		Example: `  # each setting prs resolved, such as the registry and refresh interval, and its source
+  prs config show
+  # the same, read against another registry for one run
+  PRS_REPOS_REGISTRY=./repos.json prs config show`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
 			if err != nil {
