@@ -686,7 +686,7 @@ func TestListPrintsRowsTheSchemaHoldsAndNamesAProviderItCouldNotRead(t *testing.
 	s.env["GH_TOKEN"] = ""
 	out, _, code = s.run(t, "list")
 	first, rest, _ := strings.Cut(out, "\n")
-	if code != 1 || !strings.Contains(first, "github unread: gh is not logged in to github.com") ||
+	if code != 1 || !strings.Contains(first, "gh is not logged in to github.com") ||
 		!strings.Contains(rest, "ledger") || strings.Contains(rest, "widget") {
 		t.Errorf("logged out, prs list exited %d and printed:\n%s", code, out)
 	}
@@ -755,8 +755,11 @@ func TestTheBoardSortsPeopleAboveBotsAndClosedBelowInWordsShowsTheDocumentBeside
 	term.Press("[", "enter")
 	term.WaitGone("Log the widget misses")
 	term.WaitFor("recently closed · 2")
+	// The Reader takes the whole screen, so the table's column titles leave it and #12's
+	// document stays.
 	term.Press("g", "j", "j", "enter")
-	term.WaitFor("[/] section")
+	term.WaitGone("BRANCH")
+	term.WaitFor("acme/widget #12 · opened by octo")
 	term.Press("esc")
 
 	term.Press("r")
@@ -948,9 +951,7 @@ func TestTheDiffSectionShowsASmallDiffWholeAndNamesALargeOnesSize(t *testing.T) 
 	term.WaitFor("27 lines changed in 3 files at a1b2c3d, read from github.")
 
 	// Full screen, ] lands on each heading: Description, Checks, Files and Diff, then a file each.
-	term.Press("enter")
-	term.WaitFor("[/] section")
-	term.Press("]", "]", "]", "]", "]")
+	term.Press("enter", "]", "]", "]", "]", "]")
 	term.WaitGone("27 lines changed in 3 files")
 	term.WaitFor("c.stats.hits.Add(1)")
 	term.Press("]")
@@ -1095,7 +1096,7 @@ func TestARefusedMergeOpensTheFixMenuOnItsConflictsWhichRebaseInAWorktreeAndPush
 	term.WaitFor("gh could not merge #13: X Pull request acme/widget#13 is not mergeable")
 	term.WaitFor("It conflicts with add-cache in 2 files:")
 	term.WaitFor("cache/stats.go")
-	term.WaitFor("n c x chooses  esc cancels")
+	term.WaitFor("resolve in nvim: rebase it onto origin/add-cache")
 	if !s.ran(t, "merge-tree", "--write-tree", "--name-only", "origin/add-cache") {
 		t.Error("the menu should name the conflicting files from git merge-tree, against the base")
 	}
@@ -1143,14 +1144,14 @@ func TestARefusedMergeOpensTheFixMenuOnItsConflictsWhichRebaseInAWorktreeAndPush
 	// A rebase left stopped, once the pull request reads ready, is still offered for removal.
 	writeFile(t, s.unmerged, "cache/cache.go\n")
 	term.Press("f")
-	term.WaitFor("n c x chooses  esc cancels")
+	term.WaitFor("resolve in nvim: rebase it onto origin/add-cache")
 	term.Press("n")
 	term.WaitFor("1 path still unmerged in ~/worktrees/widget/pr-13-rebase:")
 	term.Press("esc")
 	s.github.readsAs(13, "CLEAN")
 	term.Press("f")
 	term.WaitFor("A rebase of it onto origin/add-cache stopped in ~/worktrees/widget/pr-13-rebase.")
-	term.WaitFor("a chooses  esc cancels")
+	term.WaitFor("abort the rebase stopped in ~/worktrees/widget/pr-13-rebase")
 	term.Press("a")
 	term.WaitFor("aborted the rebase of acme/widget #13 onto origin/add-cache and removed ~/worktrees/widget/pr-13-rebase")
 	if !s.ran(t, "git", "cwd="+worktree, "rebase", "--abort") || fileExists(worktree) {
@@ -1174,7 +1175,7 @@ func TestTheFixMenuUpdatesABranchReadiesADraftAndReadsOrRerunsFailingChecks(t *t
 
 	term.Press("g", "j", "j", "m")
 	term.WaitFor("Its branch is behind main")
-	term.WaitFor("u c chooses  esc cancels")
+	term.WaitFor("update the branch: gh pr update-branch rebases it onto main on GitHub")
 	term.Press("u")
 	term.WaitFor("rebased the branch of acme/widget #12 onto main on GitHub")
 	if !s.ran(t, "pr", "update-branch", "12", "--repo", "acme/widget", "--rebase") {
@@ -1192,7 +1193,7 @@ func TestTheFixMenuUpdatesABranchReadiesADraftAndReadsOrRerunsFailingChecks(t *t
 	term.Press("j", "j", "f")
 	term.WaitFor("Its checks fail: test.")
 	term.WaitFor("merge anyway: GitHub merges it with these checks failing")
-	term.WaitFor("l r c m chooses  esc cancels")
+	term.WaitFor("read the failing log: gh run view --log-failed on run 2401")
 	term.Press("l")
 	term.WaitFor("--- FAIL: TestFetch")
 	if !s.ran(t, "run", "view", "2401", "--log-failed", "--repo", "acme/widget") {
@@ -1330,10 +1331,10 @@ func TestTuiOpensOnTheNamedPullRequestWithItsDocumentAndQExits0(t *testing.T) {
 	term = tuidrive.Start(t, tuidrive.Program{Path: tuidrive.Build(t, "."), Args: []string{"tui", "--pr", "acme/widget#12"}, Env: s.env, Cols: 140, Rows: 40})
 	term.WaitFor("people · 3")
 	term.WaitFor("Caches the widget lookups for a minute.")
-	// With no side panel, a document running past the screen reads full screen, and ] brings
-	// each heading to the top.
+	// With no side panel, a document running past the screen reads full screen, so the table's
+	// column titles leave it, and ] brings each heading to the top.
 	term.Press("enter")
-	term.WaitFor("[/] section")
+	term.WaitGone("BRANCH")
 	term.Press("]", "]", "]", "]")
 	term.WaitGone("Caches the widget lookups for a minute.")
 	term.WaitFor("cache/cache.go:14 · unresolved")
