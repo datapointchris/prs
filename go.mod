@@ -2,7 +2,7 @@ module github.com/datapointchris/prs
 
 go 1.26.8
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	charm.land/bubbletea/v2 v2.1.1
