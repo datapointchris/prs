@@ -13,6 +13,7 @@ import (
 	"github.com/datapointchris/goclikit"
 	"github.com/datapointchris/goselfupdate"
 	"github.com/datapointchris/goselfupdate/autoupdate"
+	"github.com/datapointchris/gotermstyle/cobrahelp"
 	"github.com/spf13/cobra"
 )
 
@@ -80,5 +81,6 @@ own repos on GitHub.`,
 	// Registered here because cobra's own version flag takes -v.
 	root.Flags().Bool("version", false, "print the version")
 	root.AddCommand(tuiCommand(), listCommand(), summaryCommand(), configCommand(), goclikit.UpdateCommand(updateConfig()))
+	cobrahelp.Install(root)
 	return root
 }

@@ -11,7 +11,7 @@ require (
 	github.com/datapointchris/goclikit v0.5.3
 	github.com/datapointchris/goselfupdate v0.11.2
 	github.com/datapointchris/gotermboard v0.42.0
-	github.com/datapointchris/gotermstyle v0.5.0
+	github.com/datapointchris/gotermstyle v0.6.0
 	github.com/datapointchris/tuidrive v0.1.3
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/cobra v1.10.2
