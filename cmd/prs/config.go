@@ -208,7 +208,7 @@ for the shell itself, and a command that puts one inside quotes of its own is re
 					argv []string
 				}{{"list", recaps.List}, {"show", recaps.Show}, {"write", recaps.Write}} {
 					if len(command.argv) > 0 {
-						_, _ = fmt.Fprintf(out, "%s  %s\n", pal.Bold(fmt.Sprintf("  %-6s", command.name)), shellQuoted(command.argv))
+						_, _ = fmt.Fprintf(out, "%s  %s\n", pal.Bold(fmt.Sprintf("  %-6s", command.name)), shellWords(command.argv))
 					}
 				}
 			}
@@ -228,15 +228,22 @@ for the shell itself, and a command that puts one inside quotes of its own is re
 	return cmd
 }
 
-// shellQuoted is argv as a shell reads it back, quoting each argument it would split or expand.
-func shellQuoted(argv []string) string {
-	quoted := make([]string, len(argv))
+// shellWords is argv as a shell reads it back, each argument quoted by config.ShellWord. An
+// argument that is safe once its recap placeholders are set aside shows bare, so the line
+// reads as the config wrote it.
+func shellWords(argv []string) string {
+	var pairs []string
+	for _, name := range config.RecapPlaceholders() {
+		pairs = append(pairs, name, "x")
+	}
+	withoutPlaceholders := strings.NewReplacer(pairs...)
+	words := make([]string, len(argv))
 	for i, arg := range argv {
-		if arg != "" && strings.Trim(arg, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./:=@%+,{}") == "" {
-			quoted[i] = arg
+		if safe := withoutPlaceholders.Replace(arg); safe != "" && config.ShellWord(safe) == safe {
+			words[i] = arg
 			continue
 		}
-		quoted[i] = "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+		words[i] = config.ShellWord(arg)
 	}
-	return strings.Join(quoted, " ")
+	return strings.Join(words, " ")
 }

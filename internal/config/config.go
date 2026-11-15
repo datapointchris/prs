@@ -307,7 +307,7 @@ func Fill(template string, fields Fields) string { return fixPlaceholders.fill(t
 func FillCommand(template string, fields Fields) string {
 	return fixPlaceholders.fillAs(template, fields, func(name, value string) string {
 		if _, quoted := quotedPlaceholders[name]; quoted {
-			return shellQuoted(value)
+			return ShellWord(value)
 		}
 		return value
 	})
@@ -379,9 +379,9 @@ func insideQuotes(command string, names []string) string {
 
 var shellSafe = regexp.MustCompile(`^[A-Za-z0-9@%+=:,./_-]+$`)
 
-// shellQuoted is value as one shell word, left bare where nothing in it is special, as
+// ShellWord is value as one shell word, left bare where nothing in it is special, as
 // Python's shlex.quote does.
-func shellQuoted(value string) string {
+func ShellWord(value string) string {
 	if shellSafe.MatchString(value) {
 		return value
 	}
