@@ -220,6 +220,10 @@ func (b *Board) hold(rows []placed) []placed {
 	return rows
 }
 
+// headingTone is the code a group's title and the double rule over it draw in, so each
+// group's header stands out from the rows under it.
+const headingTone = gotermboard.BoldYellow
+
 // groups draws each section that holds a row, people always, with the reason there are no
 // open pull requests under it where there are none. Recently closed waits until the open pull
 // requests are read or have failed, so the cursor starts on an open one.
@@ -236,8 +240,8 @@ func (b *Board) groups(rows []placed, parents map[[2]string]int, now time.Time) 
 			continue
 		}
 		group := gotermboard.Group{
-			Key: s.key, Title: gotermboard.Line{gotermboard.C(s.title, gotermboard.Bold)}, Counted: true, Gap: true,
-			BetweenRows: gotermboard.RuleDotted,
+			Key: s.key, Title: gotermboard.Line{gotermboard.C(s.title, headingTone)}, Counted: true, Gap: true,
+			BetweenRows: gotermboard.RuleDotted, Overline: gotermboard.RuleDouble, Tone: headingTone,
 		}
 		for _, p := range rows {
 			if p.in != s.in {

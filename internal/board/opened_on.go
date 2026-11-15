@@ -98,8 +98,8 @@ func (b *Board) startAt() string {
 func (b *Board) apart(pr pullrequests.PullRequest, parents map[[2]string]int, now time.Time) gotermboard.Group {
 	b.drew(pr, recentlyClosed)
 	return gotermboard.Group{
-		Key: "opened-on", Title: gotermboard.Line{gotermboard.C(string(b.stateOf(pr)), gotermboard.Bold)},
-		Count: 1, Counted: true, Gap: true,
+		Key: "opened-on", Title: gotermboard.Line{gotermboard.C(string(b.stateOf(pr)), headingTone)},
+		Count: 1, Counted: true, Gap: true, Overline: gotermboard.RuleDouble, Tone: headingTone,
 		Rows: []gotermboard.Row{b.row(pr, parents, now)},
 	}
 }
