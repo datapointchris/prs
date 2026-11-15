@@ -435,6 +435,12 @@ func ClosedPullRequestsDir() (string, error) {
 	return xdgPath("XDG_CACHE_HOME", ".cache", "closed-pull-requests")
 }
 
+// TUIDisplayFile is where prs tui keeps the tab last moved to and each tab's display settings:
+// tui-display.json under $XDG_STATE_HOME/prs, or ~/.local/state/prs where that is unset.
+func TUIDisplayFile() (string, error) {
+	return xdgPath("XDG_STATE_HOME", filepath.Join(".local", "state"), "tui-display.json")
+}
+
 func xdgPath(variable, fallback, name string) (string, error) {
 	dir := os.Getenv(variable)
 	if dir == "" {

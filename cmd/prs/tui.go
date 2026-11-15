@@ -163,6 +163,10 @@ stopped for an hour. It reads claude reviewed where the newest review is of a ve
 does not read. A window action marked runs_review_round reads running while its window is
 open and the round has not finished.
 
+It opens on the tab last moved to, unless --view or --pr names one. Each tab keeps its p
+panel, f summaries, v grouping, and the groups and rows folded and opened, in
+$XDG_STATE_HOME/prs/tui-display.json.
+
 It opens on the rows the last run on the same repos read, kept under $XDG_CACHE_HOME/prs,
 with their age on the first line, and reads each provider behind them. It reads the open
 pull requests again every refresh_every_seconds in the config, %d by default, whenever its
@@ -315,9 +319,18 @@ list or that recap could not be read, or the list printed a line that is not a w
 					}
 					tabs = append(tabs, gotermboard.Tab{Name: tab.name, Board: opened.board})
 				}
-				model, err := gotermboard.NewTabs(tabs, pal, view)
+				// --pr opens on the pull requests it names, so the tab remembered from the last run
+				// gives way to the first.
+				opening := view
+				if ref != nil && opening == "" {
+					opening = tuiTabs[0].name
+				}
+				model, err := gotermboard.NewTabs(tabs, pal, opening)
 				if err != nil {
 					return err
+				}
+				if path, err := config.TUIDisplayFile(); err == nil {
+					model.RemembersDisplayIn(path)
 				}
 				_, err = tea.NewProgram(reportsFocus{model}).Run()
 				return err
