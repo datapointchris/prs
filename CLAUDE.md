@@ -191,9 +191,10 @@ own `Sources`, as the Summary tab does, so a read is not made twice.
 - **A round record's statuses stay apart.** A skipped reviewer was skipped on purpose and
   reads as skipped. One not run or not posted counts as a gap beside the findings, and a
   round none ran reads `claude did not run`, never as a clean one.
-- **`prs list`'s CLAUDE column draws only while a row fills it**, so a list of repos no
-  round reviews never has it. On the board the round follows the review on a row's second
-  line. `listColumns` and `boardColumns` hold every column with the cell it draws, so a
+- **`prs list` never draws its CLAUDE column.** The column draws only while a row fills
+  it, and its cell reads the review rounds out of a row's detail. `prs list` reads no pull
+  request's detail, so no row fills it. On the board the round follows the review on a
+  row's second line. `listColumns` and `boardColumns` hold every column with the cell it draws, so a
   column's header and its cells cannot drift apart.
 - **A pull request is two lines on the board, and a field keeps its line.** The first line
   is `boardColumns` and the second is `secondLine`. A new field goes at the end of

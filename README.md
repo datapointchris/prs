@@ -457,8 +457,7 @@ recaps:
 
 `prs list` reads each provider once and prints the board's open rows as a table, one line
 a pull request, the people's then the bots', under a line naming any provider it could not
-read. A `CLAUDE` column shows the newest review round while a row fills it. It reads no
-closed pull requests. `prs list --json` prints them as a JSON array, one
+read. It reads no closed pull requests. `prs list --json` prints them as a JSON array, one
 object per pull request, in the shape [`cmd/prs/list.schema.json`](cmd/prs/list.schema.json)
 gives. Beside the row's columns it carries each pull request's state, its merge state, its
 head commit and the open pull request it is stacked on.
