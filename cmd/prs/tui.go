@@ -132,6 +132,11 @@ func summaryTab(b *board.Board, cfg config.Config) openedTab {
 	}
 }
 
+// onTerminal is whether a person holds the keyboard and sees the screen.
+func onTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+}
+
 func tuiCommand() *cobra.Command {
 	var (
 		view, openOn, since string
@@ -278,7 +283,7 @@ list or that recap could not be read, or the list printed a line that is not a w
 			if err != nil {
 				return goclikit.UsageError(fmt.Errorf("--since %w", err))
 			}
-			if !printing && (!term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))) {
+			if !printing && !onTerminal() {
 				return goclikit.UsageError(errors.New("prs tui needs a terminal; --once prints one frame and --json the snapshot"))
 			}
 			b, cfg, err := loadBoard()

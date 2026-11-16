@@ -62,25 +62,34 @@ func exitCode(err error, stderr io.Writer) int {
 }
 
 func rootCommand() *cobra.Command {
+	tui := tuiCommand()
 	root := &cobra.Command{
 		Use:   "prs",
 		Short: "Every open pull request across a registry's repos, on one terminal board",
-		Long: `prs reads every open pull request on the repos a registry names, whoever opened
-it, and acts on one with a key. prs tui opens the board, and prs list prints it once.
-prs config show names the registry, the owners read in its place, or with neither your
-own repos on GitHub.`,
-		Example: `  prs tui
+		Long: `Bare prs opens the board, as prs tui does, and prints this help with no terminal.
+prs reads every open pull request on the repos a registry names, whoever opened it, and
+acts on one with a key. prs list prints the board once. prs config show names the
+registry, the owners read in its place, or with neither your own repos on GitHub.`,
+		Example: `  prs
   prs list
   prs list --json | jq -r '.[].url'
   prs config show`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       buildVersion(),
+		Args:          cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !onTerminal() {
+				return cmd.Help()
+			}
+			tui.SetContext(cmd.Context())
+			return tui.RunE(tui, nil)
+		},
 	}
 	root.SetVersionTemplate("prs {{.Version}}\n")
 	// Registered here because cobra's own version flag takes -v.
 	root.Flags().Bool("version", false, "print the version")
-	root.AddCommand(tuiCommand(), listCommand(), summaryCommand(), configCommand(), goclikit.UpdateCommand(updateConfig()))
+	root.AddCommand(tui, listCommand(), summaryCommand(), configCommand(), goclikit.UpdateCommand(updateConfig()))
 	cobrahelp.Install(root)
 	return root
 }
