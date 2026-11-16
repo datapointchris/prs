@@ -253,8 +253,8 @@ type Fields struct {
 	Number int
 	Repo   string
 	Slug   string
-	// Path is the repo's checkout, and Worktree the one the menu rebases the head in, where a
-	// rebase there stopped or waits to be pushed.
+	// Path is the repo's checkout, and Worktree the one the menu merges the base into the head
+	// in, where a merge there stopped or waits to be pushed.
 	Path, Worktree string
 	// Head and Base are the branch the pull request merges from and the one it merges into.
 	Head, Base string

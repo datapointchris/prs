@@ -229,7 +229,7 @@ func lastLineOf(path string) string {
 // run runs a client with stdin closed and returns its stdout, and failureLine of its stderr on
 // a failure. git and ssh ask on the terminal itself rather than on stdin, so the client runs
 // in a session of its own, with no terminal to open, and git's prompt is turned off as well.
-// git's editor is true, so a commit git words itself, as a rebase going on does, keeps the
+// git's editor is true, so a commit git words itself, as a merge concluding does, keeps the
 // message it has rather than wait on an editor nobody can see. At the timeout its whole
 // process group is killed, ssh included.
 func run(ctx context.Context, dir string, name string, args ...string) ([]byte, string, error) {

@@ -94,7 +94,7 @@ write are filled in from the window. needs are the programs the commands run bey
 one's first, and a machine missing one draws no recaps tab, as a config naming no list does.
 
 f, or m on a pull request GitHub will not merge, opens a menu of fixes for what blocks it.
-Resolving a conflict rebases the pull request's head onto its base in a worktree of the
+Resolving a conflict merges the pull request's base into its head in a worktree of the
 checkout, detached at the head, under worktree_root, a directory for each checkout under
 it, and $XDG_DATA_HOME/prs/worktrees where the file does not say.
 
@@ -108,7 +108,7 @@ placeholders, so the board finds the window from the row. command takes these:
 
   %[7]s
 
-{path} is the checkout, {worktree} the worktree where a rebase waits in one, {head} and
+{path} is the checkout, {worktree} the worktree where a merge waits in one, {head} and
 {base} the branches, {blocker} the kind, and {log} a file holding the failing checks' log.
 Each is empty where it does not apply. A branch name can hold ; or $, so prs quotes these
 for the shell itself, and a command that puts one inside quotes of its own is refused:
