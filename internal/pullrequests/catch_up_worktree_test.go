@@ -1,6 +1,7 @@
 package pullrequests_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -17,11 +18,11 @@ import (
 // committed. It points HOME and git's global config at a temp directory, so no test reads the
 // person's config, hooks or signing key.
 func TestMain(m *testing.M) {
-	os.Exit(isolated(m))
+	os.Exit(isolated(context.Background(), m))
 }
 
-func isolated(m *testing.M) int {
-	names, err := exec.Command("git", "rev-parse", "--local-env-vars").Output()
+func isolated(ctx context.Context, m *testing.M) int {
+	names, err := exec.CommandContext(ctx, "git", "rev-parse", "--local-env-vars").Output()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "git could not name its repository variables: %v\n", err)
 		return 1
@@ -154,8 +155,9 @@ func commit(t *testing.T, dir, file, content, message string) {
 
 // git runs a fixture's git in dir, and returns what it printed with the space around it trimmed.
 func git(t *testing.T, dir string, args ...string) string {
+	ctx := t.Context()
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

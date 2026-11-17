@@ -321,6 +321,7 @@ func closedSince(query string) []byte {
 // The socket sits under a short temporary directory, because a socket's path has a length
 // limit that a test's own temporary directory can pass.
 func gitHubStandIn(t *testing.T, listing *gitHub) string {
+	ctx := t.Context()
 	t.Helper()
 	dir, err := os.MkdirTemp("", "prs-gh")
 	if err != nil {
@@ -328,7 +329,7 @@ func gitHubStandIn(t *testing.T, listing *gitHub) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "gh.sock")
-	listener, err := net.Listen("unix", socket)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,8 +558,9 @@ func (s standIn) ran(t *testing.T, lines ...string) bool {
 // run runs the built prs with args in the stand-in's environment, and returns its stdout,
 // its stderr and its exit status.
 func (s standIn) run(t *testing.T, args ...string) (string, string, int) {
+	ctx := t.Context()
 	t.Helper()
-	cmd := exec.Command(tuidrive.Build(t, "."), args...)
+	cmd := exec.CommandContext(ctx, tuidrive.Build(t, "."), args...)
 	cmd.Env = []string{}
 	for name, value := range s.env {
 		cmd.Env = append(cmd.Env, name+"="+value)

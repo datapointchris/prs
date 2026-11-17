@@ -5,6 +5,7 @@
 package summary
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
@@ -94,7 +95,7 @@ func FileFor(dir string, scope pullrequests.Scope) string {
 
 // Open opens the store at path, making its directory and tables where they are missing. An
 // empty path keeps the store in memory, for a run with nowhere to cache it.
-func Open(path string) (*Store, error) {
+func Open(ctx context.Context, path string) (*Store, error) {
 	dsn := ":memory:"
 	if path != "" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -111,7 +112,7 @@ func Open(path string) (*Store, error) {
 		db.SetMaxOpenConns(1)
 	}
 	s := &Store{db: db, path: path}
-	if err := s.shape(); err != nil {
+	if err := s.shape(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("the closed pull requests' cache %s: %w", path, err)
 	}
@@ -119,21 +120,21 @@ func Open(path string) (*Store, error) {
 }
 
 // shape makes the tables where the file holds none, or another version's.
-func (s *Store) shape() error {
+func (s *Store) shape(ctx context.Context) error {
 	var version int
-	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
 	if version == schemaVersion {
 		return nil
 	}
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, statement := range []string{"DROP TABLE IF EXISTS pull_requests", "DROP TABLE IF EXISTS coverage", schema, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)} {
-		if _, err := tx.Exec(statement); err != nil {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err
 		}
 	}
@@ -147,9 +148,9 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) Path() string { return s.path }
 
 // Coverage is how far the store reaches, and false where nothing has been read into it.
-func (s *Store) Coverage() (Coverage, bool, error) {
+func (s *Store) Coverage(ctx context.Context) (Coverage, bool, error) {
 	var from, synced string
-	err := s.db.QueryRow("SELECT covered_from, synced_at FROM coverage").Scan(&from, &synced)
+	err := s.db.QueryRowContext(ctx, "SELECT covered_from, synced_at FROM coverage").Scan(&from, &synced)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Coverage{}, false, nil
 	}
@@ -168,8 +169,8 @@ func (s *Store) Coverage() (Coverage, bool, error) {
 
 // Closed is every pull request the store holds merged or closed at or after since, the
 // newest first.
-func (s *Store) Closed(since time.Time) ([]pullrequests.HistoryRecord, error) {
-	rows, err := s.db.Query(`SELECT slug, number, title, url, author, bot, state, created_at, updated_at, merged_at, closed_at, review_round
+func (s *Store) Closed(ctx context.Context, since time.Time) ([]pullrequests.HistoryRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT slug, number, title, url, author, bot, state, created_at, updated_at, merged_at, closed_at, review_round
 		FROM pull_requests WHERE closed_at >= ? ORDER BY closed_at DESC`, since.UTC().Format(stamp))
 	if err != nil {
 		return nil, fmt.Errorf("reading the closed pull requests' cache: %w", err)
@@ -225,13 +226,13 @@ func parseNullStamp(r pullrequests.HistoryRecord, text sql.NullString) (*time.Ti
 // and a prs summary can sync one file at once, so the coverage only widens: the earliest
 // From and the latest Synced stand. Each read asks for every update since a From older than
 // any sync's start, so the later sync read every change since the earlier one began.
-func (s *Store) Keep(records []pullrequests.HistoryRecord, coverage Coverage) error {
-	tx, err := s.db.Begin()
+func (s *Store) Keep(ctx context.Context, records []pullrequests.HistoryRecord, coverage Coverage) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("writing the closed pull requests' cache: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	upsert, err := tx.Prepare(`INSERT INTO pull_requests
+	upsert, err := tx.PrepareContext(ctx, `INSERT INTO pull_requests
 		(slug_key, number, slug, title, url, author, bot, state, created_at, updated_at, merged_at, closed_at, review_round)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (slug_key, number) DO UPDATE SET
@@ -249,12 +250,12 @@ func (s *Store) Keep(records []pullrequests.HistoryRecord, coverage Coverage) er
 		if r.Bot != nil {
 			bot = *r.Bot
 		}
-		if _, err := upsert.Exec(strings.ToLower(r.Slug), r.Number, r.Slug, r.Title, r.URL, r.Author, bot, r.State,
+		if _, err := upsert.ExecContext(ctx, strings.ToLower(r.Slug), r.Number, r.Slug, r.Title, r.URL, r.Author, bot, r.State,
 			r.CreatedAt.UTC().Format(stamp), r.UpdatedAt.UTC().Format(stamp), nullStamp(r.MergedAt), nullStamp(r.ClosedAt), r.ReviewRound); err != nil {
 			return fmt.Errorf("writing %s#%d to the closed pull requests' cache: %w", r.Slug, r.Number, err)
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO coverage (only, covered_from, synced_at) VALUES (1, ?, ?)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO coverage (only, covered_from, synced_at) VALUES (1, ?, ?)
 		ON CONFLICT (only) DO UPDATE SET
 		  covered_from = MIN(covered_from, excluded.covered_from), synced_at = MAX(synced_at, excluded.synced_at)`,
 		coverage.From.UTC().Format(stamp), coverage.Synced.UTC().Format(stamp)); err != nil {

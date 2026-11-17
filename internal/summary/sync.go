@@ -17,7 +17,7 @@ const syncOverlap = 2 * time.Minute
 // does. Then it reads every one updated since the last sync. Nothing is kept unless every
 // search answered.
 func Sync(ctx context.Context, store *Store, scope pullrequests.Scope, since, now time.Time) error {
-	coverage, covered, err := store.Coverage()
+	coverage, covered, err := store.Coverage(ctx)
 	if err != nil {
 		return err
 	}
@@ -27,7 +27,7 @@ func Sync(ctx context.Context, store *Store, scope pullrequests.Scope, since, no
 		if err != nil {
 			return err
 		}
-		return store.Keep(read, next)
+		return store.Keep(ctx, read, next)
 	}
 	var read []pullrequests.HistoryRecord
 	if since.Before(coverage.From) {
@@ -41,5 +41,5 @@ func Sync(ctx context.Context, store *Store, scope pullrequests.Scope, since, no
 	if err != nil {
 		return err
 	}
-	return store.Keep(append(read, changed...), next)
+	return store.Keep(ctx, append(read, changed...), next)
 }

@@ -336,14 +336,16 @@ func (b *Board) openDiff(m *gotermboard.Model, pr pullrequests.PullRequest,
 			stem := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d", pr.Repo, pr.Number))
 			socket := stem + ".sock"
 			_ = os.Remove(socket)
-			nvim := exec.Command("nvim", "--listen", socket, "-c", openDiffview(opened.revisions))
+			// The handover waits on a person, so nothing it starts carries a deadline.
+			handover := context.Background()
+			nvim := exec.CommandContext(handover, "nvim", "--listen", socket, "-c", openDiffview(opened.revisions))
 			nvim.Dir = target.Checkout
 			files := diffFilesAt(stem)
 			unwritten := files.write(pr, b.detailOf(pr), b.roundWindowOf(pr), opened.base, got.Head, opened.kind, time.Now())
 			if unwritten == nil {
 				nvim.Env = append(os.Environ(), files.env()...)
 			}
-			restore := nameWindow(fmt.Sprintf("diff %s #%d", pr.Repo, pr.Number))
+			restore := nameWindow(handover, fmt.Sprintf("diff %s #%d", pr.Repo, pr.Number))
 			return m.HandOver(nvim, func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
 				restore()
 				files.remove()
@@ -776,7 +778,8 @@ func (b *Board) comment(m *gotermboard.Model, pr pullrequests.PullRequest) tea.C
 	}
 	path := file.Name()
 	_ = file.Close()
-	return m.HandOver(gotermboard.EditorCommand(path), func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
+	// Update takes no context, and the editor waits on a person, so it carries no deadline.
+	return m.HandOver(gotermboard.EditorCommand(context.Background(), path), func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
 		body, readErr := os.ReadFile(path)
 		switch {
 		case err != nil:

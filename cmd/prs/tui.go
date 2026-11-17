@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +38,7 @@ type tuiTab struct {
 	prints    []string
 	elsewhere string
 	absent    func(cfg config.Config) string
-	open      func(b *board.Board, cfg config.Config) openedTab
+	open      func(ctx context.Context, b *board.Board, cfg config.Config) openedTab
 }
 
 // openedTab is a tab opened on the board: what gotermboard draws, what --json prints, why
@@ -69,7 +70,7 @@ func recapsAbsent(cfg config.Config) string {
 	return ""
 }
 
-func recapsTab(b *board.Board, cfg config.Config) openedTab {
+func recapsTab(_ context.Context, b *board.Board, cfg config.Config) openedTab {
 	// With no home and no XDG_CACHE_HOME a write's output goes nowhere, and a failed one says
 	// only its error.
 	logs, _ := config.RecapWritesDir()
@@ -99,7 +100,7 @@ func tuiTabNames() []string {
 	return names
 }
 
-func boardTab(b *board.Board, _ config.Config) openedTab {
+func boardTab(_ context.Context, b *board.Board, _ config.Config) openedTab {
 	return openedTab{
 		board:    b,
 		snapshot: func(now time.Time) any { return b.Snapshot(now) },
@@ -121,9 +122,9 @@ func boardTab(b *board.Board, _ config.Config) openedTab {
 	}
 }
 
-func summaryTab(b *board.Board, cfg config.Config) openedTab {
+func summaryTab(ctx context.Context, b *board.Board, cfg config.Config) openedTab {
 	window, _ := pullrequests.ParseSince(board.DefaultSummaryWindow, time.Local)
-	s := openSummary(b, cfg, window)
+	s := openSummary(ctx, b, cfg, window)
 	return openedTab{
 		board:    s,
 		snapshot: func(now time.Time) any { return s.Snapshot(now) },
@@ -254,6 +255,7 @@ list or that recap could not be read, or the list printed a line that is not a w
   prs tui --json | jq '.pull_requests[] | {slug, number, checks}'`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
 			chosen := tuiTabs[0]
 			if view != "" {
 				at := slices.Index(tuiTabNames(), view)
@@ -318,7 +320,7 @@ list or that recap could not be read, or the list printed a line that is not a w
 					}
 				}()
 				for _, tab := range drawnTabs(cfg) {
-					opened := tab.open(b, cfg)
+					opened := tab.open(ctx, b, cfg)
 					if opened.close != nil {
 						closers = append(closers, opened.close)
 					}
@@ -340,7 +342,7 @@ list or that recap could not be read, or the list printed a line that is not a w
 				_, err = tea.NewProgram(reportsFocus{model}).Run()
 				return err
 			}
-			opened := chosen.open(b, cfg)
+			opened := chosen.open(ctx, b, cfg)
 			if opened.close != nil {
 				defer func() { _ = opened.close() }()
 			}

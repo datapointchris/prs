@@ -60,7 +60,7 @@ type keptHistory struct {
 // closed pull requests kept in a file under dir for the repos read, and read again every
 // interval. With no dir, or a file that cannot be opened, it keeps them in memory, so each
 // start reads the window whole. Close closes the file.
-func (b *Board) OpenSummary(dir string, every time.Duration, window pullrequests.Since) *Summary {
+func (b *Board) OpenSummary(ctx context.Context, dir string, every time.Duration, window pullrequests.Since) *Summary {
 	s := &Summary{board: b, window: window}
 	scope, ok := b.scopes[registry.GitHub]
 	if !ok {
@@ -69,21 +69,21 @@ func (b *Board) OpenSummary(dir string, every time.Duration, window pullrequests
 	s.scope = scope
 	var err error
 	if dir != "" {
-		if s.store, err = summary.Open(summary.FileFor(dir, scope)); err != nil {
+		if s.store, err = summary.Open(ctx, summary.FileFor(dir, scope)); err != nil {
 			s.cacheFault = err.Error()
 		}
 	}
 	if s.store == nil {
 		// An in-memory database opens without touching the disk.
-		s.store, _ = summary.Open("")
+		s.store, _ = summary.Open(ctx, "")
 	}
-	s.opened, s.openFault = s.load()
+	s.opened, s.openFault = s.load(ctx)
 	s.history = gotermboard.NewSource("github history", every, func(ctx context.Context) (keptHistory, string, error) {
 		now := time.Now()
 		if err := summary.Sync(ctx, s.store, s.scope, s.Window().From(now), now); err != nil {
 			return keptHistory{}, "", err
 		}
-		kept, fault := s.load()
+		kept, fault := s.load(ctx)
 		if fault != "" {
 			return keptHistory{}, "", fmt.Errorf("%s", fault)
 		}
@@ -101,12 +101,12 @@ func (s *Summary) Close() error {
 }
 
 // load is what the store holds now, and why it could not be read.
-func (s *Summary) load() (keptHistory, string) {
-	coverage, covered, err := s.store.Coverage()
+func (s *Summary) load(ctx context.Context) (keptHistory, string) {
+	coverage, covered, err := s.store.Coverage(ctx)
 	if err != nil {
 		return keptHistory{}, err.Error()
 	}
-	closed, err := s.store.Closed(time.Time{})
+	closed, err := s.store.Closed(ctx, time.Time{})
 	if err != nil {
 		return keptHistory{}, err.Error()
 	}

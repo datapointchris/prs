@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,6 +53,7 @@ print the same counts.`,
   prs summary --since 30d --json | jq '.merged'`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
 			window, err := pullrequests.ParseSince(since, time.Local)
 			if err != nil {
 				return goclikit.UsageError(fmt.Errorf("--since %w", err))
@@ -69,7 +71,7 @@ print the same counts.`,
 			if err != nil {
 				return err
 			}
-			s := openSummary(b, cfg, window)
+			s := openSummary(ctx, b, cfg, window)
 			defer func() { _ = s.Close() }()
 			if !end.IsZero() {
 				s.CountUntil(end)
@@ -102,9 +104,9 @@ print the same counts.`,
 
 // openSummary is the Summary tab over the board's repos, keeping the merged and closed pull
 // requests under prs's cache, or with no home and no XDG_CACHE_HOME, in memory.
-func openSummary(b *board.Board, cfg config.Config, window pullrequests.Since) *board.Summary {
+func openSummary(ctx context.Context, b *board.Board, cfg config.Config, window pullrequests.Since) *board.Summary {
 	dir, _ := config.ClosedPullRequestsDir()
-	return b.OpenSummary(dir, cfg.ClosedRefreshEvery, window)
+	return b.OpenSummary(ctx, dir, cfg.ClosedRefreshEvery, window)
 }
 
 func printSummaryJSON(out io.Writer, s *board.Summary) error {

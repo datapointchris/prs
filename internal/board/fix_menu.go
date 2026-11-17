@@ -646,7 +646,8 @@ func (b *Board) resolve(m *gotermboard.Model, pr pullrequests.PullRequest, w pul
 // opens its three-way resolver on the merge's conflicts, and goes on from what nvim left once
 // it exits.
 func (b *Board) resolveInNvim(m *gotermboard.Model, pr pullrequests.PullRequest, w pullrequests.CatchUpWorktree) tea.Cmd {
-	nvim := exec.Command("nvim", "-c", openDiffview(""))
+	// The handover waits on a person, so it carries no deadline.
+	nvim := exec.CommandContext(context.Background(), "nvim", "-c", openDiffview(""))
 	nvim.Dir = w.Path
 	return m.HandOver(nvim, func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
 		var exit *exec.ExitError

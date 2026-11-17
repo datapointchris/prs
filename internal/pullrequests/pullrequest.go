@@ -205,7 +205,7 @@ func RunDetached(dir, log string, argv ...string) error {
 		return fmt.Errorf("could not open the log %s: %w", log, err)
 	}
 	defer func() { _ = out.Close() }()
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := exec.CommandContext(context.Background(), argv[0], argv[1:]...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
