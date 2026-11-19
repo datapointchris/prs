@@ -113,7 +113,7 @@ field it filters on drops a repo silently, and every list it prints still looks 
 - **Each provider's open pull requests are read again on a timer while the board is
   open**, whenever its terminal gains focus, and whenever a program a key handed the
   terminal to exits. `refresh_every_seconds` in the config sets the timer, and
-  `prs config path` prints its default. A return within a few seconds of the last read does not read again. Returning
+  `prs config path --help` prints its default. A return within a few seconds of the last read does not read again. Returning
   from a tmux window reaches prs as focus where tmux's `focus-events` option is on. The
   line at the top says how old the newest read is, turns a spinner while a read runs, and
   names a read that failed. A failed read keeps the last good rows, and so does one
@@ -170,8 +170,8 @@ A pull request's document is markdown, under a line naming its repo, author and 
   the read left out.
 - **Diff** is the diff itself, each file under a heading of its own, so `[` and `]` move
   between files. A pull request changing more lines than `diff_section_max_lines` in the
-  config gets its size and the key that opens it instead. `prs config path` prints its
-  default.
+  config gets its size and the key that opens it instead. `prs config path --help` prints
+  its default.
 - **Comments** names who is still asked to review, then the conversation oldest first with
   each submitted review in it, then each review thread, unresolved first. A review round's
   post the Review section shows is left out of the conversation.
