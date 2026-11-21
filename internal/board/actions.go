@@ -277,11 +277,8 @@ func wholeDiff(pr pullrequests.PullRequest, target pullrequests.LocalDiff, why s
 // openDiff fetches the pull request's head and base in the background, then hands prs's
 // terminal to nvim's diff of what choose picks from the fetched head, run in the checkout.
 // Quitting nvim gives the terminal back to the board, with the cursor where it was, and
-// Receive reads the providers again. The head it fetched is the one m then pins.
-//
-// gotermboard's NvimDiff is the handover: the socket and tmux window it names for the pull
-// request, and the document and review threads it writes beside the socket for an nvim config
-// to show beside the diff.
+// Receive reads the providers again. The head it fetched is the one m then pins. nvim is
+// handed the pull request's document and the threads on the sides the diff shows.
 func (b *Board) openDiff(m *gotermboard.Model, pr pullrequests.PullRequest,
 	choose func(ctx context.Context, target pullrequests.LocalDiff, head string) (diffOpened, error),
 ) tea.Cmd {
@@ -318,16 +315,10 @@ func (b *Board) openDiff(m *gotermboard.Model, pr pullrequests.PullRequest,
 				m.Say(opened.nothing)
 				return nil
 			}
-			handover, err := nvimDiffOf(pr, b.detailOf(pr), b.roundWindowOf(pr), target.Checkout, opened, got.Head, time.Now()).Write()
-			if err != nil {
-				return refuse(fmt.Errorf("the diff of #%d did not open, because writing what nvim is handed failed: %w", pr.Number, err))
-			}
-			restore := handover.NameWindow()
-			// The handover waits on a person, so nothing it starts carries a deadline.
-			return m.HandOver(handover.Command(context.Background()), func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
-				restore()
+			diff := nvimDiffOf(pr, b.detailOf(pr), b.roundWindowOf(pr), target.Checkout, opened, got.Head, time.Now())
+			handedOver, err := handOverDiff(m, diff, func(m *gotermboard.Model, ended gotermboard.NvimDiffEnding, err error, stderr []byte) tea.Cmd {
 				said := opened.closed
-				switch ended := handover.Ended(exitStatus(err)); {
+				switch {
 				case ended.NoDiff != "":
 					said = ended.NoDiff
 				case err != nil:
@@ -343,8 +334,30 @@ func (b *Board) openDiff(m *gotermboard.Model, pr pullrequests.PullRequest,
 				m.Say(said)
 				return nil
 			})
+			if err != nil {
+				return refuse(fmt.Errorf("the diff of #%d did not open: %w", pr.Number, err))
+			}
+			return handedOver
 		},
 	})
+}
+
+// handOverDiff writes what nvim is handed for diff, names the tmux window for it while nvim has
+// the terminal, and calls ended with what nvim left once it exits. It hands nothing over where
+// the write failed, and says why.
+func handOverDiff(m *gotermboard.Model, diff gotermboard.NvimDiff,
+	ended func(m *gotermboard.Model, ending gotermboard.NvimDiffEnding, err error, stderr []byte) tea.Cmd,
+) (tea.Cmd, error) {
+	handover, err := diff.Write()
+	if err != nil {
+		return nil, err
+	}
+	restore := handover.NameWindow()
+	// The handover waits on a person, so nothing it starts carries a deadline.
+	return m.HandOver(handover.Command(context.Background()), func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
+		restore()
+		return ended(m, handover.Ended(exitStatus(err)), err, stderr)
+	}), nil
 }
 
 // exitStatus is the status a program handed the terminal exited with, and 0 where err is none

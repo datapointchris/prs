@@ -162,18 +162,19 @@ own `Sources`, as the Summary tab does, so a read is not made twice.
 - **A key that waits on the network runs in the background**, through `work` in
   `work.go`, so the list stays usable and the footer names it until it ends. Every client
   it runs, git included, goes through `pullrequests.Run`, which a read's client shares.
-- **gotermboard's `NvimDiff` is every handover to nvim's Diffview**, `d`, `i` and the
-  catch-up's resolver alike, so prs writes no Diffview command, exit status, socket or
-  variable of its own. Another board hands nvim a diff through the same contract.
-- **The diff's socket and window name are a contract.** A program split into the tmux
-  window, such as a Claude session explaining the diff, reads `diff <repo> #<n>` off the
-  window's name and asks nvim on `prs-diff-<repo>-<n>.sock` what is under the cursor. So
-  a pull request's subject is `<repo> #<n>`, from which `NvimDiff` names both.
-- **The variables nvim's diff starts with are a contract.** `PRS_DIFF_DOCUMENT` names
-  `prs-diff-<repo>-<n>.md` and `PRS_DIFF_THREADS` names `prs-diff-<repo>-<n>.threads.json`,
-  both beside the socket. An nvim config reads them to show the pull request beside the
-  diff and each review thread on its line, so the threads file keeps each thread's `path`,
-  `line` and `side`. The resolver hands nvim no document, so it starts with neither.
+- **Every handover to nvim's Diffview goes through gotermboard's `NvimDiff`, in
+  `handOverDiff`**, so prs writes no Diffview command, exit status, socket or variable of
+  its own, and every handover names the tmux window for its pull request.
+- **The diff's socket and window name are a contract.** A program in a window named for a
+  pull request, `diff <repo> #<n>` while nvim has the board's window or a config's own such
+  as `explain <repo> #<n>`, asks nvim on `prs-diff-<repo>-<n>.sock` what is under the
+  cursor. So a pull request's subject is `<repo> #<n>`, set in `pullRequestDiff`, from
+  which `NvimDiff` names both.
+- **The variables nvim's diff starts with are a contract.** `PRS_DIFF_DOCUMENT` names the
+  pull request's document and `PRS_DIFF_THREADS` its threads file. An nvim config reads
+  them to show the pull request beside the diff and each review thread on its line, so the
+  threads file keeps each thread's `path`, `line` and `side`. The resolver hands nvim no
+  document, so it starts with neither.
 - **`prs tui --pr` is a contract too.** Other terminal programs jump to a pull request by
   running it with `owner/name#number` or a URL, and get their screen back when `q` exits
   0. A pull request it cannot read is refused before anything draws, with one line on
