@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -646,14 +645,10 @@ func (b *Board) resolve(m *gotermboard.Model, pr pullrequests.PullRequest, w pul
 // opens its three-way resolver on the merge's conflicts, and goes on from what nvim left once
 // it exits.
 func (b *Board) resolveInNvim(m *gotermboard.Model, pr pullrequests.PullRequest, w pullrequests.CatchUpWorktree) tea.Cmd {
-	// The handover waits on a person, so it carries no deadline.
-	nvim := exec.CommandContext(context.Background(), "nvim", "-c", openDiffview(""))
-	nvim.Dir = w.Path
-	return m.HandOver(nvim, func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
-		var exit *exec.ExitError
+	handedOver, err := handOverDiff(m, pullRequestDiff(pr, w.Path, ""), func(m *gotermboard.Model, ended gotermboard.NvimDiffEnding, err error, stderr []byte) tea.Cmd {
 		switch {
-		case errors.As(err, &exit) && exit.ExitCode() == noDiffview:
-			m.Say(fmt.Sprintf("nvim has no :DiffviewOpen, which resolving needs from the diffview.nvim plugin; the merge waits in %s", homeAsTilde(w.Path)))
+		case ended.NoDiff != "":
+			m.Say(fmt.Sprintf("%s; the merge waits in %s", ended.NoDiff, homeAsTilde(w.Path)))
 			return nil
 		case err != nil:
 			m.Say(fmt.Sprintf("nvim ended resolving #%d: %s; the merge waits in %s", pr.Number, gotermboard.LastLine(stderr, err), homeAsTilde(w.Path)))
@@ -661,6 +656,11 @@ func (b *Board) resolveInNvim(m *gotermboard.Model, pr pullrequests.PullRequest,
 		}
 		return b.afterResolving(pr, w)
 	})
+	if err != nil {
+		m.Say(fmt.Sprintf("nvim did not open to resolve #%d: %v; the merge waits in %s", pr.Number, err, homeAsTilde(w.Path)))
+		return nil
+	}
+	return handedOver
 }
 
 // afterResolving reads what nvim left unmerged. With none left it commits the merge and asks

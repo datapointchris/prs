@@ -9,10 +9,7 @@ import (
 	"time"
 
 	"github.com/datapointchris/gotermboard"
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/text"
+	"github.com/datapointchris/gotermboard/markdown"
 
 	"github.com/datapointchris/prs/internal/pullrequests"
 	"github.com/datapointchris/prs/internal/reviewrounds"
@@ -114,7 +111,7 @@ func describe(in documentInput) string {
 	if strings.TrimSpace(in.pr.Body) == "" {
 		return "_No description._"
 	}
-	return nestedAt(strings.TrimSpace(in.pr.Body), 2)
+	return markdown.NestHeadings(strings.TrimSpace(in.pr.Body), 2)
 }
 
 // unread is what a detail section says before its read lands, and empty once it has.
@@ -373,7 +370,7 @@ func conversationOf(detail pullrequests.Detail, shown map[string]bool, now time.
 		}
 		parts = append(parts, heading)
 		if body := strings.TrimSpace(entry.body); body != "" {
-			parts = append(parts, nestedAt(body, 4))
+			parts = append(parts, markdown.NestHeadings(body, 4))
 		}
 	}
 	if more := detail.CommentCount - len(detail.Comments); more > 0 {
@@ -415,7 +412,7 @@ func threadsOf(detail pullrequests.Detail, now time.Time) string {
 		for _, comment := range thread.Comments {
 			parts = append(parts, fmt.Sprintf("**%s** · %s ago", orDash(comment.Author), gotermboard.Ago(now.Sub(comment.CreatedAt))))
 			if body := strings.TrimSpace(comment.Body); body != "" {
-				parts = append(parts, nestedAt(body, 4))
+				parts = append(parts, markdown.NestHeadings(body, 4))
 			}
 		}
 		if more := thread.CommentCount - len(thread.Comments); more > 0 {
@@ -445,70 +442,4 @@ func short(oid string) string {
 		return "a commit gone from the branch"
 	}
 	return oid[:min(len(oid), 7)]
-}
-
-var headingParser = goldmark.New(goldmark.WithExtensions(extension.GFM)).Parser()
-
-// nestedAt is source with every heading moved deeper by one amount, so its shallowest sits
-// at depth. Text written under a section keeps its own headings inside that section rather
-// than closing it, which is what the Reader's path and its section jumps read. A heading
-// goes no deeper than 6, markdown's deepest.
-func nestedAt(source string, depth int) string {
-	src := []byte(source)
-	var headings []*ast.Heading
-	_ = ast.Walk(headingParser.Parse(text.NewReader(src)), func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if h, ok := n.(*ast.Heading); ok && entering && h.Pos() >= 0 {
-			headings = append(headings, h)
-		}
-		return ast.WalkContinue, nil
-	})
-	shallowest := 6
-	for _, h := range headings {
-		shallowest = min(shallowest, h.Level)
-	}
-	shift := depth - shallowest
-	if len(headings) == 0 || shift <= 0 {
-		return source
-	}
-	// Each edit is made from the end back, so the offsets of those before it still hold.
-	for _, h := range slices.Backward(headings) {
-		src = deepened(src, h, min(h.Level+shift, 6))
-	}
-	return string(src)
-}
-
-// deepened writes heading h at level. goldmark puts an ATX heading's position on its run of
-// #, which grows, empty heading or not, and a setext heading's on its first word. A setext
-// heading becomes one ATX line, its lines joined by a space as they render, and loses its
-// underline.
-func deepened(src []byte, h *ast.Heading, level int) []byte {
-	at := h.Pos()
-	hashes := at
-	for hashes < len(src) && src[hashes] == '#' {
-		hashes++
-	}
-	if hashes > at && (hashes == len(src) || strings.ContainsRune(" \t\r\n", rune(src[hashes]))) {
-		return slices.Concat(src[:at], []byte(strings.Repeat("#", level)), src[hashes:])
-	}
-	lines := h.Lines()
-	if lines.Len() == 0 {
-		return src
-	}
-	words := make([]string, 0, lines.Len())
-	for i := range lines.Len() {
-		line := lines.At(i)
-		words = append(words, strings.TrimSpace(string(line.Value(src))))
-	}
-	lastLine := lines.At(lines.Len() - 1).Start
-	lineEnd := len(src)
-	if i := slices.Index(src[lastLine:], '\n'); i >= 0 {
-		lineEnd = lastLine + i
-	}
-	underlineEnd := len(src)
-	if lineEnd < len(src) {
-		if i := slices.Index(src[lineEnd+1:], '\n'); i >= 0 {
-			underlineEnd = lineEnd + 1 + i
-		}
-	}
-	return slices.Concat(src[:at], []byte(strings.Repeat("#", level)+" "+strings.Join(words, " ")), src[underlineEnd:])
 }

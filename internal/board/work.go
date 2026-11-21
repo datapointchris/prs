@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -196,30 +194,4 @@ func clientOutput(ctx context.Context, pr pullrequests.PullRequest, verb string,
 		return out, fmt.Errorf("%s could not %s #%d: %w", argv[0], verb, pr.Number, err)
 	}
 	return out, nil
-}
-
-// nameWindow names prs's tmux window for the length of a handover, and returns what puts its
-// own name back. A program split into the window, such as a Claude session explaining the
-// diff, reads the pull request off that name. Outside tmux it does nothing.
-func nameWindow(ctx context.Context, name string) (restore func()) {
-	pane := os.Getenv("TMUX_PANE")
-	if os.Getenv("TMUX") == "" || pane == "" {
-		return func() {}
-	}
-	out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "-t", pane, "#{window_name}\t#{automatic-rename}").Output()
-	own, automatic, found := strings.Cut(strings.TrimRight(string(out), "\n"), "\t")
-	if err != nil || !found {
-		return func() {}
-	}
-	if exec.CommandContext(ctx, "tmux", "rename-window", "-t", pane, name).Run() != nil {
-		return func() {}
-	}
-	return func() {
-		// A rename turns automatic-rename off, so a window tmux named gets tmux's naming back.
-		if automatic == "1" {
-			_ = exec.CommandContext(ctx, "tmux", "set-option", "-w", "-t", pane, "automatic-rename", "on").Run()
-			return
-		}
-		_ = exec.CommandContext(ctx, "tmux", "rename-window", "-t", pane, own).Run()
-	}
 }

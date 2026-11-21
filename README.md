@@ -205,14 +205,13 @@ row under the cursor, and reads again as any return to the list does. It never c
 branch out.
 nvim listens on `$TMPDIR/prs-diff-<repo>-<number>.sock`, so another program can ask it
 what is under the cursor. Inside tmux, prs's window is named `diff <repo> #<number>` while
-nvim has it.
-Beside the socket, prs writes the pull request as `prs-diff-<repo>-<number>.md`, its title
-over the document the side panel shows less its Diff, which nvim shows already, and its
-review threads as
-`prs-diff-<repo>-<number>.threads.json`, in the shape `cmd/prs/diff-threads.schema.json`
-gives. nvim starts with `PRS_DIFF_DOCUMENT` and `PRS_DIFF_THREADS` naming them, so an nvim
-config can show the description beside the diff and each thread on its line. prs removes
-both once nvim exits.
+nvim has it. A pull request whose diff is already open in another nvim opens no second one,
+and the footer names the socket that nvim listens on.
+prs writes the pull request's title over the document the side panel shows less its Diff,
+which nvim shows already, and its review threads in the shape gotermboard's
+`nvim-diff-threads.schema.json` gives. nvim starts with `PRS_DIFF_DOCUMENT` and
+`PRS_DIFF_THREADS` naming the two files, so an nvim config can show the description beside
+the diff and each thread on its line. prs removes both once nvim exits.
 
 `i` opens what was pushed since the newest review: the same fetch and nvim as `d`, with
 the diff running from the commit that review was submitted against to the head. It asks
