@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/datapointchris/gotermboard"
 	"github.com/datapointchris/tuidrive"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
@@ -43,8 +45,9 @@ const standInToken = "stand-in-token"
 // commit, and diffs a pull request's fetched head as testdata/pull-request-<number>.diff,
 // which the stand-in GitHub sends as its diff too. The stand-in tmux names prs's window prs,
 // and lists each window it opened, which the windows file holds one to a line.
-// The stand-in nvim also records the variables naming the pull request's files, and copies
-// each to handed.md and handed.threads.json, since prs removes them once nvim exits.
+// The stand-in nvim also records the variables naming the pull request's files and the script
+// it sources, and copies each file to handed.md and handed.threads.json, since prs removes them
+// once nvim exits.
 // The stand-in gh updates a branch, readies a draft and reruns a run, and logs one failed
 // test for any run. The stand-in git finds two files conflicting with any base, keeps the
 // worktrees it adds, and stops a merge, unmerged where the unmerged file says.
@@ -490,8 +493,9 @@ esac
 			"case \"$*\" in 'rev-parse --verify --quiet " + rebasedAway + "^{commit}') exit 1 ;; esac\n" +
 			"[ \"$1\" = rev-parse ] && echo " + fetchedHead + "\n" +
 			`case " $* " in *' diff '*) for a; do last=$a; done; cat "` + filepath.Dir(listed) + `/pull-request-${last##*/pr/}.diff" 2>/dev/null ;; esac` + "\nexit 0\n",
-		"nvim": "#!/bin/sh\n" + record + fmt.Sprintf(`printf '%%s\n' "PRS_DIFF_DOCUMENT=$PRS_DIFF_DOCUMENT" "PRS_DIFF_THREADS=$PRS_DIFF_THREADS" >> %q
-cp "$PRS_DIFF_DOCUMENT" %q; cp "$PRS_DIFF_THREADS" %q; exit 0
+		"nvim": "#!/bin/sh\n" + record + fmt.Sprintf(`printf '%%s\n' "PRS_DIFF_DOCUMENT=$PRS_DIFF_DOCUMENT" "PRS_DIFF_THREADS=$PRS_DIFF_THREADS" >> %[1]q
+while [ $# -gt 0 ]; do [ "$1" = -S ] && cat "$2" >> %[1]q; shift; done
+[ -n "$PRS_DIFF_DOCUMENT" ] && cp "$PRS_DIFF_DOCUMENT" %[2]q && cp "$PRS_DIFF_THREADS" %[3]q; exit 0
 `, s.recorded, s.handed+".md", s.handed+".threads.json"),
 		"editor": "#!/bin/sh\n" + record + "printf 'Looks good to me.\\n' > \"$1\"\n",
 	}
@@ -637,6 +641,12 @@ func schemaIn(t *testing.T, file string) *jsonschema.Schema {
 		t.Fatal(err)
 	}
 	defer func() { _ = raw.Close() }()
+	return schemaFrom(t, file, raw)
+}
+
+// schemaFrom compiles the schema raw holds, naming it file.
+func schemaFrom(t *testing.T, file string, raw io.Reader) *jsonschema.Schema {
+	t.Helper()
 	compiler := jsonschema.NewCompiler()
 	compiler.AssertFormat()
 	if err := compiler.AddResource(file, decodedFrom(t, raw)); err != nil {
@@ -883,11 +893,10 @@ func TestARowCountsTheCommitsSinceItsReviewAndIDiffsOnlyThoseOrTheWholeDiffWithW
 	term.Press("j", "i")
 	term.WaitForPattern("diff of widget #12.*9e8d7c6")
 	reviewed := "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a291807"
-	since := "if exists(':DiffviewOpen') == 2 | execute 'DiffviewOpen " + reviewed + "..refs/remotes/origin/pr/12' | else | cquit 3 | endif"
 	if !s.ran(t, "git", "cwd="+s.checkout, "fetch", "--quiet", "--force", "origin", "pull/12/head:refs/remotes/origin/pr/12") ||
 		!s.ran(t, "git", "cwd="+s.checkout, "merge-base", "--is-ancestor", reviewed, "refs/remotes/origin/pr/12") ||
 		!s.ran(t, "git", "cwd="+s.checkout, "merge-base", reviewed, "origin/main") ||
-		!s.ran(t, "-c", since) {
+		!s.ran(t, "call s:open('widget', '"+s.checkout+"', '"+reviewed+"..refs/remotes/origin/pr/12')") {
 		t.Error("i should fetch the head as d does, find the reviewed commit on it, and diff from that commit to the head")
 	}
 	// The diff's left side is the reviewed commit's copy, where a LEFT thread's line does not count.
@@ -913,7 +922,7 @@ func TestARowCountsTheCommitsSinceItsReviewAndIDiffsOnlyThoseOrTheWholeDiffWithW
 	term.Press("j", "j", "i")
 	term.WaitForPattern("whole diff of widget #13.*5ca1ab1")
 	for _, whole := range []string{"origin/add-cache...refs/remotes/origin/pr/5", "origin/add-cache...refs/remotes/origin/pr/13"} {
-		if !s.ran(t, "-c", "if exists(':DiffviewOpen') == 2 | execute 'DiffviewOpen "+whole+"' | else | cquit 3 | endif") {
+		if !s.ran(t, "', '"+whole+"')") {
 			t.Errorf("i should open the whole diff, %s, where it has no reviewed commit on the branch", whole)
 		}
 	}
@@ -1036,8 +1045,8 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtO
 		t.Error("d should fetch the head into its own ref in the checkout")
 	}
 	stem := filepath.Join(s.tmp, "prs-diff-widget-13")
-	open := "if exists(':DiffviewOpen') == 2 | execute 'DiffviewOpen origin/add-cache...refs/remotes/origin/pr/13' | else | cquit 3 | endif"
-	if !s.ran(t, "nvim", "cwd="+s.checkout, "--listen", stem+".sock", "-c", open) {
+	if !s.ran(t, "nvim", "cwd="+s.checkout, "--listen", stem+".sock", "-S", stem+".vim") ||
+		!s.ran(t, "call s:open('widget', '"+s.checkout+"', 'origin/add-cache...refs/remotes/origin/pr/13')") {
 		t.Error("d should diff three-dot against the base the listing reports, in the checkout")
 	}
 	// An nvim config shows the pull request beside the diff from the files these name.
@@ -1049,8 +1058,8 @@ func TestEveryKeyThatActsLeavesPrsOnTheListAndAMergedRowMovesToRecentlyClosedAtO
 		t.Errorf("nvim should be handed the title over the pull request's document:\n%s", document)
 	}
 	threads, _ := os.ReadFile(s.handed + ".threads.json")
-	if err := schemaIn(t, "diff-threads.schema.json").Validate(decoded(t, string(threads))); err != nil {
-		t.Errorf("the threads file breaks diff-threads.schema.json: %v\n%s", err, threads)
+	if err := schemaFrom(t, "nvim-diff-threads.schema.json", bytes.NewReader(gotermboard.NvimDiffThreadsSchema)).Validate(decoded(t, string(threads))); err != nil {
+		t.Errorf("the threads file breaks gotermboard's nvim-diff-threads.schema.json: %v\n%s", err, threads)
 	}
 	if !strings.Contains(string(threads), `"base": "origin/add-cache"`) || !strings.Contains(string(threads), `"line": 14,
       "side": "RIGHT"`) {
@@ -1105,7 +1114,7 @@ func TestARefusedMergeOpensTheFixMenuOnItsConflictsWhichMergeTheBaseInAWorktreeA
 	if !s.ran(t, "git", "cwd="+s.checkout, "fetch", "--quiet", "origin", "+refs/heads/cache-metrics:refs/remotes/origin/cache-metrics") ||
 		!s.ran(t, "git", "cwd="+s.checkout, "worktree", "add", "--quiet", "--detach", worktree, "refs/remotes/origin/cache-metrics") ||
 		!s.ran(t, "git", "cwd="+worktree, "merge", "--no-ff", "-m", "chore: merge add-cache into cache-metrics", "origin/add-cache") ||
-		!s.ran(t, "nvim", "cwd="+worktree, "-c") {
+		!s.ran(t, "nvim", "cwd="+worktree, "--listen", filepath.Join(s.tmp, "prs-diff-widget-13.sock"), "-S") {
 		t.Error("n should merge the base into the head branch in a detached worktree, then open nvim there")
 	}
 

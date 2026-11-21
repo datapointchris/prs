@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/datapointchris/gotermboard"
+	"github.com/datapointchris/gotermboard/markdown"
 
 	"github.com/datapointchris/prs/internal/pullrequests"
 	"github.com/datapointchris/prs/internal/reviewrounds"
@@ -225,7 +226,7 @@ func reviewSection(in documentInput) string {
 		parts = append(parts, findingsPart(newest.Reviews)...)
 		for _, review := range newest.Unread() {
 			parts = append(parts, fmt.Sprintf("## %s, whole\n\n_Its findings could not be read, because %s._", review.Reviewer, review.Unread),
-				nestedAt(strings.TrimSpace(review.Body), 3))
+				markdown.NestHeadings(strings.TrimSpace(review.Body), 3))
 		}
 	}
 	if len(rounds.Earlier) > 0 {
@@ -246,7 +247,7 @@ func reviewSection(in documentInput) string {
 		if post.At != nil {
 			heading += " · " + gotermboard.Ago(in.now.Sub(*post.At)) + " ago"
 		}
-		parts = append(parts, heading, fmt.Sprintf("_%s, so it shows whole._", post.Why), nestedAt(strings.TrimSpace(post.Body), 3))
+		parts = append(parts, heading, fmt.Sprintf("_%s, so it shows whole._", post.Why), markdown.NestHeadings(strings.TrimSpace(post.Body), 3))
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -324,7 +325,7 @@ func synthesisPart(synthesis *reviewrounds.Synthesis) []string {
 	parts := []string{"## Synthesis"}
 	if synthesis.Unread != "" {
 		return append(parts, fmt.Sprintf("_Its shapes could not be read, because %s, so it shows whole._", synthesis.Unread),
-			nestedAt(strings.TrimSpace(synthesis.Body), 3))
+			markdown.NestHeadings(strings.TrimSpace(synthesis.Body), 3))
 	}
 	if len(synthesis.Shapes) == 0 && len(synthesis.Duplicates) == 0 {
 		return append(parts, "No cause is shared by more than one finding.")
@@ -335,7 +336,7 @@ func synthesisPart(synthesis *reviewrounds.Synthesis) []string {
 		if len(shape.Explains) > 0 {
 			parts = append(parts, "Explains "+codeList(shape.Explains)+".")
 		}
-		parts = append(parts, nestedAt(strings.TrimSpace(shape.Body), 4))
+		parts = append(parts, markdown.NestHeadings(strings.TrimSpace(shape.Body), 4))
 	}
 	if len(synthesis.Duplicates) > 0 {
 		lines := []string{"### One defect, raised more than once"}
@@ -381,7 +382,7 @@ func findingsPart(reviews []reviewrounds.Review) []string {
 			if reach := strings.TrimSpace(finding.Reach); reach != "" {
 				parts = append(parts, "Reach: "+reach)
 			}
-			parts = append(parts, nestedAt(strings.TrimSpace(finding.Body), 4))
+			parts = append(parts, markdown.NestHeadings(strings.TrimSpace(finding.Body), 4))
 		}
 	}
 	return parts

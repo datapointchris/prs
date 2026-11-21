@@ -7,7 +7,6 @@ import (
 	"maps"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -231,7 +230,7 @@ func (b *Board) diffSinceReview(m *gotermboard.Model, pr pullrequests.PullReques
 			return wholeDiff(pr, target, fmt.Sprintf("origin/%s was merged into the branch since its newest review, at %s, and a diff from there would show the base's changes as the branch's", target.Base, at)), err
 		}
 		return diffOpened{
-			revisions: target.RangeFrom(review.CommitOID), base: review.CommitOID, kind: sinceReview,
+			revisions: target.RangeFrom(review.CommitOID), base: review.CommitOID, kind: gotermboard.NvimDiffSinceReview,
 			closed: fmt.Sprintf("closed the diff of %s #%d since its newest review, at %s", pr.Repo, pr.Number, at),
 		}, nil
 	})
@@ -249,23 +248,12 @@ func unreadReviews(pr pullrequests.PullRequest, state rowState) string {
 	return fmt.Sprintf("#%d is %s, so prs reads none of its reviews", pr.Number, state)
 }
 
-// diffKind is which diff a key opened, as the threads file names it.
-type diffKind string
-
-const (
-	// whole runs three-dot from where the branch left origin/<base>, so its left side is the
-	// base branch's copy, where a LEFT thread's line counts.
-	whole diffKind = "whole"
-	// sinceReview runs from the commit the newest review read, which is its left side.
-	sinceReview diffKind = "since_review"
-)
-
 // diffOpened is what a diff key opens once the head is fetched: the revisions Diffview
 // compares, which diff they are, the base the threads file names, and what the footer says
 // once nvim exits.
 type diffOpened struct {
 	revisions, base, closed string
-	kind                    diffKind
+	kind                    gotermboard.NvimDiffKind
 	// why is the sentence after closed, saying why the diff is what it is.
 	why string
 	// nothing is what the footer says where revisions is empty, and nvim does not start.
@@ -276,7 +264,7 @@ type diffOpened struct {
 // origin/<base>, with why it is whole where the key asked for less.
 func wholeDiff(pr pullrequests.PullRequest, target pullrequests.LocalDiff, why string) diffOpened {
 	opened := diffOpened{
-		revisions: target.Range(), base: "origin/" + target.Base, kind: whole,
+		revisions: target.Range(), base: "origin/" + target.Base, kind: gotermboard.NvimDiffWhole,
 		closed: fmt.Sprintf("closed the diff of %s #%d", pr.Repo, pr.Number),
 	}
 	if why != "" {
@@ -291,12 +279,9 @@ func wholeDiff(pr pullrequests.PullRequest, target pullrequests.LocalDiff, why s
 // Quitting nvim gives the terminal back to the board, with the cursor where it was, and
 // Receive reads the providers again. The head it fetched is the one m then pins.
 //
-// nvim listens on a socket named for the pull request, so another program can ask it what
-// is under the cursor. Inside tmux the window is named diff <repo> #<n> while nvim has it,
-// so a program split into the window finds that socket from the name. Beside the socket it
-// writes the pull request's document and its review threads, and starts nvim with
-// PRS_DIFF_DOCUMENT and PRS_DIFF_THREADS naming them, so an nvim config can show them
-// beside the diff.
+// gotermboard's NvimDiff is the handover: the socket and tmux window it names for the pull
+// request, and the document and review threads it writes beside the socket for an nvim config
+// to show beside the diff.
 func (b *Board) openDiff(m *gotermboard.Model, pr pullrequests.PullRequest,
 	choose func(ctx context.Context, target pullrequests.LocalDiff, head string) (diffOpened, error),
 ) tea.Cmd {
@@ -333,39 +318,27 @@ func (b *Board) openDiff(m *gotermboard.Model, pr pullrequests.PullRequest,
 				m.Say(opened.nothing)
 				return nil
 			}
-			stem := filepath.Join(os.TempDir(), fmt.Sprintf("prs-diff-%s-%d", pr.Repo, pr.Number))
-			socket := stem + ".sock"
-			_ = os.Remove(socket)
-			// The handover waits on a person, so nothing it starts carries a deadline.
-			handover := context.Background()
-			nvim := exec.CommandContext(handover, "nvim", "--listen", socket, "-c", openDiffview(opened.revisions))
-			nvim.Dir = target.Checkout
-			files := diffFilesAt(stem)
-			unwritten := files.write(pr, b.detailOf(pr), b.roundWindowOf(pr), opened.base, got.Head, opened.kind, time.Now())
-			if unwritten == nil {
-				nvim.Env = append(os.Environ(), files.env()...)
+			handover, err := nvimDiffOf(pr, b.detailOf(pr), b.roundWindowOf(pr), target.Checkout, opened, got.Head, time.Now()).Write()
+			if err != nil {
+				return refuse(fmt.Errorf("the diff of #%d did not open, because writing what nvim is handed failed: %w", pr.Number, err))
 			}
-			restore := nameWindow(handover, fmt.Sprintf("diff %s #%d", pr.Repo, pr.Number))
-			return m.HandOver(nvim, func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
+			restore := handover.NameWindow()
+			// The handover waits on a person, so nothing it starts carries a deadline.
+			return m.HandOver(handover.Command(context.Background()), func(m *gotermboard.Model, err error, stderr []byte) tea.Cmd {
 				restore()
-				files.remove()
-				var exit *exec.ExitError
 				said := opened.closed
-				switch {
-				case errors.As(err, &exit) && exit.ExitCode() == noDiffview:
-					said = "nvim has no :DiffviewOpen, and the diff needs the diffview.nvim plugin"
+				switch ended := handover.Ended(exitStatus(err)); {
+				case ended.NoDiff != "":
+					said = ended.NoDiff
 				case err != nil:
 					said = fmt.Sprintf("nvim ended the diff of #%d: %s", pr.Number, gotermboard.LastLine(stderr, err))
 				default:
-					if got.BaseFault != "" && opened.kind == whole {
+					if got.BaseFault != "" && opened.kind == gotermboard.NvimDiffWhole {
 						said += fmt.Sprintf(", which ran against the origin/%s fetched earlier, because fetching it again failed: %s", target.Base, got.BaseFault)
 					}
 					if opened.why != "" {
 						said += ". " + opened.why
 					}
-				}
-				if unwritten != nil {
-					said += fmt.Sprintf(". nvim had no pull request to show beside it, because writing it failed: %v", unwritten)
 				}
 				m.Say(said)
 				return nil
@@ -374,15 +347,14 @@ func (b *Board) openDiff(m *gotermboard.Model, pr pullrequests.PullRequest,
 	})
 }
 
-// noDiffview is the status nvim exits with where Diffview is not installed.
-const noDiffview = 3
-
-// openDiffview is the command nvim runs to open Diffview on revisions, or to exit at once
-// with noDiffview where the plugin is not installed, so the board can say so rather than
-// leave an empty buffer. A plugin that loads on its command still defines the command.
-func openDiffview(revisions string) string {
-	quoted := "'DiffviewOpen " + strings.ReplaceAll(revisions, "'", "''") + "'"
-	return fmt.Sprintf("if exists(':DiffviewOpen') == 2 | execute %s | else | cquit %d | endif", quoted, noDiffview)
+// exitStatus is the status a program handed the terminal exited with, and 0 where err is none
+// or the program never ran.
+func exitStatus(err error) int {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	return 0
 }
 
 // merge asks first, and enter alone merges. A merge confirmed by reflex lands work that was

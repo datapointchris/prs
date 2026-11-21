@@ -209,8 +209,8 @@ nvim has it.
 Beside the socket, prs writes the pull request as `prs-diff-<repo>-<number>.md`, its title
 over the document the side panel shows less its Diff, which nvim shows already, and its
 review threads as
-`prs-diff-<repo>-<number>.threads.json`, in the shape `cmd/prs/diff-threads.schema.json`
-gives. nvim starts with `PRS_DIFF_DOCUMENT` and `PRS_DIFF_THREADS` naming them, so an nvim
+`prs-diff-<repo>-<number>.threads.json`, in the shape gotermboard's
+`nvim-diff-threads.schema.json` gives. nvim starts with `PRS_DIFF_DOCUMENT` and `PRS_DIFF_THREADS` naming them, so an nvim
 config can show the description beside the diff and each thread on its line. prs removes
 both once nvim exits.
 
