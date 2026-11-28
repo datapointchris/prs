@@ -245,7 +245,7 @@ func diffSection(in documentInput) string {
 		case strings.TrimSpace(file.Hunks) == "":
 			parts = append(parts, "_Its lines are unchanged._")
 		default:
-			parts = append(parts, fenced("diff", file.Hunks))
+			parts = append(parts, markdown.Fence("diff", file.Hunks))
 		}
 	}
 	return strings.Join(parts, "\n\n")
@@ -270,22 +270,6 @@ func fileHeading(file pullrequests.FileDiff) string {
 		heading += " · " + file.Change
 	}
 	return heading
-}
-
-// fenced is body in a fence of language one backtick longer than the longest run in body,
-// so no line of it closes the fence early.
-func fenced(language, body string) string {
-	longest, run := 0, 0
-	for _, r := range body {
-		if r != '`' {
-			run = 0
-			continue
-		}
-		run++
-		longest = max(longest, run)
-	}
-	fence := strings.Repeat("`", max(3, longest+1))
-	return fence + language + "\n" + strings.TrimRight(body, "\n") + "\n" + fence
 }
 
 // counted is n and the noun, plural where n is not 1.
