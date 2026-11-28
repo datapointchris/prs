@@ -305,39 +305,14 @@ list or that recap could not be read, or the list printed a line that is not a w
 			}
 			pal := gotermstyle.PaletteFor(os.Stdout)
 			if !printing {
-				b.ReadDetails()
-				b.ReadDiffs(cfg.DiffSectionMaxLines)
-				// With no home and no XDG_CACHE_HOME the board reads first, as it would with
-				// nothing kept.
-				if kept, err := config.ListingCacheDir(); err == nil {
-					b.KeepListings(kept)
-				}
-				var tabs []gotermboard.Tab
-				var closers []func() error
+				model, closers, err := openTabs(ctx, b, cfg, pal, view, ref)
 				defer func() {
 					for _, close := range closers {
 						_ = close()
 					}
 				}()
-				for _, tab := range drawnTabs(cfg) {
-					opened := tab.open(ctx, b, cfg)
-					if opened.close != nil {
-						closers = append(closers, opened.close)
-					}
-					tabs = append(tabs, gotermboard.Tab{Name: tab.name, Board: opened.board})
-				}
-				// --pr opens on the pull requests it names, so the tab remembered from the last run
-				// gives way to the first.
-				opening := view
-				if ref != nil && opening == "" {
-					opening = tuiTabs[0].name
-				}
-				model, err := gotermboard.NewTabs(tabs, pal, opening)
 				if err != nil {
 					return err
-				}
-				if path, err := config.TUIDisplayFile(); err == nil {
-					model.RemembersDisplayIn(path)
 				}
 				_, err = tea.NewProgram(reportsFocus{model}).Run()
 				return err
@@ -369,6 +344,40 @@ list or that recap could not be read, or the list printed a line that is not a w
 	cmd.Flags().BoolVar(&once, "once", false, "Print one frame of the tab at COLUMNS by LINES, then exit")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output the tab's snapshot as JSON to stdout")
 	return cmd
+}
+
+// openTabs opens each of drawnTabs on the board, starts the reads of each pull request's detail
+// and diff, and returns the program's model and what each tab holds open.
+func openTabs(ctx context.Context, b *board.Board, cfg config.Config, pal gotermstyle.Palette, view string, ref *pullrequests.Reference) (*gotermboard.Tabs, []func() error, error) {
+	b.ReadDetails()
+	b.ReadDiffs(cfg.DiffSectionMaxLines)
+	// With no home and no XDG_CACHE_HOME the board reads first, as it would with nothing kept.
+	if kept, err := config.ListingCacheDir(); err == nil {
+		b.KeepListings(kept)
+	}
+	var tabs []gotermboard.Tab
+	var closers []func() error
+	for _, tab := range drawnTabs(cfg) {
+		opened := tab.open(ctx, b, cfg)
+		if opened.close != nil {
+			closers = append(closers, opened.close)
+		}
+		tabs = append(tabs, gotermboard.Tab{Name: tab.name, Board: opened.board})
+	}
+	// --pr opens on the pull requests it names, so the tab remembered from the last run gives
+	// way to the first.
+	opening := view
+	if ref != nil && opening == "" {
+		opening = tuiTabs[0].name
+	}
+	model, err := gotermboard.NewTabs(tabs, pal, opening)
+	if err != nil {
+		return nil, closers, err
+	}
+	if path, err := config.TUIDisplayFile(); err == nil {
+		model.RemembersDisplayIn(path)
+	}
+	return model, closers, nil
 }
 
 // refuseUnprinted refuses a flag the tab --once or --json prints does not read, because it

@@ -21,11 +21,15 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/datapointchris/gotermboard"
+	"github.com/datapointchris/gotermboard/floortest"
+	"github.com/datapointchris/gotermstyle"
 	"github.com/datapointchris/tuidrive"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/datapointchris/prs/internal/board"
+	"github.com/datapointchris/prs/internal/pullrequests"
 )
 
 // standInToken is the token the stand-in GitHub takes, so a request carrying none is refused
@@ -1542,4 +1546,76 @@ func TestTheBoardDrawsTheLastListingOfTheSameReposAtOnceThenRereadsOnItsTimerAnd
 	term.WaitFor("No provider could be read")
 	term.Press("q")
 	term.WaitExit()
+}
+
+// The board's own model, opened on the stand-ins' pull requests once their reads land, keeps the
+// keys every board shares.
+func TestTheTUIMeetsTheFloor(t *testing.T) {
+	s := newStandIn(t)
+	for name, value := range s.env {
+		t.Setenv(name, value)
+	}
+	b, cfg, err := loadBoard()
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, err := pullrequests.ParseSince("2d", time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.ReadClosed(window, cfg.ClosedRefreshEvery)
+	tabs, closers, err := openTabs(t.Context(), b, cfg, gotermstyle.NewPalette(false), "", nil)
+	t.Cleanup(func() {
+		for _, close := range closers {
+			_ = close()
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotermboard.RefreshAll(t.Context(), b.Sources()...)
+	tabs.Update(tea.WindowSizeMsg{Width: onceFallbackWidth, Height: onceFallbackHeight})
+	settle(tabs, tabs.Init())
+	floortest.Check(t, tabs, floortest.Has{Views: true, List: true})
+}
+
+// settle runs cmd and what the messages it yields start, a few rounds deep, feeding each message
+// to model. A command still waiting after half a second is a clock or a watch, and is dropped.
+func settle(model tea.Model, cmd tea.Cmd) {
+	pending := []tea.Cmd{cmd}
+	for range 4 {
+		var msgs []tea.Msg
+		for len(pending) > 0 {
+			results := make(chan tea.Msg, len(pending))
+			for _, c := range pending {
+				if c == nil {
+					results <- nil
+					continue
+				}
+				go func() { results <- c() }()
+			}
+			waiting, deadline := len(pending), time.After(500*time.Millisecond)
+			pending = nil
+		collect:
+			for range waiting {
+				select {
+				case msg := <-results:
+					if batch, ok := msg.(tea.BatchMsg); ok {
+						pending = append(pending, batch...)
+					} else if msg != nil {
+						msgs = append(msgs, msg)
+					}
+				case <-deadline:
+					break collect
+				}
+			}
+		}
+		if len(msgs) == 0 {
+			return
+		}
+		for _, msg := range msgs {
+			_, next := model.Update(msg)
+			pending = append(pending, next)
+		}
+	}
 }
